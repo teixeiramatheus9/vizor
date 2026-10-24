@@ -20,7 +20,15 @@ import { fileURLToPath } from 'node:url';
 import { buildHookCommand, ensureHooks, removeAppHooks } from '../../scripts/install-hooks.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
-import { readAiTitle, readConversationTail, readTranscriptSnapshot } from './transcript.js';
+import {
+  readAiTitle,
+  readConversationTail,
+  readEditReason,
+  readTranscriptSnapshot,
+} from './transcript.js';
+import { EditTracker } from './edit-tracker.js';
+import { captureToolEvent } from './edit-capture.js';
+import { readIndexVersion } from './git-files.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -271,6 +279,11 @@ migrateLegacyInstall({
   enableAutostart: () => setAutostart(true),
   log,
 });
+
+// Every edit the AI makes, per session and task — the workspace's live diff
+// reads from here. Fed by the edit-tool hooks, never by the registry.
+const editTracker = new EditTracker();
+const editQueues = new Map(); // sessionId → tail of that session's capture chain
 
 const registry = new SessionRegistry({
   folderAliasFor: (cwd) => managerConfig.folderAliases[cwd] ?? null,
@@ -1151,9 +1164,35 @@ async function enrichNotification(session) {
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
+//
+// One chain per session: two quick Posts on the same file must not read each
+// other's half-finished state (the second one's "previous" is the first one's
+// "after").
 function onToolEvent(event) {
-  const target = event.tool_input?.file_path ?? event.tool_input?.notebook_path ?? '-';
-  log(`edit hook: ${event.hook_event_name} ${event.tool_name} ${target} id=${event.tool_use_id ?? '-'}`);
+  const sessionId = event.session_id;
+  if (!sessionId) return;
+  const run = () =>
+    captureToolEvent(event, {
+      tracker: editTracker,
+      readFile: (file) => fs.promises.readFile(file, 'utf8').catch(() => null),
+      readIndexVersion,
+      readReason: readEditReason,
+    }).then((edit) => {
+      if (edit && event.hook_event_name === 'PostToolUse') logEdit(edit);
+    });
+  const tail = (editQueues.get(sessionId) ?? Promise.resolve())
+    .then(run)
+    .catch((error) => log(`edit capture failed: ${error}`));
+  editQueues.set(sessionId, tail);
+  tail.then(() => {
+    if (editQueues.get(sessionId) === tail) editQueues.delete(sessionId);
+  });
+}
+
+function logEdit(edit) {
+  const where = `${edit.baseline ?? '-'}${edit.note ? ` ${edit.note}` : ''}`;
+  const reason = JSON.stringify(edit.reason?.slice(0, 60) ?? null);
+  log(`edit #${edit.seq} ${path.basename(edit.filePath)} +${edit.added} −${edit.removed} [${where}] ${reason}`);
 }
 
 function onHookEvent(event) {
@@ -1168,6 +1207,11 @@ function onHookEvent(event) {
       message: humanizeNotification(event.message),
     };
   }
+  if (event?.session_id) {
+    if (event.hook_event_name === 'UserPromptSubmit')
+      editTracker.startTask(event.session_id, { prompt: event.prompt ?? null });
+    else if (event.hook_event_name === 'Stop') editTracker.endTask(event.session_id);
+  }
   const session = registry.applyEvent(event);
   if (!session) return;
   if (event.hook_event_name === 'Stop') {
@@ -1181,7 +1225,10 @@ function onHookEvent(event) {
 
 ipcMain.on('panel:opened', () => registry.markAllRead());
 
-ipcMain.on('session:remove', (_event, sessionId) => registry.remove(sessionId));
+ipcMain.on('session:remove', (_event, sessionId) => {
+  registry.remove(sessionId);
+  editTracker.forgetSession(sessionId);
+});
 
 // Renaming a chat also becomes the folder's default nickname, so the next
 // chat in that folder is born with it (and can be renamed over). Clearing
@@ -1769,7 +1816,10 @@ function hydrateRegistry() {
 // Drops the sessions whose terminal was closed: they never send a hook on the
 // way out, so without this they linger frozen on their last status.
 function reapDeadSessions() {
+  const before = [...registry.sessions.keys()];
   registry.reconcileLiveSessions(readLiveSessionIds());
+  for (const sessionId of before)
+    if (!registry.sessions.has(sessionId)) editTracker.forgetSession(sessionId);
 }
 
 let saveTimer = null;
