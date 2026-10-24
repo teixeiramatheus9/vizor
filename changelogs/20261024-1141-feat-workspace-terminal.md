@@ -1,0 +1,1 @@
+- Terminal embutido no workspace (Linux): cada worktree ganha abas com o seu shell, o + já abre o claude, e as sessões nascidas ali aparecem marcadas como "no Vizor" e levam direto pra aba delas

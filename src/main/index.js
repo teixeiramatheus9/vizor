@@ -34,12 +34,15 @@ import { listWorktrees, repoRootOf } from './worktrees.js';
 import {
   addProject,
   buildWorkspaceTree,
+  quitPrompt,
   removeProject,
   shouldAutoAdd,
   staleRoots,
   workspaceAvailable,
 } from './workspace-model.js';
 import { createWorkspaceWindowManager } from './workspace-window.js';
+import { loadPty } from './pty-loader.js';
+import { createPtyHost } from './pty-host.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -303,6 +306,7 @@ const worktreeCache = new Map(); // project root → Worktree[]
 const repoRootCache = new Map(); // session cwd → repo root | null
 let workspacePushTimer = null;
 let workspaceRechecked = new Set(); // unplaced cwds whose repo was already re-listed
+let ptyHost = null; // created on the first terminal open
 const editPipeline = createEditPipeline({
   tracker: editTracker,
   readFile: (file) => fs.promises.readFile(file, 'utf8').catch(() => null),
@@ -912,7 +916,7 @@ function refreshTrayMenu() {
     settings: () => openSettingsWindow(),
     toggle: () => (bubbleVisible() ? hideToTray() : showBubble()),
     find: findBubble,
-    quit: () => app.quit(),
+    quit: () => requestQuit().catch((error) => log(`quit failed: ${error}`)),
     workspace: () => workspaceWindow?.show(),
   };
   const template = trayMenuTemplate({
@@ -961,7 +965,9 @@ async function setupTray() {
   sendState();
 }
 
-ipcMain.on('app:quit', () => (tray ? hideToTray() : app.quit()));
+ipcMain.on('app:quit', () =>
+  tray ? hideToTray() : requestQuit().catch((error) => log(`quit failed: ${error}`)),
+);
 
 
 const windowOptions = {
@@ -1273,6 +1279,7 @@ function pushWorkspaceStateNow() {
   });
   workspaceWindow.send('workspace:state', {
     tree,
+    terminals: ptyHost?.list() ?? [],
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -1327,6 +1334,46 @@ ipcMain.on('workspace:remove-project', (_event, root) => {
   worktreeCache.delete(root);
   pushWorkspaceStateNow();
 });
+
+// --- workspace terminals (#92) -------------------------------------------
+function ensurePtyHost() {
+  if (ptyHost) return { host: ptyHost, error: null };
+  const { pty, error } = loadPty();
+  if (!pty) return { host: null, error };
+  ptyHost = createPtyHost({ spawn: pty.spawn, shell: process.env.SHELL || '/bin/bash' });
+  ptyHost.on('data', (payload) => {
+    if (workspaceWindow?.isReady()) workspaceWindow.send('pty:data', payload);
+  });
+  ptyHost.on('exit', (payload) => {
+    if (workspaceWindow?.isReady()) workspaceWindow.send('pty:exit', payload);
+  });
+  ptyHost.on('change', () => pushWorkspaceStateNow());
+  return { host: ptyHost, error: null };
+}
+
+ipcMain.handle('pty:open', (_event, { cwd, startClaude } = {}) => {
+  let isDirectory = false;
+  try {
+    isDirectory = typeof cwd === 'string' && fs.statSync(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) return { error: 'pasta não existe' };
+  const { host, error } = ensurePtyHost();
+  if (!host) {
+    log(`pty unavailable: ${error}`);
+    return { error };
+  }
+  return { id: host.open({ cwd, startClaude: Boolean(startClaude) }).id };
+});
+ipcMain.on('pty:write', (_event, { id, data } = {}) => {
+  if (typeof data === 'string') ptyHost?.write(id, data);
+});
+ipcMain.on('pty:resize', (_event, { id, cols, rows } = {}) => {
+  if (Number.isInteger(cols) && Number.isInteger(rows) && cols > 0 && rows > 0) ptyHost?.resize(id, cols, rows);
+});
+ipcMain.on('pty:close', (_event, id) => ptyHost?.close(id));
+ipcMain.handle('pty:buffer', (_event, id) => ptyHost?.buffer(id) ?? '');
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
@@ -2020,12 +2067,29 @@ app.whenReady().then(() => {
   applyShortcuts();
 });
 
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  ptyHost?.killAll();
+});
 
 app.on('window-all-closed', () => {
   // with a tray icon the app lives on with every window hidden
   if (!tray) app.quit();
 });
+
+// Quitting kills the workspace terminals (they live in this process), so a
+// quit the USER asks for through our UI confirms first when one is alive. Only
+// UI paths ask: a logout, shutdown or SIGTERM also reaches before-quit (Electron
+// turns SIGTERM into a quit before any JS signal listener runs), and a dialog
+// there would hold the whole session hostage.
+async function requestQuit() {
+  const prompt = quitPrompt(ptyHost?.aliveCount() ?? 0);
+  if (prompt) {
+    const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Encerrar o Vizor', ...prompt });
+    if (response !== 0) return;
+  }
+  app.quit();
+}
 
 app.on('before-quit', () => {
   appQuitting = true;
