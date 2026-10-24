@@ -20,5 +20,7 @@ contextBridge.exposeInMainWorld('vizor', {
   setPrefs: (set) => ipcRenderer.invoke('workspace:prefs', { set }),
   addComment: (sessionId, editId, text) => ipcRenderer.invoke('comments:add', { sessionId, editId, text }),
   copyComment: (sessionId, commentId) => ipcRenderer.invoke('comments:copy', { sessionId, commentId }),
+  onFocusSession: (callback) => ipcRenderer.on('workspace:focus', (_event, payload) => callback(payload)),
+  reportSelection: (sessionId) => ipcRenderer.send('workspace:selected', sessionId ?? null),
   onEditsChanged: (callback) => ipcRenderer.on('edits:changed', (_event, payload) => callback(payload)),
 });

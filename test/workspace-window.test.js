@@ -18,6 +18,7 @@ class FakeWindow extends EventEmitter {
   hide() { this.visible = false; }
   focus() {}
   removeMenu() { this.menuRemoved = true; }
+  isFocused() { return Boolean(this.focused); }
   getBounds() { return { x: 0, y: 0, width: 1, height: 1 }; }
 }
 
@@ -67,5 +68,36 @@ describe('boundsVisible (#109)', () => {
     expect(boundsVisible({ x: 100, y: 100, width: 800, height: 600 }, displays)).toBe(true);
     expect(boundsVisible({ x: 2500, y: 100, width: 800, height: 600 }, displays)).toBe(false);
     expect(boundsVisible(null, displays)).toBe(false);
+  });
+});
+
+describe('pointing the workspace at a session (#96)', () => {
+  it('waits for the page before asking it to focus a session, and sends only the latest', () => {
+    const workspace = manager();
+    workspace.focusSession('s1');
+    workspace.focusSession('s2');
+    const sent = FakeWindow.last.webContents.sent;
+    expect(sent.filter(([channel]) => channel === 'workspace:focus')).toEqual([]);
+    FakeWindow.last.webContents.emit('did-finish-load');
+    expect(sent.filter(([channel]) => channel === 'workspace:focus')).toEqual([['workspace:focus', { sessionId: 's2' }]]);
+    FakeWindow.last.webContents.emit('did-finish-load');
+    expect(sent.filter(([channel]) => channel === 'workspace:focus')).toHaveLength(1);
+  });
+
+  it('sends right away to a loaded window, and shows it', () => {
+    const workspace = manager();
+    workspace.show();
+    FakeWindow.last.webContents.emit('did-finish-load');
+    workspace.focusSession('s3');
+    expect(FakeWindow.last.webContents.sent.at(-1)).toEqual(['workspace:focus', { sessionId: 's3' }]);
+    expect(FakeWindow.last.visible).toBe(true);
+  });
+
+  it('knows whether it has the focus', () => {
+    const workspace = manager();
+    expect(workspace.isFocused()).toBe(false);
+    workspace.show();
+    FakeWindow.last.focused = true;
+    expect(workspace.isFocused()).toBe(true);
   });
 });

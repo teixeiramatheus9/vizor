@@ -28,6 +28,7 @@ export function createWorkspaceWindowManager({
 }) {
   let win = null;
   let loaded = false;
+  let pendingFocus = null; // a session to select once the page is up
   let saveTimer = null;
 
   function scheduleSave() {
@@ -67,20 +68,36 @@ export function createWorkspaceWindowManager({
     win.webContents.on('did-finish-load', () => {
       loaded = true;
       onShow();
+      if (pendingFocus) {
+        win.webContents.send('workspace:focus', { sessionId: pendingFocus });
+        pendingFocus = null;
+      }
     });
     win.once('ready-to-show', () => win.show());
     win.loadFile(htmlPath);
   }
 
+  function show() {
+    if (!win || win.isDestroyed()) {
+      create();
+      return;
+    }
+    win.show();
+    win.focus();
+    onShow();
+  }
+
   return {
-    show() {
-      if (!win || win.isDestroyed()) {
-        create();
-        return;
-      }
-      win.show();
-      win.focus();
-      onShow();
+    show,
+    // Opens the workspace on a session (the bubble, a panel card). Asked
+    // before the first load, it waits for the page instead of getting lost.
+    focusSession(sessionId) {
+      show();
+      if (loaded && win && !win.isDestroyed()) win.webContents.send('workspace:focus', { sessionId });
+      else pendingFocus = sessionId;
+    },
+    isFocused() {
+      return Boolean(win && !win.isDestroyed() && win.isFocused());
     },
     window() {
       return win && !win.isDestroyed() ? win : null;
