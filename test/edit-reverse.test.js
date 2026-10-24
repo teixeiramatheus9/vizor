@@ -8,10 +8,25 @@ describe('reverseEdit', () => {
     expect(R('Edit', { old_string: 'a = 1', new_string: 'a = 2' }, 'x\na = 2\ny')).toBe('x\na = 1\ny');
   });
 
-  it('reverses replace_all', () => {
-    expect(R('Edit', { old_string: 'foo', new_string: 'bar', replace_all: true }, 'bar bar')).toBe(
-      'foo foo',
-    );
+  it('never reverses replace_all: occurrences that were already there are indistinguishable', () => {
+    const input = { old_string: 'userId', new_string: 'id', replace_all: true };
+    expect(R('Edit', input, 'const valid = id;\nconst w = width;')).toBeNull();
+    expect(R('Edit', { old_string: 'foo', new_string: 'bar', replace_all: true }, 'bar bar')).toBeNull();
+  });
+
+  it('is null when MultiEdit carries a replace_all', () => {
+    const edits = [{ old_string: 'a', new_string: 'b', replace_all: true }];
+    expect(R('MultiEdit', { edits }, 'b')).toBeNull();
+  });
+
+  it('counts overlapping matches, so an overlap is ambiguous', () => {
+    expect(R('Edit', { old_string: 'b', new_string: 'aa' }, 'aaa')).toBeNull();
+  });
+
+  it('matches LF tool strings against a CRLF file', () => {
+    // Claude Code matches on LF-normalized text and keeps the file's endings
+    const input = { old_string: 'a = 1\nb', new_string: 'a = 2\nb' };
+    expect(R('Edit', input, 'x\r\na = 2\r\nb\r\n')).toBe('x\r\na = 1\r\nb\r\n');
   });
 
   it('is null when new_string is not in the file', () => {
