@@ -680,6 +680,18 @@ function activateBubble() {
   else workspaceWindow.show();
 }
 ipcMain.on('bubble:activate', () => activateBubble());
+
+// The balloon of a session born in the Vizor opens its workspace tab, like
+// its panel card (spec §9.1, #144); any other balloon opens the panel.
+ipcMain.on('tooltip:click', (_event, sessionId) => {
+  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
+    hideOverlay();
+    workspaceWindow.focusSession(session.id);
+    return;
+  }
+  openPanel();
+});
 ipcMain.on('overlay:close', () => {
   log('overlay close requested');
   hideOverlay();
@@ -1201,7 +1213,12 @@ async function generateVoiceForStop(session) {
   }
   registry.setManagerMessage(session.id, voice);
   if (await allowAnnouncement(session, 'done', voice.message)) {
-    sendToRenderer('tooltip', { projectName: displayNameOf(session), text: voice.message, kind: 'done' });
+    sendToRenderer('tooltip', {
+      projectName: displayNameOf(session),
+      text: voice.message,
+      kind: 'done',
+      sessionId: session.id,
+    });
     showTooltip();
   }
 }
@@ -1238,6 +1255,7 @@ async function enrichNotification(session) {
       text,
       kind,
       optionsCount: firstQuestion?.options?.length ?? 0,
+      sessionId: session.id,
     });
     showTooltip();
   }
@@ -2367,7 +2385,8 @@ ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
       ptyHost.write(ptyId, '\r');
       return 'sent';
     }
-    return 'failed';
+    // The paste is already in the terminal, without Enter: say so (#143).
+    return 'pasted';
   }
   return replyToSession(session, reply);
 });

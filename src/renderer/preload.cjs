@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('manager', {
   togglePanel: () => ipcRenderer.send('overlay:toggle-panel'),
   activateBubble: () => ipcRenderer.send('bubble:activate'),
+  tooltipClick: (sessionId) => ipcRenderer.send('tooltip:click', sessionId ?? null),
   openPanel: () => ipcRenderer.send('overlay:open-panel'),
   closeOverlay: () => ipcRenderer.send('overlay:close'),
   openSettings: () => ipcRenderer.send('settings:open'),

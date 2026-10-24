@@ -84,7 +84,10 @@ bubble.addEventListener('contextmenu', (event) => {
   event.preventDefault();
   togglePanel();
 });
-tooltip.addEventListener('click', openPanel);
+// The balloon remembers which session it is about: one born in the Vizor
+// opens its workspace tab (#144), anything else opens the panel.
+let tooltipSessionId = null;
+tooltip.addEventListener('click', () => window.manager.tooltipClick(tooltipSessionId));
 document.getElementById('close').addEventListener('click', closePanel);
 const quitButton = document.getElementById('quit');
 quitButton.addEventListener('click', () => window.manager.quit());
@@ -290,7 +293,9 @@ document.getElementById('mirror-back').addEventListener('click', () => setMirror
 
 const MIRROR_FEEDBACK = {
   typed: null, // the message shows up in the conversation itself
+  sent: null, // delivered through the session's channel (#147)
   clipboard: '# copiado! cola no chat',
+  pasted: '# ficou no terminal, sem Enter — confere lá',
   failed: '# não consegui enviar — tenta de novo',
 };
 
@@ -302,7 +307,7 @@ async function sendMirrorReply() {
   const mode = await window.manager.sendReply(mirrorSession.id, text);
   mirrorSend.disabled = false;
   const feedback = MIRROR_FEEDBACK[mode];
-  if (mode === 'typed') {
+  if (mode === 'typed' || mode === 'sent') {
     mirrorInput.value = '';
     setTimeout(refreshMirror, 700);
   }
@@ -973,7 +978,8 @@ document.getElementById('toast-close').addEventListener('click', (event) => {
   hideTooltip();
 });
 
-window.manager.onTooltip(({ projectName, text, kind, optionsCount }) => {
+window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId }) => {
+  tooltipSessionId = sessionId ?? null;
   // kind 'hint' is a manager warning: the MAIN process already spoke it
   // (speakAsManager), so the balloon adds no chime and no second voice.
   if (view === 'bubble' && kind !== 'hint') {
@@ -1049,7 +1055,11 @@ function replyElement(session) {
 
   const FEEDBACK_TEXT = {
     typed: '✓ enviado pro chat',
+    // the session's own channel (or its Vizor terminal) took it (#147)
+    sent: '✓ enviado pro chat',
     clipboard: '# copiado! cola no chat',
+    // pasted into the Vizor terminal, but Enter was not safe to press (#143)
+    pasted: '# ficou no terminal, sem Enter — confere lá',
     failed: '# não consegui enviar — tenta de novo',
   };
 
@@ -1061,7 +1071,7 @@ function replyElement(session) {
     sendButton.disabled = false;
     replyFeedback.set(session.id, FEEDBACK_TEXT[mode] ?? '');
     feedback.textContent = replyFeedback.get(session.id);
-    if (mode === 'typed') {
+    if (mode === 'typed' || mode === 'sent') {
       replyDrafts.delete(session.id);
       input.value = '';
     }
