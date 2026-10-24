@@ -10,7 +10,7 @@ export const PTY_BUFFER_CHARS = 1048576;
 // A flood (`yes`, a big cat) would otherwise mean one IPC message per chunk;
 // batching keeps the main process and the window responsive.
 export const PTY_BATCH_MS = 16;
-const CLAUDE_FALLBACK_MS = 1500;
+const COMMAND_FALLBACK_MS = 1500;
 // Flow control (#113): output sent to the window but not yet drawn by xterm.
 // Past HIGH the pty is paused (the program blocks on write, like in any real
 // terminal), and resumed once the window catches up below LOW.
@@ -108,7 +108,9 @@ export function createPtyHost({
     host.emit('data', { id: entry.info.id, data });
   }
 
-  host.open = ({ cwd, cols = 80, rows = 24, startClaude = false }) => {
+  // command: typed into the shell once it is up (claude, claude --resume <id>);
+  // null leaves a plain terminal.
+  host.open = ({ cwd, cols = 80, rows = 24, command = null }) => {
     const id = newId();
     const child = spawn(shell, ['-l'], {
       name: 'xterm-256color',
@@ -123,21 +125,21 @@ export function createPtyHost({
 
     // Typed once the shell first speaks (its prompt is up), or after a silent
     // second and a half — a shell's line editor queues typeahead either way.
-    let claudeTyped = !startClaude;
-    const typeClaude = () => {
-      if (claudeTyped || !entry.info.alive) return;
-      claudeTyped = true;
+    let commandTyped = !command;
+    const typeCommand = () => {
+      if (commandTyped || !entry.info.alive) return;
+      commandTyped = true;
       clearTimer(fallback);
-      child.write('claude\r');
+      child.write(`${command}\r`);
     };
-    const fallback = startClaude ? setTimer(typeClaude, CLAUDE_FALLBACK_MS) : null;
+    const fallback = command ? setTimer(typeCommand, COMMAND_FALLBACK_MS) : null;
 
     child.onData((data) => {
       entry.buffer += data;
       if (entry.buffer.length > PTY_BUFFER_CHARS) entry.buffer = trimToLine(entry.buffer.slice(-PTY_BUFFER_CHARS));
       entry.pending += data;
       if (!entry.timer) entry.timer = setTimer(() => flush(entry), PTY_BATCH_MS);
-      typeClaude();
+      typeCommand();
     });
     child.onExit(({ exitCode }) => {
       flush(entry);

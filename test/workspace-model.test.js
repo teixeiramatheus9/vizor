@@ -178,6 +178,7 @@ describe('quitPrompt', () => {
     expect(quitPrompt(1).message).toBe('1 sessão rodando no workspace vai ser encerrada.');
     expect(quitPrompt(2)).toEqual({
       message: '2 sessões rodando no workspace vão ser encerradas.',
+      detail: 'As abas e as conversas voltam quando você abrir o Vizor de novo.',
       buttons: ['Encerrar mesmo assim', 'Cancelar'],
       defaultId: 1,
       cancelId: 1,

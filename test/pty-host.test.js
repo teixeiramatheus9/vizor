@@ -147,7 +147,7 @@ describe('createPtyHost', () => {
 
   it('types claude once the shell first speaks', () => {
     const { host, spawned } = makeHost();
-    host.open({ cwd: '/r', startClaude: true });
+    host.open({ cwd: '/r', command: 'claude' });
     expect(spawned[0].writes).toEqual([]);
     spawned[0].emitData('$ ');
     spawned[0].emitData('more');
@@ -156,9 +156,24 @@ describe('createPtyHost', () => {
     expect(spawned[0].writes).toEqual(['claude\r']);
   });
 
+  it('types any start command it is given, such as a resume', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r', command: 'claude --resume 4b706711-9840-4931-8b0f-d6d51518d6ba' });
+    spawned[0].emitData('$ ');
+    expect(spawned[0].writes).toEqual(['claude --resume 4b706711-9840-4931-8b0f-d6d51518d6ba\r']);
+  });
+
+  it('types nothing into a plain terminal', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r' });
+    spawned[0].emitData('$ ');
+    vi.advanceTimersByTime(2000);
+    expect(spawned[0].writes).toEqual([]);
+  });
+
   it('types claude anyway after 1.5 s of silence', () => {
     const { host, spawned } = makeHost();
-    host.open({ cwd: '/r', startClaude: true });
+    host.open({ cwd: '/r', command: 'claude' });
     vi.advanceTimersByTime(1499);
     expect(spawned[0].writes).toEqual([]);
     vi.advanceTimersByTime(1);

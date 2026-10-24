@@ -50,6 +50,8 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost, withoutClaudeSession } from './pty-host.js';
+import { linkTerminals, restorePlan, tabsToSave, terminalCommand, isSessionId } from './workspace-tabs.js';
+import { listConversations } from './conversations.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
@@ -109,6 +111,7 @@ import {
   readLiveSessionIds,
   readAdoptableSessions,
   claudeTranscriptPath,
+  claudeProjectDir,
 } from './cc-sessions.js';
 import { readInboundPolicy, setInboundPolicy } from './claude-settings.js';
 import {
@@ -1358,12 +1361,13 @@ function pushWorkspaceStateNow() {
   }));
   const tree = buildWorkspaceTree({
     projects,
-    sessions: listWithDisplayNames(),
+    sessions: linkedSessions(listWithDisplayNames()),
     taskOf: (sessionId) => editTracker.currentTask(sessionId),
   });
   workspaceWindow.send('workspace:state', {
     tree,
     terminals: ptyHost?.list() ?? [],
+    activeTerminal: activeTerminalId,
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -1436,6 +1440,7 @@ function ensurePtyHost() {
   });
   ptyHost.on('change', () => {
     pushWorkspaceStateNow();
+    scheduleTabsSave();
     // An auto-update held back by live terminals goes through once the last ends.
     if (ptyHost.aliveCount() === 0) onUpdateStatus(updateStatus);
   });
@@ -1444,21 +1449,159 @@ function ensurePtyHost() {
 
 const fromWorkspace = (event) => Boolean(workspaceWindow?.ownsSender(event.sender));
 
-ipcMain.handle('pty:open', (event, { cwd, startClaude } = {}) => {
-  if (!fromWorkspace(event)) return { error: 'origem inválida' };
-  let isDirectory = false;
+function isDirectory(dir) {
   try {
-    isDirectory = typeof cwd === 'string' && fs.statSync(cwd).isDirectory();
+    return typeof dir === 'string' && fs.statSync(dir).isDirectory();
   } catch {
-    isDirectory = false;
+    return false;
   }
-  if (!isDirectory) return { error: 'pasta não existe' };
+}
+
+// New pty id → the chat it resumed, until that chat's first hook event names
+// the tab itself (#155).
+const resumedChats = new Map();
+
+function linkedSessions(sessions) {
+  const ids = ptyHost?.list().map((terminal) => terminal.id) ?? [];
+  for (const ptyId of [...resumedChats.keys()]) if (!ids.includes(ptyId)) resumedChats.delete(ptyId);
+  return linkTerminals(sessions, ids, resumedChats);
+}
+
+// kind: 'shell' | 'claude' | 'resume' (with sessionId) — #154.
+function openTerminal({ cwd, kind, sessionId }) {
+  const { command, error: invalid } = terminalCommand({ kind, sessionId });
+  if (invalid) return { error: invalid };
+  if (!isDirectory(cwd)) return { error: 'pasta não existe' };
   const { host, error } = ensurePtyHost();
   if (!host) {
     log(`pty unavailable: ${error} (${loadPty().detail ?? '-'})`);
     return { error };
   }
-  return { id: host.open({ cwd, startClaude: Boolean(startClaude) }).id };
+  const { id } = host.open({ cwd, command });
+  if (kind === 'resume') {
+    resumedChats.set(id, sessionId);
+    // open() already pushed the state, before this link existed.
+    pushWorkspaceStateNow();
+    // claude registers itself a moment after it starts.
+    for (const delay of [2500, 6000]) setTimeout(adoptResumedChats, delay);
+  }
+  return { id };
+}
+
+ipcMain.handle('pty:open', (event, { cwd, kind = 'claude', sessionId = null } = {}) => {
+  if (!fromWorkspace(event)) return { error: 'origem inválida' };
+  return openTerminal({ cwd, kind, sessionId });
+});
+
+// The chats Claude Code saved for a folder, for "retomar conversa" (#154).
+// One already running somewhere (another terminal, a tab here) is marked:
+// resuming it twice would put two processes on one history.
+ipcMain.handle('workspace:conversations', async (event, cwd) => {
+  if (!fromWorkspace(event) || typeof cwd !== 'string') return [];
+  const live = readLiveSessionIds();
+  // linkedSessions first: it also forgets resumes whose tab is gone.
+  const linked = linkedSessions(registry.list()).filter((session) => session.term?.VIZOR_PTY_ID);
+  const tabs = new Map([
+    ...[...resumedChats].map(([ptyId, sessionId]) => [sessionId, ptyId]),
+    ...linked.map((session) => [session.id, session.term.VIZOR_PTY_ID]),
+  ]);
+  const list = await listConversations(claudeProjectDir(cwd));
+  return list.map((conversation) => ({
+    ...conversation,
+    open: Boolean(live?.has(conversation.sessionId)),
+    tab: tabs.get(conversation.sessionId) ?? null,
+  }));
+});
+
+// "Trazer pro Vizor" (#156): an outside chat whose process is gone comes back
+// in a tab. Still running somewhere: refused, same reason as above. A closed
+// chat is reaped from the list within LIVENESS_INTERVAL_MS, so the usual way
+// back is the + menu's "retomar conversa"; this covers the chat still listed.
+function outsideStatus(sessionId) {
+  const session = linkedSessions(registry.list()).find((candidate) => candidate.id === sessionId);
+  if (!session || session.term?.VIZOR_PTY_ID) return { canBring: false, why: null };
+  if (!isSessionId(sessionId)) return { canBring: false, why: 'conversa sem id do Claude Code' };
+  if (!isDirectory(session.cwd)) return { canBring: false, why: 'a pasta dela não existe mais' };
+  const live = readLiveSessionIds();
+  if (live === null || live.has(sessionId))
+    return { canBring: false, why: 'ainda aberta no outro terminal. Feche lá e retome pelo + desta worktree.' };
+  return { canBring: true, why: null };
+}
+
+ipcMain.handle('workspace:outside-status', (event, sessionId) =>
+  fromWorkspace(event) ? outsideStatus(sessionId) : { canBring: false, why: null },
+);
+
+ipcMain.handle('workspace:bring', (event, sessionId) => {
+  if (!fromWorkspace(event)) return { error: 'origem inválida' };
+  const status = outsideStatus(sessionId);
+  if (!status.canBring) return { error: status.why ?? 'não dá pra trazer essa conversa' };
+  const session = registry.list().find((candidate) => candidate.id === sessionId);
+  return openTerminal({ cwd: session.cwd, kind: 'resume', sessionId });
+});
+
+// --- tabs across restarts (#155) ------------------------------------------
+let activeTerminalId = null;
+let tabsSaveTimer = null;
+// Once the quit snapshot is taken, the ptys being killed must not overwrite it.
+let tabsFrozen = false;
+
+function saveWorkspaceTabs() {
+  if (tabsFrozen || !ptyHost) return;
+  const snapshot = tabsToSave({
+    terminals: ptyHost.list(),
+    sessions: linkedSessions(registry.list()),
+    liveIds: readLiveSessionIds(),
+    activeId: activeTerminalId,
+    resumed: resumedChats,
+  });
+  try {
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({
+        ...loadPersistedState(),
+        workspaceTabs: { ...snapshot, windowOpen: Boolean(workspaceWindow?.isOpen()) },
+      }),
+    );
+  } catch (error) {
+    log(`workspace tabs save failed: ${error}`);
+  }
+}
+
+function scheduleTabsSave() {
+  if (tabsFrozen || !ptyHost || tabsSaveTimer) return;
+  tabsSaveTimer = setTimeout(() => {
+    tabsSaveTimer = null;
+    saveWorkspaceTabs();
+  }, 500);
+}
+
+function freezeWorkspaceTabs() {
+  clearTimeout(tabsSaveTimer);
+  tabsSaveTimer = null;
+  saveWorkspaceTabs();
+  tabsFrozen = true;
+}
+
+function restoreWorkspaceTabs() {
+  if (!workspaceWindow) return;
+  const saved = loadPersistedState().workspaceTabs;
+  const plan = restorePlan({ saved, liveIds: readLiveSessionIds(), dirExists: isDirectory });
+  for (const { cwd, why } of plan.skipped) log(`workspace tab not restored (${cwd}): ${why}`);
+  for (const tab of plan.open) {
+    const result = openTerminal({ cwd: tab.cwd, kind: tab.sessionId ? 'resume' : 'shell', sessionId: tab.sessionId });
+    if (result.error) log(`workspace tab not restored (${tab.cwd}): ${result.error}`);
+    else if (tab.active) activeTerminalId = result.id;
+  }
+  if (plan.open.length) log(`workspace: ${plan.open.length} tab(s) restored`);
+  if (saved?.windowOpen && plan.open.length) workspaceWindow.show();
+}
+
+ipcMain.on('workspace:active-tab', (event, id) => {
+  if (!fromWorkspace(event) || (id !== null && typeof id !== 'string')) return;
+  activeTerminalId = id;
+  scheduleTabsSave();
 });
 ipcMain.on('pty:write', (event, { id, data } = {}) => {
   if (fromWorkspace(event) && typeof data === 'string') ptyHost?.write(id, data);
@@ -1958,16 +2101,25 @@ ipcMain.on('session:rename', (_event, { sessionId, alias }) => {
 
 // The panel's rescan: adopt the live interactive chats the hooks never
 // reported — opened before the manager was up, or closed on the ✕.
+function withTranscript(record) {
+  const transcriptPath = claudeTranscriptPath(record.cwd, record.sessionId);
+  return { ...record, transcriptPath: fs.existsSync(transcriptPath) ? transcriptPath : null };
+}
+
 ipcMain.handle('sessions:rescan', () => {
   const records = readAdoptableSessions();
   if (!records) return 0;
-  return registry.adopt(
-    records.map((record) => {
-      const transcriptPath = claudeTranscriptPath(record.cwd, record.sessionId);
-      return { ...record, transcriptPath: fs.existsSync(transcriptPath) ? transcriptPath : null };
-    }),
-  );
+  return registry.adopt(records.map(withTranscript));
 });
+
+// A chat resumed in a tab sends no hook event until the user types: adopt it
+// from Claude Code's own registry so the sidebar lists it meanwhile (#155).
+function adoptResumedChats() {
+  const missing = new Set([...resumedChats.values()].filter((sessionId) => !registry.sessions.has(sessionId)));
+  if (!missing.size) return;
+  const records = readAdoptableSessions()?.filter((record) => missing.has(record.sessionId));
+  if (records?.length) registry.adopt(records.map(withTranscript));
+}
 
 // A manual "apply" restarts the app too: with workspace terminals alive it
 // asks first, like any quit from the UI.
@@ -2589,6 +2741,7 @@ function hydrateRegistry() {
 // Drops the sessions whose terminal was closed: they never send a hook on the
 // way out, so without this they linger frozen on their last status.
 function reapDeadSessions() {
+  adoptResumedChats();
   const before = [...registry.sessions.keys()];
   registry.reconcileLiveSessions(readLiveSessionIds());
   for (const sessionId of before)
@@ -2644,6 +2797,8 @@ app.whenReady().then(() => {
   registry.on('change', forgetRemovedSessions);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
+  registry.on('change', scheduleTabsSave);
+  restoreWorkspaceTabs();
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);
   setInterval(reapDeadSessions, LIVENESS_INTERVAL_MS);
   updaterHandle = setupUpdater({ onStatus: onUpdateStatus, log });
@@ -2684,6 +2839,8 @@ async function requestQuit() {
 
 app.on('before-quit', () => {
   appQuitting = true;
+  // Before will-quit kills the terminals: their chats are still alive here.
+  freezeWorkspaceTabs();
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();

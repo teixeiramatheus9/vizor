@@ -6,6 +6,7 @@ import {
   renderComposer,
   renderFileView,
   renderInspectorHeader,
+  renderNewTerminalMenu,
   renderRail,
   renderSidebar,
   renderTabs,
@@ -30,6 +31,7 @@ const topbar = document.getElementById('topbar');
 const tabsBar = document.getElementById('tabs');
 const termHost = document.getElementById('term-host');
 const placeholder = document.getElementById('term-placeholder');
+const newMenu = document.getElementById('new-menu');
 
 let lastTree = null;
 let terminals = [];
@@ -41,6 +43,109 @@ let activeTab = null;
 const unavailable = new Map();
 const titles = {};
 const views = new Map(); // pty id → { term, fit, el }
+// A tab opened from outside the tab bar (bring, restore): selected once the
+// state push lists it.
+let pendingTab = null;
+let lastReportedTab;
+let adoptedActive = false;
+
+// Folded projects, worktrees and file lists (#152): a per-viewer convenience,
+// so localStorage — and a sidebar that renders fine without it.
+const FOLDS_KEY = 'vizor.workspace.folds';
+let folds = {};
+try {
+  folds = JSON.parse(localStorage.getItem(FOLDS_KEY) ?? '{}') ?? {};
+} catch {
+  folds = {};
+}
+
+function saveFolds() {
+  // Choices about sessions that are gone would pile up forever.
+  const known = new Set(
+    [...(lastTree?.projects ?? []).flatMap((project) => project.worktrees.flatMap((worktree) => worktree.sessions)), ...(lastTree?.unplacedSessions ?? [])].map(
+      (session) => `s:${session.id}`,
+    ),
+  );
+  for (const key of Object.keys(folds)) if (key.startsWith('s:') && !known.has(key)) delete folds[key];
+  try {
+    localStorage.setItem(FOLDS_KEY, JSON.stringify(folds));
+  } catch {
+    // private storage off: folds just last until the window reloads
+  }
+}
+
+// "Trazer pro Vizor" (#156): what main says about each outside chat, asked
+// again after a few seconds — its process may end meanwhile.
+const outsideStatus = new Map(); // session id → { value, at }
+const OUTSIDE_STATUS_TTL = 3000;
+let outsideAsking = null;
+
+async function askOutsideStatus(sessionId) {
+  if (outsideAsking === sessionId) return;
+  outsideAsking = sessionId;
+  const value = await window.vizor.outsideStatus(sessionId);
+  outsideAsking = null;
+  const before = JSON.stringify(outsideStatus.get(sessionId)?.value ?? null);
+  outsideStatus.set(sessionId, { value, at: Date.now() });
+  if (selectedId === sessionId && JSON.stringify(value) !== before) renderTerminalArea();
+}
+
+// The + menu (#154).
+let menuConversations = null;
+
+function closeMenu() {
+  newMenu.hidden = true;
+  newMenu.innerHTML = '';
+  menuConversations = null;
+}
+
+function renderMenu() {
+  newMenu.innerHTML = renderNewTerminalMenu({ conversations: menuConversations, now: Date.now() });
+}
+
+async function openMenu(anchor) {
+  const worktree = selectedWorktree;
+  menuConversations = null;
+  newMenu.hidden = false;
+  renderMenu();
+  const box = anchor.getBoundingClientRect();
+  const pane = newMenu.offsetParent?.getBoundingClientRect() ?? { left: 0, top: 0 };
+  newMenu.style.left = `${Math.max(4, box.left - pane.left)}px`;
+  newMenu.style.top = `${box.bottom - pane.top + 2}px`;
+  const list = await window.vizor.listConversations(worktree);
+  // Closed, or moved to another worktree, while the list was loading.
+  if (newMenu.hidden || worktree !== selectedWorktree) return;
+  menuConversations = list;
+  renderMenu();
+}
+
+async function openNewTerminal(kind, sessionId = null) {
+  closeMenu();
+  if (!selectedWorktree) return;
+  const worktree = selectedWorktree;
+  const result = await window.vizor.openTerminal(worktree, kind, sessionId);
+  if (result?.error) {
+    // Only a failed native load blocks every worktree; a missing folder is
+    // that worktree's problem alone; a bad request is nobody's.
+    if (result.error === 'pasta não existe') unavailable.set(worktree, result.error);
+    else if (!['conversa inválida', 'tipo de terminal inválido'].includes(result.error)) unavailable.set('*', result.error);
+    renderTerminalArea();
+    return;
+  }
+  unavailable.delete(worktree);
+  activeTab = result.id;
+  reportSelection();
+  // The state push that lists the new terminal can arrive before this
+  // reply, rendering with the old tab still active.
+  renderTerminalArea();
+}
+
+// Main restores this on the next start (#155).
+function reportActiveTab() {
+  if (activeTab === lastReportedTab) return;
+  lastReportedTab = activeTab;
+  window.vizor.reportActiveTab(activeTab);
+}
 
 const inspectorHead = document.getElementById('inspector-head');
 const taskPickerEl = document.getElementById('task-picker');
@@ -132,11 +237,14 @@ async function renderTerminalArea() {
     tabsBar.innerHTML = '';
     termHost.hidden = true;
     placeholder.hidden = false;
-    placeholder.innerHTML = renderTerminalPlaceholder('outside');
+    const status = outsideStatus.get(selectedId);
+    placeholder.innerHTML = renderTerminalPlaceholder('outside', status?.value ?? null);
+    if (!status || Date.now() - status.at > OUTSIDE_STATUS_TTL) askOutsideStatus(selectedId);
     return;
   }
   const own = worktreeTerminals();
   if (!own.some((terminal) => terminal.id === activeTab)) activeTab = own.at(-1)?.id ?? null;
+  reportActiveTab();
   tabsBar.innerHTML = selectedWorktree ? renderTabs(own, activeTab, titles) : '';
   const reason = unavailable.get('*') ?? unavailable.get(selectedWorktree);
   const showTerminal = Boolean(activeTab) && !reason;
@@ -160,7 +268,7 @@ async function renderTerminalArea() {
 function render() {
   if (!lastTree) return;
   topbar.innerHTML = renderTopBar(lastTree);
-  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree);
+  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds);
   renderTerminalArea();
 }
 
@@ -362,6 +470,12 @@ window.vizor.getPrefs().then((saved) => {
 });
 
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !newMenu.hidden) {
+    event.preventDefault();
+    closeMenu();
+    views.get(activeTab)?.term.focus();
+    return;
+  }
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'e') {
     event.preventDefault();
     savePrefs({ width: prefs.width === 'collapsed' ? lastOpenWidth : 'collapsed' }).then(() => loadFileView());
@@ -376,11 +490,22 @@ document.addEventListener('change', (event) => {
   refreshInspector({ scroll: true });
 });
 
-window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
+window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette }) => {
   if (theme) document.body.dataset.theme = theme;
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;
   terminals = list ?? [];
+  // First state of this page: open on the tab that was in front (#155).
+  if (!adoptedActive) {
+    adoptedActive = true;
+    if (!selectedWorktree && !selectedId && activeTerminal) pendingTab = activeTerminal;
+  }
+  const pending = pendingTab && terminals.find((terminal) => terminal.id === pendingTab);
+  if (pending) {
+    pendingTab = null;
+    selectedWorktree = pending.cwd;
+    activeTab = pending.id;
+  }
   // The inspected session is gone (closed, reaped): stop showing it (#124).
   if (inspector.sessionId && !findSession(inspector.sessionId)) {
     if (selectedId === inspector.sessionId) selectedId = null;
@@ -429,6 +554,50 @@ new ResizeObserver(() => fitActive()).observe(termHost);
 
 document.addEventListener('click', async (event) => {
   const target = event.target;
+  if (!newMenu.hidden && !target.closest('#new-menu') && !target.closest('[data-new-terminal]')) closeMenu();
+  const newKind = target.closest('[data-new-kind]');
+  if (newKind) {
+    openNewTerminal(newKind.dataset.newKind);
+    return;
+  }
+  const goTab = target.closest('[data-go-tab]');
+  if (goTab) {
+    closeMenu();
+    pendingTab = goTab.dataset.goTab;
+    const terminal = terminals.find((item) => item.id === pendingTab);
+    if (terminal) {
+      pendingTab = null;
+      selectedWorktree = terminal.cwd;
+      activeTab = terminal.id;
+      render();
+      reportSelection();
+    }
+    return;
+  }
+  const resume = target.closest('[data-resume]');
+  if (resume) {
+    if (!resume.disabled) openNewTerminal('resume', resume.dataset.resume);
+    return;
+  }
+  const fold = target.closest('[data-fold]');
+  if (fold) {
+    folds[fold.dataset.fold] = fold.getAttribute('aria-expanded') !== 'true';
+    saveFolds();
+    sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds);
+    return;
+  }
+  if (target.closest('[data-bring]')) {
+    const sessionId = selectedId;
+    const result = await window.vizor.bringToVizor(sessionId);
+    if (result?.error) {
+      outsideStatus.set(sessionId, { value: { canBring: false, why: result.error }, at: Date.now() });
+      renderTerminalArea();
+      return;
+    }
+    outsideStatus.delete(sessionId);
+    pendingTab = result.id;
+    return;
+  }
   const commentButton = target.closest('[data-comment]');
   if (commentButton) {
     // A draft already typed follows to the newly picked change (#135).
@@ -517,23 +686,10 @@ document.addEventListener('click', async (event) => {
     reportSelection();
     return;
   }
-  if (target.closest('[data-new-terminal]')) {
-    if (!selectedWorktree) return;
-    const worktree = selectedWorktree;
-    const result = await window.vizor.openTerminal(worktree, true);
-    if (result?.error) {
-      // Only a failed native load blocks every worktree; a missing folder is
-      // that worktree's problem alone.
-      unavailable.set(result.error === 'pasta não existe' ? worktree : '*', result.error);
-      renderTerminalArea();
-      return;
-    }
-    unavailable.delete(worktree);
-    activeTab = result.id;
-    reportSelection();
-    // The state push that lists the new terminal can arrive before this
-    // reply, rendering with the old tab still active.
-    renderTerminalArea();
+  const plus = target.closest('[data-new-terminal]');
+  if (plus) {
+    if (!newMenu.hidden) closeMenu();
+    else if (selectedWorktree) openMenu(plus);
     return;
   }
   if (target.closest('[data-focus-outside]')) {

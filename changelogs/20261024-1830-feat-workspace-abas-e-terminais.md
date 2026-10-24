@@ -1,0 +1,5 @@
+- Workspace volta como você deixou: ao abrir o Vizor, as abas reabrem na mesma pasta e cada conversa do Claude é retomada (`claude --resume`), com a aba que estava na frente de novo na frente
+- O + do workspace agora pergunta o que abrir: terminal livre, nova conversa com o Claude ou retomar uma conversa salva da worktree (as já abertas levam pra aba delas ou ficam bloqueadas se estão em outro terminal)
+- Lateral do workspace mais enxuta: projetos, worktrees e listas de arquivos expandem e recolhem, com um resumo quando recolhidos
+- Botões do painel de mudanças com ícone e nome ("Alargar", "Estreitar", "Ocultar")
+- Corrigido: abrir o Vizor de dentro de uma sessão do Claude Code fazia as abas herdarem a identidade dela (sem histórico salvo, socket da outra sessão)

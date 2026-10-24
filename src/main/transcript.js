@@ -48,6 +48,36 @@ export function parseAiTitle(jsonlText) {
   return null;
 }
 
+// The name a chat goes by in a list: the one the user gave it (/rename),
+// else Claude's own title, else what was last asked. Latest of each wins.
+export function parseConversationTitle(jsonlText) {
+  const found = {};
+  for (const raw of jsonlText.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const text = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+    if (entry?.type === 'custom-title') found.custom = text(entry.customTitle) ?? found.custom;
+    else if (entry?.type === 'ai-title') found.ai = text(entry.aiTitle) ?? found.ai;
+    else if (entry?.type === 'summary') found.summary = text(entry.summary) ?? found.summary;
+    else if (entry?.type === 'last-prompt') found.prompt = text(entry.lastPrompt) ?? found.prompt;
+  }
+  return found.custom ?? found.ai ?? found.summary ?? found.prompt ?? null;
+}
+
+export async function readConversationTitle(transcriptPath) {
+  try {
+    return parseConversationTitle(await readTail(transcriptPath));
+  } catch {
+    return null;
+  }
+}
+
 function isAssistantEntry(entry) {
   return entry?.type === 'assistant' || entry?.message?.role === 'assistant';
 }

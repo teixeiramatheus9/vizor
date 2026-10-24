@@ -84,7 +84,73 @@ button:hover {
 }
 
 .project + .project {
-  margin-top: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* --- folding (#152) */
+.fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  padding: 0;
+  color: var(--muted);
+}
+
+.fold .icon {
+  transition: transform 0.12s ease;
+}
+
+.fold[aria-expanded='true'] .icon {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fold .icon {
+    transition: none;
+  }
+}
+
+.fold:hover {
+  color: var(--accent);
+}
+
+.files-fold {
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.fold-summary {
+  margin-left: auto;
+  /* the name keeps its room: the summary gives way first */
+  flex-shrink: 100;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.fold-alert {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.project.folded .project-head .remove {
+  margin-left: 0;
+}
+
+/* folded heads: the name stays whole, the summary takes what is left */
+.project.folded .project-name,
+.worktree-head .branch {
+  flex-shrink: 0;
+  max-width: 60%;
 }
 
 .project-head,
@@ -254,6 +320,75 @@ button:hover {
 
 #terminal-pane {
   min-height: 0;
+  position: relative;
+}
+
+/* --- the + menu (#154) */
+#new-menu {
+  position: absolute;
+  z-index: 10;
+  width: 340px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 4px;
+  text-align: left;
+  color: var(--text-2);
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--hairline);
+  color: var(--text);
+}
+
+.menu-item:disabled {
+  cursor: default;
+  color: var(--dim);
+}
+
+.menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-meta {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.menu-heading {
+  margin: 6px 8px 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.menu-note {
+  margin: 4px 8px;
+  color: var(--muted);
+}
+
+#term-placeholder .why {
+  max-width: 320px;
+  color: var(--muted);
 }
 
 #tabs {
@@ -359,6 +494,12 @@ body[data-inspector-width='collapsed'] #columns {
 
 #inspector-head .spacer {
   flex: 1;
+}
+
+#inspector-head .labeled {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 #task-picker select {
