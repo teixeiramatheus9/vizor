@@ -265,4 +265,12 @@ describe('inspector', () => {
     expect(html).toContain('<option value="">tarefa atual</option>');
     expect(html).toContain('&lt;x&gt;');
   });
+
+  it('an edit still being written shows no counts and says so in the file view', () => {
+    const writing = ev('w', 5, { status: 'writing', added: 0, removed: 0, hunks: [] });
+    expect(renderTimeline(task([writing]), 'w', { following: true, newCount: 0 })).not.toContain('+0 −0');
+    expect(renderFileView({ relPath: 'c.js', rows: [], anchors: {}, unplaced: [], note: 'writing' }, {}, 'w')).toContain(
+      'a IA está escrevendo neste arquivo…',
+    );
+  });
 });

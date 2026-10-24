@@ -154,6 +154,7 @@ const NOTE_COPY = {
   'too-large': 'arquivo grande demais pra mostrar o diff',
   binary: 'arquivo binário',
   unreadable: 'não deu pra ler o arquivo',
+  writing: 'a IA está escrevendo neste arquivo…',
 };
 
 function clock(time) {
@@ -175,6 +176,7 @@ function editStatusLabel(edit) {
 }
 
 function editCounts(edit) {
+  if (edit.status === 'writing') return '';
   if (edit.note) return '±?';
   return `+${edit.added} −${edit.removed}`;
 }
@@ -245,7 +247,7 @@ export function renderFileView(file, editsById, selectedId) {
         }</span><span class="gutter">${row.newNo ?? ''}</span><span class="text">${escapeHtml(row.text)}</span></div>`,
     )
     .join('');
-  return `${head}${unplaced}<pre class="code file">${rows}</pre>`;
+  return `${head}${unplaced}<pre class="code filediff">${rows}</pre>`;
 }
 
 export function renderInspectorHeader({ mode, width }) {
