@@ -25,11 +25,14 @@ import {
   readAiTitle,
   readConversationTail,
   readEditReason,
+  readLastBashCommand,
   readTranscriptSnapshot,
 } from './transcript.js';
 import { EditTracker } from './edit-tracker.js';
 import { createEditPipeline } from './edit-pipeline.js';
 import { readIndexVersion } from './git-files.js';
+import { diffability } from './edit-hunks.js';
+import { createCommandWatcher } from './command-watcher.js';
 import { listWorktrees, repoRootOf } from './worktrees.js';
 import {
   addProject,
@@ -45,7 +48,7 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost } from './pty-host.js';
-import { fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
+import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -1480,6 +1483,90 @@ ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
   return next;
 });
 
+// --- changes made by commands (#94) --------------------------------------
+// Recorded for every session, workspace open or not — like the edits — but
+// git is only polled while some session has a task running there.
+const commandWatcher = createCommandWatcher({
+  gitStatus: (root) =>
+    execFileAsync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: root, timeout: 3000 })
+      .then(({ stdout }) => stdout)
+      .catch(() => null),
+  statFile: (abs) =>
+    fs.promises.stat(abs).then(
+      (stats) => `${stats.size}:${stats.mtimeMs}`,
+      () => 'gone',
+    ),
+  explained: (owners, abs, detectedAt) => owners.some((owner) => editTracker.explains(owner, abs, detectedAt)),
+  onChange: (change) => recordCommandChange(change).catch((error) => log(`command change failed: ${error}`)),
+  log,
+});
+
+async function recordCommandChange({ filePath, owners }) {
+  const onDisk = await fs.promises.readFile(filePath, 'utf8').catch(() => null);
+  let after = onDisk;
+  let note = onDisk === null ? 'deleted' : null;
+  if (onDisk !== null && diffability(onDisk) !== 'ok') {
+    note = diffability(onDisk);
+    after = null;
+  }
+  for (const owner of owners) {
+    let before = editTracker.knownContent(owner, filePath);
+    let baseline = before === null ? null : 'previous';
+    if (before === null && after !== null) {
+      before = await readIndexVersion(filePath);
+      baseline = before === null ? 'none' : 'git';
+    }
+    if (before !== null && diffability(before) !== 'ok') {
+      note = diffability(before);
+      before = null;
+    }
+    const transcriptPath = registry.list().find((session) => session.id === owner)?.transcriptPath;
+    const command = transcriptPath ? await readLastBashCommand(transcriptPath) : null;
+    const edit = editTracker.addCommandEdit(owner, {
+      filePath,
+      before,
+      after,
+      baseline,
+      reason: commandReason(command),
+      note,
+      uncertainOwner: owners.length > 1,
+    });
+    logEdit(edit);
+  }
+}
+
+const commandRootCache = new Map(); // session cwd → watched root | null
+let commandRootsTimer = null;
+
+// Which worktrees to poll, and for whom: sessions with a task running,
+// grouped by the worktree their cwd belongs to (or its git root).
+async function refreshCommandRoots() {
+  const owners = new Map();
+  for (const session of registry.list()) {
+    const task = editTracker.currentTask(session.id);
+    if (!session.cwd || !task || task.endedAt !== null) continue;
+    if (!commandRootCache.has(session.cwd)) {
+      const known = [...worktreeCache.values()].flat().map((worktree) => worktree.path);
+      commandRootCache.set(session.cwd, matchWorktree(session.cwd, known) ?? (await repoRootOf(session.cwd)));
+    }
+    const root = commandRootCache.get(session.cwd);
+    if (!root) continue;
+    owners.set(root, [...(owners.get(root) ?? []), session.id]);
+  }
+  for (const root of commandWatcher.activeRoots()) if (!owners.has(root)) commandWatcher.setActive(root, []);
+  for (const [root, sessions] of owners) commandWatcher.setActive(root, sessions);
+}
+
+function scheduleCommandRoots() {
+  if (commandRootsTimer) return;
+  commandRootsTimer = setTimeout(() => {
+    commandRootsTimer = null;
+    refreshCommandRoots().catch((error) => log(`command roots failed: ${error}`));
+  }, 200);
+}
+
+editTracker.on('change', scheduleCommandRoots);
+
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
 function onToolEvent(event) {
@@ -2173,6 +2260,7 @@ app.whenReady().then(() => {
   socketServer = startSocketServer(socketPath, onHookEvent, log);
   setupTray();
   registry.on('change', sendState);
+  registry.on('change', scheduleCommandRoots);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);
@@ -2184,6 +2272,7 @@ app.whenReady().then(() => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   ptyHost?.killAll();
+  commandWatcher.stopAll();
 });
 
 app.on('window-all-closed', () => {

@@ -1,0 +1,1 @@
+- O workspace agora mostra também o que a IA mudou por comando (sed, formatter, codegen): cada arquivo vira um card "por comando" com o diff e o comando que rodou, e o Vizor passa a ter um teto de memória pro histórico de mudanças
