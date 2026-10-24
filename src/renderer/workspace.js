@@ -14,7 +14,9 @@ let terminals = [];
 let selectedId = null; // selected session
 let selectedWorktree = null;
 let activeTab = null;
-let unavailable = null;
+// worktree path → why its terminal could not open; '*' when the native module
+// itself failed to load (no terminal anywhere).
+const unavailable = new Map();
 const titles = {};
 const views = new Map(); // pty id → { term, fit, el }
 
@@ -90,14 +92,20 @@ async function renderTerminalArea() {
   const own = worktreeTerminals();
   if (!own.some((terminal) => terminal.id === activeTab)) activeTab = own.at(-1)?.id ?? null;
   tabsBar.innerHTML = selectedWorktree ? renderTabs(own, activeTab, titles) : '';
-  const showTerminal = Boolean(activeTab) && !unavailable;
+  const reason = unavailable.get('*') ?? unavailable.get(selectedWorktree);
+  const showTerminal = Boolean(activeTab) && !reason;
   termHost.hidden = !showTerminal;
   placeholder.hidden = showTerminal;
   if (!showTerminal) {
-    placeholder.innerHTML = renderTerminalPlaceholder(unavailable ? `unavailable:${unavailable}` : 'none');
+    placeholder.innerHTML = renderTerminalPlaceholder(reason ? `unavailable:${reason}` : 'none');
     return;
   }
-  const view = await ensureView(activeTab);
+  const wanted = activeTab;
+  const view = await ensureView(wanted);
+  // Another render may have switched tabs (or dropped this one) while the
+  // replay was loading: focusing this view now would send keys to a hidden
+  // terminal.
+  if (wanted !== activeTab || views.get(wanted) !== view) return;
   for (const [id, other] of views) other.el.hidden = id !== activeTab;
   fitActive();
   view.term.focus();
@@ -154,19 +162,26 @@ document.addEventListener('click', async (event) => {
   const tab = target.closest('[data-tab]');
   if (tab) {
     activeTab = tab.dataset.tab;
+    unavailable.delete(selectedWorktree);
     renderTerminalArea();
     return;
   }
   if (target.closest('[data-new-terminal]')) {
     if (!selectedWorktree) return;
-    const result = await window.vizor.openTerminal(selectedWorktree, true);
+    const worktree = selectedWorktree;
+    const result = await window.vizor.openTerminal(worktree, true);
     if (result?.error) {
-      unavailable = result.error;
+      // Only a failed native load blocks every worktree; a missing folder is
+      // that worktree's problem alone.
+      unavailable.set(result.error === 'pasta não existe' ? worktree : '*', result.error);
       renderTerminalArea();
       return;
     }
-    unavailable = null;
+    unavailable.delete(worktree);
     activeTab = result.id;
+    // The state push that lists the new terminal can arrive before this
+    // reply, rendering with the old tab still active.
+    renderTerminalArea();
     return;
   }
   if (target.closest('[data-focus-outside]')) {

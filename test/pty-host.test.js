@@ -60,6 +60,34 @@ describe('ptyEnv', () => {
     expect(env).toEqual({ PATH: '/bin', VIZOR_PTY_ID: 'p9', TERM: 'xterm-256color', COLORTERM: 'truecolor' });
     expect(base.VIZOR_INTERNAL).toBe('1');
   });
+
+  it('does not carry the identity of the terminal that launched the Vizor', () => {
+    const launcher = {
+      TMUX: '/tmp/tmux-1000/default,1,0',
+      TMUX_PANE: '%3',
+      KITTY_WINDOW_ID: '2',
+      KITTY_LISTEN_ON: 'unix:/tmp/k',
+      WEZTERM_PANE: '1',
+      WEZTERM_UNIX_SOCKET: '/tmp/w',
+      WARP_TERMINAL_SESSION_UUID: 'abc',
+      GNOME_TERMINAL_SCREEN: '/org/gnome/x',
+      GNOME_TERMINAL_SERVICE: ':1.2',
+      ITERM_SESSION_ID: 'w0',
+      TERM_SESSION_ID: 'w1',
+      WT_SESSION: 'w2',
+      TERM_PROGRAM: 'kitty',
+      TERM_PROGRAM_VERSION: '1',
+      VTE_VERSION: '7600',
+      WINDOWID: '123',
+      HOME: '/home/u',
+    };
+    expect(ptyEnv(launcher, 'p1')).toEqual({
+      HOME: '/home/u',
+      VIZOR_PTY_ID: 'p1',
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    });
+  });
 });
 
 describe('createPtyHost', () => {
@@ -106,6 +134,20 @@ describe('createPtyHost', () => {
     expect(events).toEqual([]);
     vi.advanceTimersByTime(PTY_BATCH_MS);
     expect(events).toEqual([{ id: 'p1', data: 'ab' }]);
+  });
+
+  it('hands pending output to the replay, never to both replay and live', () => {
+    const { host, spawned } = makeHost();
+    const events = [];
+    host.on('data', ({ data }) => events.push(data));
+    host.open({ cwd: '/r' });
+    spawned[0].emitData('chunk1');
+    // the live event goes out before the replay is read, where a view that is
+    // not ready yet drops it — the replay then carries it exactly once
+    expect(host.buffer('p1')).toBe('chunk1');
+    expect(events).toEqual(['chunk1']);
+    vi.advanceTimersByTime(PTY_BATCH_MS * 2);
+    expect(events).toEqual(['chunk1']);
   });
 
   it('keeps only the newest output in the scrollback buffer', () => {

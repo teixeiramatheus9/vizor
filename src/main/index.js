@@ -452,6 +452,7 @@ function onUpdateStatus(status) {
       installing: status.installing,
       failed: status.failed,
       attemptedVersion: autoApplyAttempted,
+      liveTerminals: ptyHost?.aliveCount() ?? 0,
     })
   ) {
     autoApplyAttempted = status.mode === 'auto' ? status.ready : status.available;
@@ -1347,7 +1348,11 @@ function ensurePtyHost() {
   ptyHost.on('exit', (payload) => {
     if (workspaceWindow?.isReady()) workspaceWindow.send('pty:exit', payload);
   });
-  ptyHost.on('change', () => pushWorkspaceStateNow());
+  ptyHost.on('change', () => {
+    pushWorkspaceStateNow();
+    // An auto-update held back by live terminals goes through once the last ends.
+    if (ptyHost.aliveCount() === 0) onUpdateStatus(updateStatus);
+  });
   return { host: ptyHost, error: null };
 }
 
@@ -1457,7 +1462,16 @@ ipcMain.handle('sessions:rescan', () => {
   );
 });
 
-ipcMain.on('update:apply', applyUpdate);
+// A manual "apply" restarts the app too: with workspace terminals alive it
+// asks first, like any quit from the UI.
+ipcMain.on('update:apply', async () => {
+  const prompt = quitPrompt(ptyHost?.aliveCount() ?? 0);
+  if (prompt) {
+    const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Atualizar o Vizor', ...prompt });
+    if (response !== 0) return;
+  }
+  applyUpdate();
+});
 
 ipcMain.handle('bridge:status', async () => ({
   ...(await bridgeStatus()),

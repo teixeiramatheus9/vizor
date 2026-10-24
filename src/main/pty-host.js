@@ -14,7 +14,31 @@ const CLAUDE_FALLBACK_MS = 1500;
 
 // VIZOR_INTERNAL would silence every hook of the sessions started there, and
 // ELECTRON_RUN_AS_NODE would break any Electron app launched from the shell.
-const NEVER_INHERITED = ['VIZOR_INTERNAL', 'CLAUDE_MANAGER_INTERNAL', 'ELECTRON_RUN_AS_NODE'];
+// The rest is the identity of the terminal the Vizor itself was launched from
+// (npm start in kitty, tmux…): the hook would pin the embedded sessions on
+// THAT terminal — focus and the typed quick-reply fallback would go there —
+// and tmux would refuse to start, thinking it is nested.
+const NEVER_INHERITED = [
+  'VIZOR_INTERNAL',
+  'CLAUDE_MANAGER_INTERNAL',
+  'ELECTRON_RUN_AS_NODE',
+  'TMUX',
+  'TMUX_PANE',
+  'KITTY_WINDOW_ID',
+  'KITTY_LISTEN_ON',
+  'WEZTERM_PANE',
+  'WEZTERM_UNIX_SOCKET',
+  'WARP_TERMINAL_SESSION_UUID',
+  'GNOME_TERMINAL_SCREEN',
+  'GNOME_TERMINAL_SERVICE',
+  'ITERM_SESSION_ID',
+  'TERM_SESSION_ID',
+  'WT_SESSION',
+  'TERM_PROGRAM',
+  'TERM_PROGRAM_VERSION',
+  'VTE_VERSION',
+  'WINDOWID',
+];
 
 export function ptyEnv(baseEnv, id) {
   const env = { ...baseEnv };
@@ -106,7 +130,15 @@ export function createPtyHost({
   };
 
   host.list = () => [...terminals.values()].map((entry) => ({ ...entry.info }));
-  host.buffer = (id) => terminals.get(id)?.buffer ?? '';
+  // Pending output is flushed first: its live event then reaches the window
+  // before the replay does (and is dropped by a view that is not ready yet),
+  // so a chunk can never land in both.
+  host.buffer = (id) => {
+    const entry = terminals.get(id);
+    if (!entry) return '';
+    flush(entry);
+    return entry.buffer;
+  };
   host.aliveCount = () => [...terminals.values()].filter((entry) => entry.info.alive).length;
 
   host.killAll = () => {
