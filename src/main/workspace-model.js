@@ -77,6 +77,7 @@ function sessionNode(session, taskOf) {
     status: session.status,
     unread: Boolean(session.unread),
     needsPermission: Boolean(session.needsPermission),
+    ptyId: session.term?.VIZOR_PTY_ID ?? null,
     inside: Boolean(session.term?.VIZOR_PTY_ID),
     files: taskFileStats(taskOf(session.id)),
   };
@@ -109,4 +110,15 @@ export function buildWorkspaceTree({ projects, sessions, taskOf }) {
     else if (session.status === 'waiting') counts.waiting += 1;
   }
   return { projects: nodes, unplaced, unplacedSessions, counts };
+}
+
+// Quitting kills the workspace's terminals (they live in this process), so a
+// live one makes the quit ask first.
+export function quitPrompt(aliveCount) {
+  if (!aliveCount) return null;
+  const message =
+    aliveCount === 1
+      ? '1 sessão rodando no workspace vai ser encerrada.'
+      : `${aliveCount} sessões rodando no workspace vão ser encerradas.`;
+  return { message, buttons: ['Encerrar mesmo assim', 'Cancelar'], defaultId: 1, cancelId: 1 };
 }

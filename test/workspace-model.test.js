@@ -5,6 +5,7 @@ import {
   matchWorktree,
   removeProject,
   taskFileStats,
+  quitPrompt,
   staleRoots,
   shouldAutoAdd,
   workspaceAvailable,
@@ -166,5 +167,31 @@ describe('sessions outside every project', () => {
       taskOf: () => null,
     });
     expect(tree.unplacedSessions.map((node) => node.id)).toEqual(['s1']);
+  });
+});
+
+describe('quitPrompt', () => {
+  it('asks only when terminals are alive, in pt-BR singular and plural', () => {
+    expect(quitPrompt(0)).toBeNull();
+    expect(quitPrompt(1).message).toBe('1 sessão rodando no workspace vai ser encerrada.');
+    expect(quitPrompt(2)).toEqual({
+      message: '2 sessões rodando no workspace vão ser encerradas.',
+      buttons: ['Encerrar mesmo assim', 'Cancelar'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+  });
+});
+
+describe('session to terminal link', () => {
+  it('carries the pty id of sessions born in the workspace', () => {
+    const tree = buildWorkspaceTree({
+      projects: [{ root: '/r', worktrees: [wt('/r')] }],
+      sessions: [session('in', '/r', { term: { VIZOR_PTY_ID: 'p1' } }), session('out', '/r')],
+      taskOf: () => null,
+    });
+    const [inside, outside] = tree.projects[0].worktrees[0].sessions;
+    expect(inside).toMatchObject({ ptyId: 'p1', inside: true });
+    expect(outside).toMatchObject({ ptyId: null, inside: false });
   });
 });
