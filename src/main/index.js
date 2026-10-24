@@ -50,6 +50,9 @@ import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.
 import { loadPty } from './pty-loader.js';
 import { createPtyHost } from './pty-host.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
+import { buildCommentMessage, validateComment } from './comment-message.js';
+import { createCommentStore } from './comment-store.js';
+import { createCommentDelivery } from './comment-delivery.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -1429,6 +1432,7 @@ ipcMain.handle('edits:task', (event, { sessionId, taskId = null } = {}) => {
   return {
     task: serializeTask(pickTask(sessionId, taskId), sessionWorktree(sessionId)),
     summaries: taskSummaries(editTracker.tasks(sessionId)),
+    comments: commentStore.list(sessionId),
   };
 });
 
@@ -1635,6 +1639,46 @@ function scheduleCommandRoots() {
 editTracker.on('task', scheduleCommandRoots);
 editTracker.on('change', scheduleCommandRoots);
 
+// --- 💬 comments on a change (#95) -----------------------------------------
+const commentStore = createCommentStore();
+const commentDelivery = createCommentDelivery({
+  store: commentStore,
+  sessionOf: (sessionId) => registry.sessions.get(sessionId) ?? null,
+  ptyUsable: (ptyId) => Boolean(ptyHost?.runsProgram(ptyId)),
+  writePty: (ptyId, data) => ptyHost?.write(ptyId, data),
+  sendPeer: (session, text) => sendPeerMessage(session, text),
+  typeReply: (session, text) => typeIntoTerminal(session, text),
+  copyToClipboard: (text) => clipboard.writeText(text),
+  log,
+});
+
+// Same ping as the edits: the inspector re-reads the session.
+commentStore.on('change', ({ sessionId }) => {
+  if (workspaceWindow?.isReady()) workspaceWindow.send('edits:changed', { sessionId });
+});
+
+ipcMain.handle('comments:add', async (event, { sessionId, editId, text } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof editId !== 'string')
+    return { ok: false, error: 'pedido inválido' };
+  const valid = validateComment(text);
+  if (!valid.ok) return valid;
+  const task = editTracker.tasks(sessionId).find((item) => item.edits.some((edit) => edit.id === editId));
+  const edit = task
+    ? serializeTask({ ...task, edits: task.edits.filter((item) => item.id === editId) }, sessionWorktree(sessionId)).edits[0]
+    : null;
+  if (!edit) return { ok: false, error: 'mudança não encontrada' };
+  commentStore.add({ sessionId, editId, text: valid.text, message: buildCommentMessage(edit, valid.text) });
+  commentDelivery.flush(sessionId).catch((error) => log(`comment flush failed: ${error}`));
+  return { ok: true };
+});
+
+// A session that stops waiting gets its held comments.
+function flushHeldComments() {
+  for (const session of registry.list())
+    if (commentStore.nextToSend(session.id, session.status))
+      commentDelivery.flush(session.id).catch((error) => log(`comment flush failed: ${error}`));
+}
+
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
 function onToolEvent(event) {
@@ -1684,6 +1728,7 @@ ipcMain.on('panel:opened', () => registry.markAllRead());
 ipcMain.on('session:remove', (_event, sessionId) => {
   registry.remove(sessionId);
   editTracker.forgetSession(sessionId);
+  commentStore.forgetSession(sessionId);
 });
 
 // Renaming a chat also becomes the folder's default nickname, so the next
@@ -2291,7 +2336,10 @@ function reapDeadSessions() {
   const before = [...registry.sessions.keys()];
   registry.reconcileLiveSessions(readLiveSessionIds());
   for (const sessionId of before)
-    if (!registry.sessions.has(sessionId)) editTracker.forgetSession(sessionId);
+    if (!registry.sessions.has(sessionId)) {
+      editTracker.forgetSession(sessionId);
+      commentStore.forgetSession(sessionId);
+    }
 }
 
 let saveTimer = null;
@@ -2336,6 +2384,7 @@ app.whenReady().then(() => {
   setupTray();
   registry.on('change', sendState);
   registry.on('change', scheduleCommandRoots);
+  registry.on('change', flushHeldComments);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);
