@@ -1473,6 +1473,8 @@ ipcMain.handle('edits:task', (event, { sessionId, taskId = null } = {}) => {
 // else. The rows are cached per task and file until its contents change —
 // every edit ping would otherwise re-diff the whole file on main.
 const fileViewCache = new Map(); // `${taskId}\0${filePath}` → { start, current, dropped, edits, view }
+// Contents dropped by the memory ceiling must not live on in this cache (#130).
+editTracker.on('evicted', () => fileViewCache.clear());
 
 ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}) => {
   if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof filePath !== 'string')
@@ -1559,7 +1561,7 @@ const commandWatcher = createCommandWatcher({
     ),
   // A change is explained by an edit still in flight in ANY session; landed
   // edits are matched by content in recordCommandChange.
-  explained: (_owners, abs) => editTracker.explains(abs),
+  explained: (_owners, abs) => editTracker.explains(abs, realPathOf),
   onChange: (change) => recordCommandChange(change).catch((error) => log(`command change failed: ${error}`)),
   // The user's uncommitted work at task start: a later command change is
   // diffed against THIS, never against the index (#94 review).
@@ -1614,7 +1616,7 @@ async function readHeadVersion(root, head, filePath) {
 async function recordCommandChange({ root, filePath, owners, untracked, fromHead }) {
   const { content: after, note: readNote } = await readForCommand(filePath);
   // An edit's own write (its Post landed after the poll): not a command's.
-  if (after !== null && editTracker.contentsAnywhere(filePath).includes(after)) return;
+  if (after !== null && editTracker.contentsAnywhere(filePath, realPathOf).includes(after)) return;
   for (const owner of owners) {
     const session = registry.list().find((item) => item.id === owner);
     // Esc ends a turn without a Stop hook: the session is idle, the change is
@@ -1661,6 +1663,23 @@ async function recordCommandChange({ root, filePath, owners, untracked, fromHead
     });
     logEdit(edit);
   }
+}
+
+// Hooks may report a path through a symlink that git reports resolved: compare
+// real paths (#132). Cached — called per tracked file on every comparison.
+const realPaths = new Map();
+function realPathOf(file) {
+  if (!realPaths.has(file)) {
+    let real = file;
+    try {
+      real = fs.realpathSync(file);
+    } catch {
+      // gone: compare as given
+    }
+    if (realPaths.size > 5000) realPaths.clear();
+    realPaths.set(file, real);
+  }
+  return realPaths.get(file);
 }
 
 const COMMAND_ROOT_RETRY_MS = 60000;

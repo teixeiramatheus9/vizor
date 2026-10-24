@@ -170,21 +170,24 @@ export class EditTracker extends EventEmitter {
   // An edit still in flight (any session) accounts for a change on disk. A
   // landed edit is matched by content instead (contentsAnywhere): a time
   // window would swallow a formatter run right after it.
-  explains(filePath) {
+  // `resolve` maps a path to its real file: a hook may report a path through
+  // a symlink that git reports resolved (#132).
+  explains(filePath, resolve = (file) => file) {
+    const target = resolve(filePath);
     for (const session of this.sessions.values())
       for (const edit of session.tasks.at(-1)?.edits ?? [])
-        if (edit.filePath === filePath && edit.status === EDIT_STATUS.WRITING) return true;
+        if (edit.status === EDIT_STATUS.WRITING && resolve(edit.filePath) === target) return true;
     return false;
   }
 
   // What each session's current task last saw in a file: a change on disk
   // equal to one of these is that edit's own write, not a command's.
-  contentsAnywhere(filePath) {
+  contentsAnywhere(filePath, resolve = (file) => file) {
+    const target = resolve(filePath);
     const contents = new Set();
-    for (const session of this.sessions.values()) {
-      const current = session.tasks.at(-1)?.files.get(filePath)?.current;
-      if (typeof current === 'string') contents.add(current);
-    }
+    for (const session of this.sessions.values())
+      for (const [file, { current }] of session.tasks.at(-1)?.files ?? [])
+        if (typeof current === 'string' && resolve(file) === target) contents.add(current);
     return [...contents];
   }
 
@@ -203,6 +206,7 @@ export class EditTracker extends EventEmitter {
     let total = this.snapshotBytes();
     if (total <= this.maxSnapshotBytes) return;
     const current = new Set([...this.sessions.values()].map((session) => session.tasks.at(-1)));
+    let dropped = false;
     const candidates = [...this.sessions.values()]
       .flatMap((session) => session.tasks)
       .filter((task) => !current.has(task) && !task.snapshotsDropped)
@@ -215,7 +219,10 @@ export class EditTracker extends EventEmitter {
         file.current = null;
       }
       task.snapshotsDropped = true;
+      dropped = true;
     }
+    // Anyone caching views of those contents must let go too (#130).
+    if (dropped) this.emit('evicted');
   }
 
   // The transcript can lag the hook; the reason then arrives after the edit.

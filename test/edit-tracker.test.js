@@ -268,3 +268,26 @@ describe('id-less hook events out of order (#102)', () => {
     expect(tracker.beginEdit(pre(undefined)).status).toBe('writing');
   });
 });
+
+describe('backlog: eviction signal and path aliases (#130, #132)', () => {
+  it('announces when old contents are dropped', () => {
+    let clock = 0;
+    const tracker = new EditTracker({ now: () => ++clock, maxSnapshotBytes: 50 });
+    const seen = [];
+    tracker.on('evicted', () => seen.push('evicted'));
+    tracker.startTask('s1');
+    tracker.completeEdit(post('a', '/repo/a.js'), content('x'.repeat(20), 'y'.repeat(20)));
+    tracker.startTask('s1');
+    tracker.completeEdit(post('b', '/repo/b.js'), content('x'.repeat(5), 'y'.repeat(5)));
+    expect(seen).toEqual(['evicted']);
+  });
+
+  it('matches a file reached through a symlink to the same real file', () => {
+    const tracker = makeTracker();
+    tracker.completeEdit(post('t1', '/link/a.js'), content('a', 'b'));
+    tracker.beginEdit(pre('t2', '/link/c.js'));
+    const resolve = (file) => file.replace('/link/', '/real/');
+    expect(tracker.contentsAnywhere('/real/a.js', resolve)).toEqual(['b']);
+    expect(tracker.explains('/real/c.js', resolve)).toBe(true);
+  });
+});
