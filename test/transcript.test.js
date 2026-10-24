@@ -9,6 +9,8 @@ import {
   readTranscriptSnapshot,
   readLastAssistantMessage,
   readAiTitle,
+  parseEditReason,
+  readEditReason,
 } from '../src/main/transcript.js';
 
 const assistantLine = (text) =>
@@ -183,5 +185,69 @@ describe('readLastAssistantMessage', () => {
 
   it('returns null for a missing file', async () => {
     expect(await readLastAssistantMessage('/nonexistent/nope.jsonl')).toBeNull();
+  });
+});
+
+describe('parseEditReason', () => {
+  // Claude Code writes each content block of a reply as its own line, tied by message.id.
+  const block = (msgId, item, extra = {}) =>
+    JSON.stringify({ type: 'assistant', ...extra, message: { id: msgId, role: 'assistant', content: [item] } });
+  const tool = (id) => ({ type: 'tool_use', id, name: 'Edit', input: {} });
+  const toolResult = (id) =>
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id }] } });
+
+  it('uses the text blocks of the same reply that precede the tool_use', () => {
+    const jsonl = [
+      block('m1', { type: 'thinking', thinking: 'hmm' }),
+      block('m1', { type: 'text', text: 'Debounce   the\nwatcher' }),
+      block('m1', tool('t1')),
+    ].join('\n');
+    expect(parseEditReason(jsonl, 't1')).toBe('Debounce the watcher');
+  });
+
+  it('falls back to the last assistant text before the reply', () => {
+    const jsonl = [block('m0', { type: 'text', text: 'Plan: fix it' }), block('m1', tool('t1'))].join('\n');
+    expect(parseEditReason(jsonl, 't1')).toBe('Plan: fix it');
+  });
+
+  it('walks past tool results to find that text', () => {
+    const jsonl = [
+      block('m0', { type: 'text', text: 'Reading first' }),
+      block('m0', tool('t0')),
+      toolResult('t0'),
+      block('m1', tool('t1')),
+    ].join('\n');
+    expect(parseEditReason(jsonl, 't1')).toBe('Reading first');
+  });
+
+  it('never crosses a user prompt', () => {
+    const jsonl = [block('m0', { type: 'text', text: 'old' }), userLine('do x'), block('m1', tool('t1'))].join('\n');
+    expect(parseEditReason(jsonl, 't1')).toBeNull();
+  });
+
+  it('ignores subagent (sidechain) text', () => {
+    const jsonl = [
+      block('m0', { type: 'text', text: 'main says' }),
+      block('s1', { type: 'text', text: 'subagent says' }, { isSidechain: true }),
+      block('m1', tool('t1')),
+    ].join('\n');
+    expect(parseEditReason(jsonl, 't1')).toBe('main says');
+  });
+
+  it('is null for an unknown tool_use id', () => {
+    expect(parseEditReason(block('m1', tool('t1')), 'nope')).toBeNull();
+  });
+
+  it('cuts at 200 chars with an ellipsis', () => {
+    const jsonl = [block('m1', { type: 'text', text: 'x'.repeat(300) }), block('m1', tool('t1'))].join('\n');
+    expect(parseEditReason(jsonl, 't1')).toBe(`${'x'.repeat(200)}…`);
+  });
+
+  it('reads it from a transcript file, null when the file is missing', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-reason-'));
+    const file = path.join(dir, 't.jsonl');
+    await writeFile(file, [block('m1', { type: 'text', text: 'why' }), block('m1', tool('t1'))].join('\n'));
+    expect(await readEditReason(file, 't1')).toBe('why');
+    expect(await readEditReason(path.join(dir, 'missing.jsonl'), 't1')).toBeNull();
   });
 });
