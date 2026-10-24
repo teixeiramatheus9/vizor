@@ -44,7 +44,11 @@ export function createCommentDelivery({
       writePty(ptyId, '\r');
       return { outcome: 'sent', channel: 'pty' };
     }
-    if ((await sendPeer(session, comment.message)) === 'sent') return { outcome: 'sent', channel: 'peer' };
+    const peer = await sendPeer(session, comment.message);
+    if (peer === 'sent') return { outcome: 'sent', channel: 'peer' };
+    // 'failed' means the socket answered but did not close in time: the frame
+    // may have been read — typing it too would deliver it twice (#138).
+    if (peer === 'failed') return { outcome: 'failed', channel: null };
     if (!idle) return { outcome: 'hold', channel: null };
     // A Vizor session whose notice hasn't settled yet: try again shortly.
     if (ptyId && !safeToTypeIdle(session, now()) && !session.needsPermission && !session.question)

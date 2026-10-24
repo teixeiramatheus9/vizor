@@ -40,6 +40,7 @@ import {
   buildWorkspaceTree,
   quitPrompt,
   removeProject,
+  removedIds,
   clampTerminalSize,
   matchWorktree,
   shouldAutoAdd,
@@ -1780,6 +1781,16 @@ ipcMain.handle('comments:copy', (event, { sessionId, commentId } = {}) => {
   return true;
 });
 
+let knownSessionIds = new Set();
+function forgetRemovedSessions() {
+  const current = registry.list().map((session) => session.id);
+  for (const sessionId of removedIds(knownSessionIds, current)) {
+    editTracker.forgetSession(sessionId);
+    commentStore.forgetSession(sessionId);
+  }
+  knownSessionIds = new Set(current);
+}
+
 // A session that stops waiting gets its held comments. A comment held only
 // because a fresh notice hasn't settled is retried a moment later, since no
 // registry change will come to wake it.
@@ -2552,6 +2563,7 @@ app.whenReady().then(() => {
   registry.on('change', sendState);
   registry.on('change', scheduleCommandRoots);
   registry.on('change', flushHeldComments);
+  registry.on('change', forgetRemovedSessions);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);
