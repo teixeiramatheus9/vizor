@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   acceptsFile,
+  stillWanted,
   initialInspector,
   nextFileRequest,
   onFollow,
@@ -63,5 +64,20 @@ describe('inspector follow-the-AI', () => {
     state = onSelect(state, 'a');
     state = onTask(state, { id: 's:2', edits: [edit('c', 3)] });
     expect(state).toMatchObject({ selectedId: 'c', following: true, newCount: 0 });
+  });
+
+  it('file request tokens never repeat across sessions (#123)', () => {
+    const a = nextFileRequest(initialInspector('s1'));
+    const b = nextFileRequest(initialInspector('s2'));
+    expect(a.token).not.toBe(b.token);
+    expect(acceptsFile(b.state, a.token)).toBe(false);
+  });
+
+  it('a task response is only applied if that task is still the one picked (#121)', () => {
+    let state = initialInspector('s');
+    const askedFor = state.taskId; // a refresh of the current task goes out…
+    state = onPickTask(state, 's:0'); // …and the user picks a past one meanwhile
+    expect(stillWanted(state, askedFor)).toBe(false);
+    expect(stillWanted(state, 's:0')).toBe(true);
   });
 });

@@ -22,6 +22,7 @@ import {
   onPickTask,
   onSelect,
   onTask,
+  stillWanted,
 } from './inspector-state.js';
 
 const sidebar = document.getElementById('sidebar');
@@ -260,8 +261,10 @@ async function refreshInspector({ scroll = false } = {}) {
     return;
   }
   const before = inspector.selectedId;
-  const { task, summaries, comments } = await window.vizor.getTaskEdits(sessionId, inspector.taskId);
-  if (inspector.sessionId !== sessionId) return; // switched meanwhile
+  const askedFor = inspector.taskId;
+  const { task, summaries, comments } = await window.vizor.getTaskEdits(sessionId, askedFor);
+  // Switched session or task meanwhile: this answer is for a view gone.
+  if (inspector.sessionId !== sessionId || !stillWanted(inspector, askedFor)) return;
   inspectorTask = task;
   inspectorSummaries = summaries;
   inspectorComments = comments ?? [];
