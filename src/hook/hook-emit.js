@@ -44,6 +44,33 @@ function fallbackNotify(event) {
   }
 }
 
+// Edit-tool events carry whole file contents (Write) and tool output. The app
+// reads every file from disk anyway, so megabytes over the socket on each
+// edit would buy nothing but a slower hook.
+const TOOL_EVENTS = ['PreToolUse', 'PostToolUse'];
+const MAX_TOOL_STRING = 65536;
+
+function truncateLargeStrings(value) {
+  if (typeof value === 'string')
+    return value.length > MAX_TOOL_STRING ? { truncated: value.length } : value;
+  if (Array.isArray(value)) return value.map(truncateLargeStrings);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([key, inner]) => [key, truncateLargeStrings(inner)]),
+    );
+  return value;
+}
+
+function slimToolEvent(event) {
+  const { tool_response: response, ...rest } = event;
+  // Write reports whether it created the file: the one bit of the response
+  // the app needs (a new file diffs against empty).
+  if (response?.type === 'create' || response?.type === 'update')
+    rest.tool_response_type = response.type;
+  if (rest.tool_input) rest.tool_input = truncateLargeStrings(rest.tool_input);
+  return rest;
+}
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
@@ -57,6 +84,7 @@ process.stdin.on('end', () => {
   } catch {
     process.exit(0);
   }
+  if (TOOL_EVENTS.includes(event?.hook_event_name)) event = slimToolEvent(event);
   const { WAVETERM_BLOCKID, WAVETERM_TABID, WAVETERM_JWT } = process.env;
   if (WAVETERM_BLOCKID && WAVETERM_TABID && WAVETERM_JWT) {
     event.wave = { blockId: WAVETERM_BLOCKID, tabId: WAVETERM_TABID, jwt: WAVETERM_JWT };
@@ -80,6 +108,9 @@ process.stdin.on('end', () => {
     // Warp hands every session a uuid that its own warp://session/<uuid> url
     // focuses — the whole tab hunt collapses into opening that link.
     'WARP_TERMINAL_SESSION_UUID',
+    // Set on every terminal the Vizor workspace spawns: ties the session to
+    // its embedded tab.
+    'VIZOR_PTY_ID',
   ]) {
     if (process.env[key]) term[key] = process.env[key];
   }

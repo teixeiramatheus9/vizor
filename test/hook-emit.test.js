@@ -42,6 +42,7 @@ function runHook(input, env = {}) {
         TMUX_PANE: '',
         WT_SESSION: '',
         WARP_TERMINAL_SESSION_UUID: '',
+        VIZOR_PTY_ID: '',
         ...env,
       },
       stdio: ['pipe', 'ignore', 'ignore'],
@@ -49,6 +50,26 @@ function runHook(input, env = {}) {
     child.on('close', (code) => resolve(code));
     child.stdin.end(input);
   });
+}
+
+// Resolves with the first payload a client writes to a fresh socket.
+async function listenOnce(name) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-hook-'));
+  const socketFile = testSocketPath(dir, name);
+  const received = new Promise((resolve) => {
+    const server = net.createServer((socket) => {
+      let data = '';
+      socket.on('data', (chunk) => {
+        data += chunk;
+      });
+      socket.on('end', () => {
+        server.close();
+        resolve(JSON.parse(data));
+      });
+    });
+    server.listen(socketFile);
+  });
+  return { socketFile, received };
 }
 
 describe('hook-emit', () => {
@@ -213,5 +234,52 @@ describe('hook-emit', () => {
       { VIZOR_SOCKET: '/nonexistent/dir/absent.sock', PATH: '', Path: '' },
     );
     expect(exitCode).toBe(0);
+  });
+  it('drops tool_response and truncates huge tool_input strings on tool events', async () => {
+    const { socketFile, received } = await listenOnce('tool.sock');
+    const event = {
+      hook_event_name: 'PostToolUse',
+      session_id: 'abc',
+      tool_name: 'Write',
+      tool_use_id: 'toolu_1',
+      tool_input: { file_path: '/tmp/a.js', content: 'x'.repeat(70000) },
+      tool_response: { type: 'create', filePath: '/tmp/a.js' },
+    };
+    expect(await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile })).toBe(0);
+    const got = await received;
+    expect(got.tool_response).toBeUndefined();
+    expect(got.tool_response_type).toBe('create');
+    expect(got.tool_input).toEqual({ file_path: '/tmp/a.js', content: { truncated: 70000 } });
+  });
+
+  it('truncates strings nested in MultiEdit edits', async () => {
+    const { socketFile, received } = await listenOnce('multi.sock');
+    const event = {
+      hook_event_name: 'PreToolUse',
+      session_id: 'abc',
+      tool_name: 'MultiEdit',
+      tool_input: {
+        file_path: '/tmp/a.js',
+        edits: [{ old_string: 'a', new_string: 'y'.repeat(70000) }],
+      },
+    };
+    expect(await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile })).toBe(0);
+    expect((await received).tool_input.edits).toEqual([
+      { old_string: 'a', new_string: { truncated: 70000 } },
+    ]);
+  });
+
+  it('leaves non-tool events untouched', async () => {
+    const { socketFile, received } = await listenOnce('stop.sock');
+    const event = { hook_event_name: 'Stop', session_id: 'abc', message: 'm'.repeat(70000) };
+    expect(await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile })).toBe(0);
+    expect(await received).toEqual(event);
+  });
+
+  it('captures VIZOR_PTY_ID into term', async () => {
+    const { socketFile, received } = await listenOnce('pty.sock');
+    const event = { hook_event_name: 'Stop', session_id: 'abc' };
+    await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile, VIZOR_PTY_ID: 'pty-1' });
+    expect((await received).term).toEqual({ VIZOR_PTY_ID: 'pty-1' });
   });
 });
