@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { createWorkspaceWindowManager } from '../src/main/workspace-window.js';
+import { boundsVisible, createWorkspaceWindowManager } from '../src/main/workspace-window.js';
 
 class FakeWindow extends EventEmitter {
   constructor() {
@@ -58,5 +58,14 @@ describe('workspace window manager', () => {
   it('has no application menu, so no Ctrl+Q that would skip the quit prompt', () => {
     manager().show();
     expect(FakeWindow.last.menuRemoved).toBe(true);
+  });
+});
+
+describe('boundsVisible (#109)', () => {
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }];
+  it('keeps bounds that overlap a display and drops the ones off every screen', () => {
+    expect(boundsVisible({ x: 100, y: 100, width: 800, height: 600 }, displays)).toBe(true);
+    expect(boundsVisible({ x: 2500, y: 100, width: 800, height: 600 }, displays)).toBe(false);
+    expect(boundsVisible(null, displays)).toBe(false);
   });
 });

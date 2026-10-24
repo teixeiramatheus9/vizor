@@ -149,4 +149,11 @@ describe('worktree header', () => {
   it('is selectable by its path', () => {
     expect(renderSidebar(tree([], { path: '/r&x' }), null)).toContain('data-worktree="/r&amp;x"');
   });
+
+describe('selected worktree (#119)', () => {
+  it('is marked in the sidebar', () => {
+    const html = renderSidebar(tree([]), null, '/r');
+    expect(html).toContain('data-worktree="/r" aria-current="true"');
+  });
+});
 });

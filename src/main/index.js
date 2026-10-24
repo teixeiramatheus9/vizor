@@ -36,11 +36,12 @@ import {
   buildWorkspaceTree,
   quitPrompt,
   removeProject,
+  clampTerminalSize,
   shouldAutoAdd,
   staleRoots,
   workspaceAvailable,
 } from './workspace-model.js';
-import { createWorkspaceWindowManager } from './workspace-window.js';
+import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost } from './pty-host.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
@@ -301,7 +302,6 @@ const editTracker = new EditTracker();
 // pushWorkspaceState) can run before the workspace block below is evaluated.
 let workspaceWindow = null;
 let appQuitting = false;
-let workspaceOpenedOnce = false;
 const worktreeCache = new Map(); // project root → Worktree[]
 const repoRootCache = new Map(); // session cwd → repo root | null
 let workspacePushTimer = null;
@@ -1208,7 +1208,10 @@ workspaceWindow = workspaceAvailable(process.platform)
       BrowserWindow,
       preloadPath: path.join(rendererDir, 'workspace-preload.cjs'),
       htmlPath: path.join(rendererDir, 'workspace.html'),
-      loadBounds: () => loadPersistedState().workspace ?? null,
+      loadBounds: () => {
+        const saved = loadPersistedState().workspace ?? null;
+        return boundsVisible(saved, screen.getAllDisplays()) ? saved : null;
+      },
       saveBounds: (bounds) => {
         try {
           fs.mkdirSync(configDir, { recursive: true });
@@ -1218,7 +1221,6 @@ workspaceWindow = workspaceAvailable(process.platform)
         }
       },
       onShow: () => {
-        workspaceOpenedOnce = true;
         refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
       },
       isQuitting: () => appQuitting,
@@ -1250,7 +1252,7 @@ async function autoAddProjects() {
     if (!session.cwd || repoRootCache.has(session.cwd)) continue;
     const root = await repoRootOf(session.cwd);
     repoRootCache.set(session.cwd, root);
-    if (shouldAutoAdd(root, workspaceProjects(), workspaceDismissed())) {
+    if (shouldAutoAdd(root, workspaceProjects(), workspaceDismissed(), app.getPath('home'))) {
       saveWorkspaceProjects(addProject(workspaceProjects(), root));
       added = true;
     }
@@ -1305,18 +1307,19 @@ function pushWorkspaceState() {
   if (!workspaceWindow?.isOpen() || workspacePushTimer) return;
   workspacePushTimer = setTimeout(() => {
     workspacePushTimer = null;
-    if (workspaceOpenedOnce) {
-      autoAddProjects()
-        .then((added) => (added ? refreshWorkspace() : pushWorkspaceStateNow()))
-        .catch((error) => log(`workspace push failed: ${error}`));
-    }
+    autoAddProjects()
+      .then((added) => (added ? refreshWorkspace() : pushWorkspaceStateNow()))
+      .catch((error) => log(`workspace push failed: ${error}`));
   }, 150);
 }
 
 editTracker.on('change', () => pushWorkspaceState());
 
 ipcMain.handle('workspace:add-project', async () => {
-  const result = await dialog.showOpenDialog({ title: 'Abrir projeto', properties: ['openDirectory'] });
+  const options = { title: 'Abrir projeto', properties: ['openDirectory'] };
+  // Parented to the workspace so it never opens behind it (#107).
+  const parent = workspaceWindow?.window();
+  const result = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options));
   if (result.canceled || !result.filePaths[0]) return;
   const dir = result.filePaths[0];
   const root = (await repoRootOf(dir)) ?? dir;
@@ -1356,7 +1359,10 @@ function ensurePtyHost() {
   return { host: ptyHost, error: null };
 }
 
-ipcMain.handle('pty:open', (_event, { cwd, startClaude } = {}) => {
+const fromWorkspace = (event) => Boolean(workspaceWindow?.ownsSender(event.sender));
+
+ipcMain.handle('pty:open', (event, { cwd, startClaude } = {}) => {
+  if (!fromWorkspace(event)) return { error: 'origem inválida' };
   let isDirectory = false;
   try {
     isDirectory = typeof cwd === 'string' && fs.statSync(cwd).isDirectory();
@@ -1366,19 +1372,25 @@ ipcMain.handle('pty:open', (_event, { cwd, startClaude } = {}) => {
   if (!isDirectory) return { error: 'pasta não existe' };
   const { host, error } = ensurePtyHost();
   if (!host) {
-    log(`pty unavailable: ${error}`);
+    log(`pty unavailable: ${error} (${loadPty().detail ?? '-'})`);
     return { error };
   }
   return { id: host.open({ cwd, startClaude: Boolean(startClaude) }).id };
 });
-ipcMain.on('pty:write', (_event, { id, data } = {}) => {
-  if (typeof data === 'string') ptyHost?.write(id, data);
+ipcMain.on('pty:write', (event, { id, data } = {}) => {
+  if (fromWorkspace(event) && typeof data === 'string') ptyHost?.write(id, data);
 });
-ipcMain.on('pty:resize', (_event, { id, cols, rows } = {}) => {
-  if (Number.isInteger(cols) && Number.isInteger(rows) && cols > 0 && rows > 0) ptyHost?.resize(id, cols, rows);
+ipcMain.on('pty:resize', (event, { id, cols, rows } = {}) => {
+  const size = fromWorkspace(event) ? clampTerminalSize(cols, rows) : null;
+  if (size) ptyHost?.resize(id, size.cols, size.rows);
 });
-ipcMain.on('pty:close', (_event, id) => ptyHost?.close(id));
-ipcMain.handle('pty:buffer', (_event, id) => ptyHost?.buffer(id) ?? '');
+ipcMain.on('pty:close', (event, id) => {
+  if (fromWorkspace(event)) ptyHost?.close(id);
+});
+ipcMain.on('pty:title', (event, { id, title } = {}) => {
+  if (fromWorkspace(event)) ptyHost?.setTitle(id, title);
+});
+ipcMain.handle('pty:buffer', (event, id) => (fromWorkspace(event) ? (ptyHost?.buffer(id) ?? '') : ''));
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
@@ -2096,11 +2108,18 @@ app.on('window-all-closed', () => {
 // UI paths ask: a logout, shutdown or SIGTERM also reaches before-quit (Electron
 // turns SIGTERM into a quit before any JS signal listener runs), and a dialog
 // there would hold the whole session hostage.
+let quitAsking = false;
 async function requestQuit() {
+  if (quitAsking) return; // a second click while the dialog is up (#118)
   const prompt = quitPrompt(ptyHost?.aliveCount() ?? 0);
   if (prompt) {
-    const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Encerrar o Vizor', ...prompt });
-    if (response !== 0) return;
+    quitAsking = true;
+    try {
+      const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Encerrar o Vizor', ...prompt });
+      if (response !== 0) return;
+    } finally {
+      quitAsking = false;
+    }
   }
   app.quit();
 }

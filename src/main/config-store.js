@@ -28,9 +28,15 @@ export const DEFAULT_CONFIG = {
   workspaceDismissed: [],
 };
 
+const stringList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);
+
 export function loadConfig(file) {
   try {
-    return migrateThemeConfig({ ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(file, 'utf8')) });
+    const config = migrateThemeConfig({ ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(file, 'utf8')) });
+    // Hand-edited lists must not break the workspace (#105).
+    config.workspaceProjects = stringList(config.workspaceProjects);
+    config.workspaceDismissed = stringList(config.workspaceDismissed);
+    return config;
   } catch {
     return { ...DEFAULT_CONFIG };
   }
