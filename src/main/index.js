@@ -49,7 +49,7 @@ import {
 } from './workspace-model.js';
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
-import { createPtyHost } from './pty-host.js';
+import { createPtyHost, withoutClaudeSession } from './pty-host.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
@@ -125,6 +125,11 @@ import { resolveWindowDriver } from './window-driver.js';
 import { shouldAnnounce as notifyPolicy } from './notify-policy.js';
 import { installBridge, uninstallBridge, bridgeStatus, autoSetupBridge } from './bridge-manager.js';
 import { sendUserMessage } from './cc-peer.js';
+
+// Launched from inside a Claude Code chat (npm start there): drop that
+// session's identity before anything is spawned — tabs and the internal
+// `claude -p` runs would otherwise pass for its children (#151).
+withoutClaudeSession(process.env);
 
 // Two window-management modes:
 // - X11/XWayland ("managed"): the app moves/positions its own window —

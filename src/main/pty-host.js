@@ -53,8 +53,31 @@ const NEVER_INHERITED = [
   'WINDOWID',
 ];
 
+// The identity of the Claude Code session the Vizor was launched from (npm
+// start inside a chat): a claude in a tab would think it is that session's
+// child — no transcript, the parent's messaging socket (#151). The user's own
+// CLAUDE_CODE_* settings (Bedrock, Vertex…) are not identity and stay.
+const CLAUDE_SESSION_KEYS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+];
+const CLAUDE_SESSION_PREFIXES = ['CLAUDE_CODE_SESSION_', 'CLAUDE_CODE_MESSAGING_'];
+
+export function withoutClaudeSession(env) {
+  for (const key of Object.keys(env)) {
+    if (CLAUDE_SESSION_KEYS.includes(key) || CLAUDE_SESSION_PREFIXES.some((prefix) => key.startsWith(prefix)))
+      delete env[key];
+  }
+  return env;
+}
+
 export function ptyEnv(baseEnv, id) {
-  const env = { ...baseEnv };
+  const env = withoutClaudeSession({ ...baseEnv });
   for (const key of NEVER_INHERITED) delete env[key];
   return { ...env, VIZOR_PTY_ID: id, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
 }
