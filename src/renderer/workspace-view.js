@@ -97,9 +97,20 @@ export function renderEmpty() {
   return '<div class="empty"><p>Nenhum projeto ainda</p><button class="add-project" data-add-project>Abrir projeto…</button></div>';
 }
 
+// Sessions whose folder belongs to no project (a chat opened in ~ or /tmp):
+// never hidden, just listed apart.
+function renderUnplaced(sessions, selectedId) {
+  if (!sessions?.length) return '';
+  return `<section class="project unplaced"><header class="project-head">${ICONS.outside}<span class="project-name">Fora de projetos</span></header><ul class="sessions">${sessions
+    .map((session) => renderSession(session, '', selectedId))
+    .join('')}</ul></section>`;
+}
+
 export function renderSidebar(tree, selectedId) {
-  if (!tree.projects.length) return renderEmpty();
-  return tree.projects.map((project) => renderProject(project, selectedId)).join('');
+  const projects = tree.projects.length
+    ? tree.projects.map((project) => renderProject(project, selectedId)).join('')
+    : renderEmpty();
+  return projects + renderUnplaced(tree.unplacedSessions, selectedId);
 }
 
 export function renderTopBar(tree) {

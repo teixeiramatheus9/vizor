@@ -5,6 +5,8 @@ import {
   matchWorktree,
   removeProject,
   taskFileStats,
+  staleRoots,
+  shouldAutoAdd,
   workspaceAvailable,
 } from '../src/main/workspace-model.js';
 import { diffHunks } from '../src/main/edit-hunks.js';
@@ -120,6 +122,49 @@ describe('buildWorkspaceTree', () => {
       taskOf: noTask,
     });
     expect(tree.unplaced).toEqual(['/elsewhere']);
-    expect(tree.counts).toEqual({ working: 1, waiting: 1 });
+    // sessions outside every project are shown, so they count too
+    expect(tree.counts).toEqual({ working: 2, waiting: 1 });
+  });
+});
+
+describe('staleRoots', () => {
+  it('re-lists a repo once per unplaced cwd, never in a loop', () => {
+    const rootOf = (cwd) => (cwd.startsWith('/r') ? '/r' : null);
+    const first = staleRoots({ unplaced: ['/r/wt-gone'], rootOf, rechecked: new Set() });
+    expect(first.roots).toEqual(['/r']);
+    const second = staleRoots({ unplaced: ['/r/wt-gone'], rootOf, rechecked: first.rechecked });
+    expect(second.roots).toEqual([]);
+  });
+
+  it('forgets a cwd once it is placed again, so a later removal re-checks', () => {
+    const rootOf = () => '/r';
+    const first = staleRoots({ unplaced: ['/r/wt'], rootOf, rechecked: new Set() });
+    const placed = staleRoots({ unplaced: [], rootOf, rechecked: first.rechecked });
+    expect([...placed.rechecked]).toEqual([]);
+    expect(staleRoots({ unplaced: ['/r/wt'], rootOf, rechecked: placed.rechecked }).roots).toEqual(['/r']);
+  });
+
+  it('ignores cwds outside any known repo', () => {
+    expect(staleRoots({ unplaced: ['/tmp'], rootOf: () => null, rechecked: new Set() }).roots).toEqual([]);
+  });
+});
+
+describe('shouldAutoAdd', () => {
+  it('adds a new repo, but never one the user took off the list', () => {
+    expect(shouldAutoAdd('/r', [], [])).toBe(true);
+    expect(shouldAutoAdd('/r', ['/r'], [])).toBe(false);
+    expect(shouldAutoAdd('/r', [], ['/r'])).toBe(false);
+    expect(shouldAutoAdd(null, [], [])).toBe(false);
+  });
+});
+
+describe('sessions outside every project', () => {
+  it('are kept as nodes so the workspace can still show them', () => {
+    const tree = buildWorkspaceTree({
+      projects: [{ root: '/r', worktrees: [wt('/r')] }],
+      sessions: [session('s1', '/tmp/scratch')],
+      taskOf: () => null,
+    });
+    expect(tree.unplacedSessions.map((node) => node.id)).toEqual(['s1']);
   });
 });

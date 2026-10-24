@@ -16,6 +16,30 @@ export function removeProject(list, root) {
   return list.filter((candidate) => candidate !== root);
 }
 
+// Auto-add brings in the repo of every session — except one the user took
+// off the list, which stays off until they add it back by hand.
+export function shouldAutoAdd(root, projects, dismissed) {
+  return Boolean(root) && !projects.includes(root) && !dismissed.includes(root);
+}
+
+// An unplaced cwd inside a known repo usually means a worktree was just
+// created: re-list that repo — ONCE per cwd. A cwd still unplaced after the
+// re-list (worktree removed, symlinked path) must not trigger another one, or
+// the refresh would chase it forever. A cwd that gets placed again is
+// forgotten, so a later removal re-checks.
+export function staleRoots({ unplaced, rootOf, rechecked }) {
+  const next = new Set([...rechecked].filter((cwd) => unplaced.includes(cwd)));
+  const roots = [];
+  for (const cwd of unplaced) {
+    if (next.has(cwd)) continue;
+    const root = rootOf(cwd);
+    if (!root) continue;
+    next.add(cwd);
+    if (!roots.includes(root)) roots.push(root);
+  }
+  return { roots, rechecked: next };
+}
+
 function contains(parent, child) {
   return child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
 }
@@ -71,16 +95,18 @@ export function buildWorkspaceTree({ projects, sessions, taskOf }) {
   }));
   const byPath = new Map(nodes.flatMap((project) => project.worktrees.map((node) => [node.path, node])));
   const unplaced = [];
+  const unplacedSessions = [];
   const counts = { working: 0, waiting: 0 };
   for (const session of sessions) {
     const match = session.cwd ? matchWorktree(session.cwd, [...byPath.keys()]) : null;
-    if (!match) {
+    if (match) byPath.get(match).sessions.push(sessionNode(session, taskOf));
+    else {
       if (session.cwd && !unplaced.includes(session.cwd)) unplaced.push(session.cwd);
-      continue;
+      // Never orphaned (spec §9.1): a session outside every project is still shown.
+      unplacedSessions.push(sessionNode(session, taskOf));
     }
-    byPath.get(match).sessions.push(sessionNode(session, taskOf));
     if (session.status === 'working') counts.working += 1;
     else if (session.status === 'waiting') counts.waiting += 1;
   }
-  return { projects: nodes, unplaced, counts };
+  return { projects: nodes, unplaced, unplacedSessions, counts };
 }

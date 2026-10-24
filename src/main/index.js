@@ -35,6 +35,8 @@ import {
   addProject,
   buildWorkspaceTree,
   removeProject,
+  shouldAutoAdd,
+  staleRoots,
   workspaceAvailable,
 } from './workspace-model.js';
 import { createWorkspaceWindowManager } from './workspace-window.js';
@@ -300,6 +302,7 @@ let workspaceOpenedOnce = false;
 const worktreeCache = new Map(); // project root → Worktree[]
 const repoRootCache = new Map(); // session cwd → repo root | null
 let workspacePushTimer = null;
+let workspaceRechecked = new Set(); // unplaced cwds whose repo was already re-listed
 const editPipeline = createEditPipeline({
   tracker: editTracker,
   readFile: (file) => fs.promises.readFile(file, 'utf8').catch(() => null),
@@ -1219,8 +1222,12 @@ function workspaceProjects() {
   return managerConfig.workspaceProjects ?? [];
 }
 
-function saveWorkspaceProjects(projects) {
-  managerConfig = { ...managerConfig, workspaceProjects: projects };
+function workspaceDismissed() {
+  return managerConfig.workspaceDismissed ?? [];
+}
+
+function saveWorkspaceProjects(projects, dismissed = workspaceDismissed()) {
+  managerConfig = { ...managerConfig, workspaceProjects: projects, workspaceDismissed: dismissed };
   try {
     saveConfig(configFile, managerConfig);
   } catch (error) {
@@ -1236,7 +1243,7 @@ async function autoAddProjects() {
     if (!session.cwd || repoRootCache.has(session.cwd)) continue;
     const root = await repoRootOf(session.cwd);
     repoRootCache.set(session.cwd, root);
-    if (root && !workspaceProjects().includes(root)) {
+    if (shouldAutoAdd(root, workspaceProjects(), workspaceDismissed())) {
       saveWorkspaceProjects(addProject(workspaceProjects(), root));
       added = true;
     }
@@ -1254,7 +1261,7 @@ async function refreshWorkspace() {
 }
 
 function pushWorkspaceStateNow() {
-  if (!workspaceWindow?.isOpen()) return;
+  if (!workspaceWindow?.isReady()) return;
   const projects = workspaceProjects().map((root) => ({
     root,
     worktrees: worktreeCache.get(root) ?? [],
@@ -1269,13 +1276,19 @@ function pushWorkspaceStateNow() {
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
-  // A session in a known repo that matches no worktree: one was just created.
-  const stale = tree.unplaced.some((cwd) => repoRootCache.get(cwd) && worktreeCache.has(repoRootCache.get(cwd)));
-  if (stale) {
-    for (const cwd of tree.unplaced) {
-      const root = repoRootCache.get(cwd);
-      if (root) worktreeCache.delete(root);
-    }
+  // A session in a known repo that matches no worktree: one was probably
+  // just created. Re-list that repo once per cwd (staleRoots), and re-resolve
+  // the cwd itself — a removed worktree then simply stops resolving.
+  const { roots, rechecked } = staleRoots({
+    unplaced: tree.unplaced,
+    rootOf: (cwd) => (worktreeCache.has(repoRootCache.get(cwd)) ? repoRootCache.get(cwd) : null),
+    rechecked: workspaceRechecked,
+  });
+  const newlyChecked = [...rechecked].filter((cwd) => !workspaceRechecked.has(cwd));
+  workspaceRechecked = rechecked;
+  if (roots.length) {
+    for (const cwd of newlyChecked) repoRootCache.delete(cwd);
+    for (const root of roots) worktreeCache.delete(root);
     refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
   }
 }
@@ -1298,13 +1311,19 @@ ipcMain.handle('workspace:add-project', async () => {
   const result = await dialog.showOpenDialog({ title: 'Abrir projeto', properties: ['openDirectory'] });
   if (result.canceled || !result.filePaths[0]) return;
   const dir = result.filePaths[0];
-  saveWorkspaceProjects(addProject(workspaceProjects(), (await repoRootOf(dir)) ?? dir));
+  const root = (await repoRootOf(dir)) ?? dir;
+  // Adding by hand undoes an earlier "Tirar da lista".
+  saveWorkspaceProjects(
+    addProject(workspaceProjects(), root),
+    workspaceDismissed().filter((candidate) => candidate !== root),
+  );
   await refreshWorkspace();
 });
 
 ipcMain.on('workspace:remove-project', (_event, root) => {
   if (typeof root !== 'string') return;
-  saveWorkspaceProjects(removeProject(workspaceProjects(), root));
+  // Remembered, so auto-add does not bring it straight back.
+  saveWorkspaceProjects(removeProject(workspaceProjects(), root), addProject(workspaceDismissed(), root));
   worktreeCache.delete(root);
   pushWorkspaceStateNow();
 });

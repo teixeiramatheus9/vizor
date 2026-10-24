@@ -25,6 +25,7 @@ export const DEFAULT_CONFIG = {
   announceWhenFocusUnknown: true,
   folderAliases: {},
   workspaceProjects: [],
+  workspaceDismissed: [],
 };
 
 export function loadConfig(file) {

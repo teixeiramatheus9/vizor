@@ -83,6 +83,25 @@ describe('renderSidebar', () => {
   });
 });
 
+describe('sessions outside every project', () => {
+  it('get their own section at the end of the sidebar', () => {
+    const base = tree([]);
+    const html = renderSidebar({ ...base, unplacedSessions: [session('<solta>')] }, null);
+    expect(html).toContain('Fora de projetos');
+    expect(html).toContain('&lt;solta&gt;');
+    expect(html.indexOf('Fora de projetos')).toBeGreaterThan(html.indexOf('data-remove-project'));
+  });
+
+  it('still show with no project at all, after the empty state', () => {
+    const html = renderSidebar(
+      { projects: [], unplaced: ['/tmp'], unplacedSessions: [session('s1')], counts: { working: 1, waiting: 0 } },
+      null,
+    );
+    expect(html).toContain('Nenhum projeto ainda');
+    expect(html).toContain('data-session="s1"');
+  });
+});
+
 describe('renderTopBar', () => {
   it('shows how many sessions run and wait', () => {
     const html = renderTopBar(tree([]));

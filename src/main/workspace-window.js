@@ -15,6 +15,7 @@ export function createWorkspaceWindowManager({
   isQuitting,
 }) {
   let win = null;
+  let loaded = false;
   let saveTimer = null;
 
   function scheduleSave() {
@@ -47,7 +48,10 @@ export function createWorkspaceWindowManager({
     win.on('resize', scheduleSave);
     // A fresh snapshot on every load and show: the palette or the sessions may
     // have changed while the window was hidden.
-    win.webContents.on('did-finish-load', onShow);
+    win.webContents.on('did-finish-load', () => {
+      loaded = true;
+      onShow();
+    });
     win.once('ready-to-show', () => win.show());
     win.loadFile(htmlPath);
   }
@@ -68,10 +72,16 @@ export function createWorkspaceWindowManager({
     isOpen() {
       return Boolean(win && !win.isDestroyed() && win.isVisible());
     },
+    // Loaded is what matters for a send: the first snapshot goes out on
+    // did-finish-load, which can come before ready-to-show maps the window.
+    isReady() {
+      return Boolean(win && !win.isDestroyed() && loaded);
+    },
     destroy() {
       clearTimeout(saveTimer);
       if (win && !win.isDestroyed()) win.destroy();
       win = null;
+      loaded = false;
     },
   };
 }
