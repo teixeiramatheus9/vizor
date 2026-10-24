@@ -15,7 +15,7 @@ function git(args, cwd) {
   });
 }
 
-// The staged version of a file — the last baseline the user vouched for, and
+// The staged version of a file, as it would be checked out — the last baseline the user vouched for, and
 // the one fallback when an edit cannot be reversed. Null when the file is not
 // in a repo, not in the index, or git fails in any way.
 export async function readIndexVersion(filePath) {
@@ -23,5 +23,7 @@ export async function readIndexVersion(filePath) {
   const toplevel = await git(['rev-parse', '--show-toplevel'], directory);
   if (!toplevel) return null;
   const relative = path.relative(toplevel.trim(), filePath).split(path.sep).join('/');
-  return git(['show', `:${relative}`], toplevel.trim());
+  // --filters applies the checkout conversions (eol, smudge), so the baseline
+  // has the same line endings as the file on disk it is diffed against.
+  return git(['cat-file', '--filters', `:${relative}`], toplevel.trim());
 }

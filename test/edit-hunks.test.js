@@ -22,6 +22,17 @@ describe('diffHunks', () => {
     expect(diffHunks('a\r\nb\r\n', 'a\r\nB\r\n')).toMatchObject({ added: 1, removed: 1 });
   });
 
+  it('a LF baseline against a CRLF checkout counts only real changes', () => {
+    expect(diffHunks('a\nb\nc\n', 'a\r\nB\r\nc\r\n')).toMatchObject({ added: 1, removed: 1 });
+  });
+
+  it('gives up on a huge rewrite instead of blocking the app', () => {
+    const lines = (word) => Array.from({ length: 20000 }, (_, n) => `${word} ${n}`).join('\n');
+    const started = Date.now();
+    expect(diffHunks(lines('old'), lines('new'))).toBeNull();
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
   it('a missing trailing newline does not count as an extra change', () => {
     expect(diffHunks('a\nb', 'a\nB')).toMatchObject({ added: 1, removed: 1 });
   });

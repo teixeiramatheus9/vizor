@@ -122,6 +122,13 @@ describe('EditTracker', () => {
     expect(edit).toMatchObject({ note: 'no-diff', hunks: [], added: 0, removed: 0 });
   });
 
+  it('a diff that gives up is marked too-large', () => {
+    const tracker = makeTracker();
+    const lines = (word) => Array.from({ length: 20000 }, (_, n) => `${word} ${n}`).join('\n');
+    const edit = tracker.completeEdit(post('t1'), content(lines('old'), lines('new')));
+    expect(edit).toMatchObject({ note: 'too-large', hunks: [], added: 0, removed: 0 });
+  });
+
   it('a missing after keeps the capture note', () => {
     const tracker = makeTracker();
     const edit = tracker.completeEdit(post('t1'), content('v0', null, { note: 'too-large' }));

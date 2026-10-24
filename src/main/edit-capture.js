@@ -48,8 +48,13 @@ export async function captureToolEvent(
     note = diffability(onDisk);
     after = null;
   }
-  const { before, baseline } =
+  let { before, baseline } =
     after === null ? { before: null, baseline: null } : await resolveBefore(event, after, { tracker, readIndexVersion });
+  // The baseline can be as big as the git index holds; it gets the same cap.
+  if (before !== null && diffability(before) !== 'ok') {
+    note = diffability(before);
+    before = null;
+  }
   const reason = await readReasonWithRetry(event, { readReason, reasonDelays, sleep });
   return tracker.completeEdit(event, { before, after, baseline, reason, note });
 }

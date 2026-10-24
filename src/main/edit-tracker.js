@@ -96,7 +96,11 @@ export class EditTracker extends EventEmitter {
     edit.removed = 0;
     if (after !== null && after !== undefined) {
       if (before === null || before === undefined) edit.note = note ?? 'no-diff';
-      else Object.assign(edit, diffHunks(before, after));
+      else {
+        const diff = diffHunks(before, after);
+        if (diff) Object.assign(edit, diff);
+        else edit.note = 'too-large';
+      }
     }
 
     if (task) {

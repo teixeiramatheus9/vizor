@@ -110,6 +110,15 @@ describe('captureToolEvent', () => {
     expect(edit).toMatchObject({ note: 'too-large', hunks: [] });
   });
 
+  it('an oversize baseline gets no diff either', async () => {
+    const { deps } = setup({ disk: { [FILE]: 'new\n' }, index: { [FILE]: 'x'.repeat(2 * 1024 * 1024 + 1) } });
+    const edit = await captureToolEvent(
+      event('PostToolUse', 'Write', { content: { truncated: 1 } }, { tool_response_type: 'update' }),
+      deps,
+    );
+    expect(edit).toMatchObject({ note: 'too-large', hunks: [] });
+  });
+
   it('retries the reason while the transcript catches up', async () => {
     const { deps } = setup({ disk: { [FILE]: 'b' }, reasons: [null, null, 'late why'] });
     const edit = await captureToolEvent(

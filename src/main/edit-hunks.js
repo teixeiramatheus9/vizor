@@ -11,10 +11,22 @@ export function diffability(text) {
   return 'ok';
 }
 
+// Myers is O(N·D) and runs on the main process: a full rewrite of a 20k-line
+// file took 50 s, freezing the bubble and every session. Past this budget the
+// diff gives up and the edit is shown without one.
+const DIFF_TIMEOUT_MS = 250;
+
 // Context 0: the hunks are exactly the changed lines, so the counts and the
-// ranges the live view highlights mean the same thing.
+// ranges the live view highlights mean the same thing. Trailing CRs are
+// ignored so a LF baseline (the git index) against a CRLF checkout only shows
+// what really changed. Null when the diff gave up.
 export function diffHunks(before, after) {
-  const patch = structuredPatch('before', 'after', before, after, '', '', { context: 0 });
+  const patch = structuredPatch('before', 'after', before, after, '', '', {
+    context: 0,
+    stripTrailingCr: true,
+    timeout: DIFF_TIMEOUT_MS,
+  });
+  if (!patch) return null;
   let added = 0;
   let removed = 0;
   const hunks = patch.hunks.map(({ oldStart, oldLines, newStart, newLines, lines }) => {

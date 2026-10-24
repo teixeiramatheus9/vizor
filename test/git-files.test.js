@@ -29,4 +29,15 @@ describe('readIndexVersion', () => {
   it('is null outside any repo', async () => {
     expect(await readIndexVersion(path.join(os.tmpdir(), 'nowhere-vizor', 'x.txt'))).toBeNull();
   });
+
+  it('returns the index version with the checkout line endings', async () => {
+    const crlf = await mkdtemp(path.join(os.tmpdir(), 'cm-git-crlf-'));
+    const git = (...args) => execFileSync('git', args, { cwd: crlf });
+    git('init', '-q');
+    await writeFile(path.join(crlf, '.gitattributes'), '*.txt text eol=crlf\n');
+    await writeFile(path.join(crlf, 'w.txt'), 'a\r\nb\r\n');
+    git('add', '.');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init');
+    expect(await readIndexVersion(path.join(crlf, 'w.txt'))).toBe('a\r\nb\r\n');
+  });
 });
