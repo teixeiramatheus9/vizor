@@ -3,7 +3,7 @@ import {
   MAX_DIRTY_PATHS,
   POLL_MS,
   changedPaths,
-  parseGitStatusZ,
+  parseGitStatusEntries,
   settleCandidates,
 } from './command-changes.js';
 
@@ -16,6 +16,7 @@ export function createCommandWatcher({
   statFile,
   explained,
   onChange,
+  onBaseline = () => {},
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   now = Date.now,
@@ -34,6 +35,17 @@ export function createCommandWatcher({
     const state = roots.get(root);
     if (!state) return;
     state.timer = null;
+    try {
+      await cycle(root, state);
+    } catch (error) {
+      log(`command watcher: cycle failed in ${root}: ${error}`);
+    } finally {
+      // One bad cycle (a stat error, a vanished folder) must not stop the loop.
+      if (roots.get(root) === state && !state.timer) state.timer = setTimer(() => poll(root), POLL_MS);
+    }
+  }
+
+  async function cycle(root, state) {
     const output = await gitStatus(root);
     if (roots.get(root) !== state) return; // stopped meanwhile
     if (output === null) {
@@ -41,32 +53,39 @@ export function createCommandWatcher({
       roots.delete(root);
       return;
     }
-    const dirty = parseGitStatusZ(output);
-    if (dirty.length > MAX_DIRTY_PATHS) {
-      // A mass rewrite: skip it, and take a fresh baseline so it is not
-      // replayed as hundreds of cards on the next cycle.
-      log(`command watcher: ${dirty.length} changed paths in ${root}, skipping this cycle`);
-      state.sigs = null;
-      state.pending = new Map();
-    } else if (!state.sigs) {
+    const entries = parseGitStatusEntries(output);
+    const dirty = entries.map((entry) => entry.path);
+    if (!state.sigs) {
       // Baseline: whatever is dirty when the task starts is not the AI's.
       state.sigs = await signatures(root, dirty);
-    } else {
-      // Paths that left the dirty set (reverted) are stat-ed once more too.
-      const union = await signatures(root, [...new Set([...state.sigs.keys(), ...dirty])]);
-      const changed = changedPaths(state.sigs, union);
-      const settled = settleCandidates({
-        pending: state.pending,
-        changed,
-        explained: (relPath, detectedAt) => explained(state.owners, path.join(root, relPath), detectedAt),
-        now: now(),
-      });
-      state.pending = settled.pending;
-      state.sigs = new Map([...union].filter(([relPath]) => dirty.includes(relPath)));
-      for (const relPath of settled.emit)
-        onChange({ root, filePath: path.join(root, relPath), owners: [...state.owners] });
+      onBaseline({ root, files: dirty.map((relPath) => path.join(root, relPath)) });
+      return;
     }
-    if (roots.get(root) === state) state.timer = setTimer(() => poll(root), POLL_MS);
+    // Paths that left the dirty set (reverted) are stat-ed once more too.
+    const union = await signatures(root, [...new Set([...state.sigs.keys(), ...dirty])]);
+    const changed = changedPaths(state.sigs, union);
+    state.sigs = new Map([...union].filter(([relPath]) => dirty.includes(relPath)));
+    if (changed.length > MAX_DIRTY_PATHS) {
+      // A mass rewrite (lockfile churn, a codegen): absorbed into the new
+      // signatures, never replayed as hundreds of cards.
+      log(`command watcher: ${changed.length} changed paths in ${root}, skipping this cycle`);
+      state.pending = new Map();
+      return;
+    }
+    const settled = settleCandidates({
+      pending: state.pending,
+      changed,
+      explained: (relPath, detectedAt) => explained(state.owners, path.join(root, relPath), detectedAt),
+      now: now(),
+    });
+    state.pending = settled.pending;
+    for (const relPath of settled.emit)
+      onChange({
+        root,
+        filePath: path.join(root, relPath),
+        owners: [...state.owners],
+        untracked: entries.some((entry) => entry.path === relPath && entry.untracked),
+      });
   }
 
   function stop(root) {

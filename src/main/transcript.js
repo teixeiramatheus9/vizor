@@ -281,3 +281,38 @@ export async function readLastBashCommand(transcriptPath) {
     return null;
   }
 }
+
+// Esc in Claude Code fires no Stop hook — the turn just ends with this marker
+// in the transcript. Seen last, the session is idle: whatever changes on disk
+// now is the user's, not the AI's (#94 review).
+export function parseInterrupted(jsonlText) {
+  const lines = jsonlText.split('\n');
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry?.isSidechain) continue;
+    if (isUserEntry(entry)) {
+      const content = entry.message?.content;
+      const text = typeof content === 'string' ? content : textBlocks(content).join(' ');
+      if (text.includes('[Request interrupted by user')) return true;
+      if (isUserPrompt(entry)) return false;
+      continue;
+    }
+    if (isAssistantEntry(entry)) return false;
+  }
+  return false;
+}
+
+export async function readInterrupted(transcriptPath) {
+  try {
+    return parseInterrupted(await readTail(transcriptPath));
+  } catch {
+    return false;
+  }
+}

@@ -26,14 +26,15 @@ import {
   readConversationTail,
   readEditReason,
   readLastBashCommand,
+  readInterrupted,
   readTranscriptSnapshot,
 } from './transcript.js';
 import { EditTracker } from './edit-tracker.js';
 import { createEditPipeline } from './edit-pipeline.js';
 import { readIndexVersion } from './git-files.js';
-import { diffability } from './edit-hunks.js';
+import { MAX_DIFF_BYTES, diffability } from './edit-hunks.js';
 import { createCommandWatcher } from './command-watcher.js';
-import { listWorktrees, repoRootOf } from './worktrees.js';
+import { listWorktrees, repoRootOf, worktreeRootOf } from './worktrees.js';
 import {
   addProject,
   buildWorkspaceTree,
@@ -1486,9 +1487,19 @@ ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
 // --- changes made by commands (#94) --------------------------------------
 // Recorded for every session, workspace open or not — like the edits — but
 // git is only polled while some session has a task running there.
+const BASELINE_FILE_BYTES = MAX_DIFF_BYTES;
+const BASELINE_TOTAL_BYTES = 20 * 1024 * 1024;
+const baselineSnapshots = new Map(); // root → Map<abs, content> of files dirty at task start
+
 const commandWatcher = createCommandWatcher({
+  // --no-optional-locks: a background poller must never take index.lock and
+  // break the AI's own `git add`/`commit` (#94 review).
   gitStatus: (root) =>
-    execFileAsync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: root, timeout: 3000 })
+    execFileAsync('git', ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+      cwd: root,
+      timeout: 3000,
+      maxBuffer: 16 * 1024 * 1024,
+    })
       .then(({ stdout }) => stdout)
       .catch(() => null),
   statFile: (abs) =>
@@ -1496,32 +1507,84 @@ const commandWatcher = createCommandWatcher({
       (stats) => `${stats.size}:${stats.mtimeMs}`,
       () => 'gone',
     ),
-  explained: (owners, abs, detectedAt) => owners.some((owner) => editTracker.explains(owner, abs, detectedAt)),
+  // A change is explained by an edit still in flight in ANY session; landed
+  // edits are matched by content in recordCommandChange.
+  explained: (_owners, abs) => editTracker.explains(abs),
   onChange: (change) => recordCommandChange(change).catch((error) => log(`command change failed: ${error}`)),
+  // The user's uncommitted work at task start: a later command change is
+  // diffed against THIS, never against the index (#94 review).
+  onBaseline: ({ root, files }) => {
+    const snapshot = new Map();
+    let total = 0;
+    for (const file of files) {
+      try {
+        const { size } = fs.statSync(file);
+        if (size > BASELINE_FILE_BYTES || total + size > BASELINE_TOTAL_BYTES) continue;
+        snapshot.set(file, fs.readFileSync(file, 'utf8'));
+        total += size;
+      } catch {
+        // gone or unreadable: nothing to remember
+      }
+    }
+    baselineSnapshots.set(root, snapshot);
+  },
   log,
 });
 
-async function recordCommandChange({ filePath, owners }) {
-  const onDisk = await fs.promises.readFile(filePath, 'utf8').catch(() => null);
-  let after = onDisk;
-  let note = onDisk === null ? 'deleted' : null;
-  if (onDisk !== null && diffability(onDisk) !== 'ok') {
-    note = diffability(onDisk);
-    after = null;
+async function readForCommand(filePath) {
+  let stats;
+  try {
+    stats = await fs.promises.stat(filePath);
+  } catch (error) {
+    return { content: null, note: error?.code === 'ENOENT' ? 'deleted' : 'unreadable' };
   }
+  if (!stats.isFile()) return { content: null, note: 'unreadable' };
+  // Size first: a giant file is never read just to be refused.
+  if (stats.size > MAX_DIFF_BYTES) return { content: null, note: 'too-large' };
+  try {
+    const content = await fs.promises.readFile(filePath, 'utf8');
+    const verdict = diffability(content);
+    return verdict === 'ok' ? { content, note: null } : { content: null, note: verdict };
+  } catch {
+    return { content: null, note: 'unreadable' };
+  }
+}
+
+async function recordCommandChange({ root, filePath, owners, untracked }) {
+  const { content: after, note: readNote } = await readForCommand(filePath);
+  // An edit's own write (its Post landed after the poll): not a command's.
+  if (after !== null && editTracker.contentsAnywhere(filePath).includes(after)) return;
   for (const owner of owners) {
+    const session = registry.list().find((item) => item.id === owner);
+    // Esc ends a turn without a Stop hook: the session is idle, the change is
+    // the user's — close the task instead of blaming the AI (#94 review).
+    if (session?.transcriptPath && (await readInterrupted(session.transcriptPath))) {
+      editTracker.endTask(owner);
+      continue;
+    }
+    let note = readNote;
     let before = editTracker.knownContent(owner, filePath);
     let baseline = before === null ? null : 'previous';
+    if (before === null && baselineSnapshots.get(root)?.has(filePath)) {
+      before = baselineSnapshots.get(root).get(filePath);
+      baseline = 'task-start';
+    }
     if (before === null && after !== null) {
-      before = await readIndexVersion(filePath);
-      baseline = before === null ? 'none' : 'git';
+      if (untracked) {
+        before = '';
+        baseline = 'created';
+      } else {
+        before = await readIndexVersion(filePath);
+        baseline = before === null ? 'none' : 'git';
+      }
     }
     if (before !== null && diffability(before) !== 'ok') {
       note = diffability(before);
       before = null;
     }
-    const transcriptPath = registry.list().find((session) => session.id === owner)?.transcriptPath;
-    const command = transcriptPath ? await readLastBashCommand(transcriptPath) : null;
+    // A touch, a no-op formatter, stash/pop: nothing to show.
+    if (before !== null && before === after) continue;
+    const command = session?.transcriptPath ? await readLastBashCommand(session.transcriptPath) : null;
     const edit = editTracker.addCommandEdit(owner, {
       filePath,
       before,
@@ -1535,25 +1598,29 @@ async function recordCommandChange({ filePath, owners }) {
   }
 }
 
-const commandRootCache = new Map(); // session cwd → watched root | null
+const COMMAND_ROOT_RETRY_MS = 60000;
+const commandRootCache = new Map(); // session cwd → { root, at } (null roots retried after a minute)
 let commandRootsTimer = null;
 
 // Which worktrees to poll, and for whom: sessions with a task running,
-// grouped by the worktree their cwd belongs to (or its git root).
+// grouped by the worktree checkout their cwd is in (linked ones included).
 async function refreshCommandRoots() {
   const owners = new Map();
   for (const session of registry.list()) {
     const task = editTracker.currentTask(session.id);
     if (!session.cwd || !task || task.endedAt !== null) continue;
-    if (!commandRootCache.has(session.cwd)) {
-      const known = [...worktreeCache.values()].flat().map((worktree) => worktree.path);
-      commandRootCache.set(session.cwd, matchWorktree(session.cwd, known) ?? (await repoRootOf(session.cwd)));
-    }
-    const root = commandRootCache.get(session.cwd);
+    const cached = commandRootCache.get(session.cwd);
+    if (!cached || (cached.root === null && Date.now() - cached.at > COMMAND_ROOT_RETRY_MS))
+      commandRootCache.set(session.cwd, { root: await worktreeRootOf(session.cwd), at: Date.now() });
+    const root = commandRootCache.get(session.cwd).root;
     if (!root) continue;
     owners.set(root, [...(owners.get(root) ?? []), session.id]);
   }
-  for (const root of commandWatcher.activeRoots()) if (!owners.has(root)) commandWatcher.setActive(root, []);
+  for (const root of commandWatcher.activeRoots())
+    if (!owners.has(root)) {
+      commandWatcher.setActive(root, []);
+      baselineSnapshots.delete(root);
+    }
   for (const [root, sessions] of owners) commandWatcher.setActive(root, sessions);
 }
 
@@ -1565,6 +1632,7 @@ function scheduleCommandRoots() {
   }, 200);
 }
 
+editTracker.on('task', scheduleCommandRoots);
 editTracker.on('change', scheduleCommandRoots);
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session

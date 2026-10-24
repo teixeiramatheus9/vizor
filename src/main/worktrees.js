@@ -49,3 +49,17 @@ export async function listWorktrees(root) {
 export async function repoRootOf(dir) {
   return parseWorktreeList(await gitWorktreeList(dir))[0]?.path ?? null;
 }
+
+// The worktree a folder sits in — its own checkout, linked worktrees included.
+// What to watch for that session's changes (#94): repoRootOf would point a
+// linked worktree's session at the main checkout.
+export function worktreeRootOf(dir) {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['rev-parse', '--show-toplevel'],
+      { cwd: dir, timeout: GIT_TIMEOUT_MS, encoding: 'utf8' },
+      (error, stdout) => resolve(error ? null : stdout.trim() || null),
+    );
+  });
+}

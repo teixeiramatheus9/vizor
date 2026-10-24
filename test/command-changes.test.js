@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { changedPaths, parseGitStatusZ, settleCandidates } from '../src/main/command-changes.js';
+import { changedPaths, parseGitStatusEntries, parseGitStatusZ, settleCandidates } from '../src/main/command-changes.js';
 
 const sigs = (entries) => new Map(Object.entries(entries));
 
@@ -60,5 +60,26 @@ describe('settleCandidates', () => {
     state = settleCandidates({ pending: state.pending, changed: ['x'], explained, now: 2500 });
     expect(seen.every((at) => at === 1000)).toBe(true);
     expect(state.emit).toEqual(['x']);
+  });
+});
+
+describe('review fixes (#94)', () => {
+  it('tells untracked files apart', () => {
+    expect(parseGitStatusEntries(' M a.js\0?? novo.txt\0')).toEqual([
+      { path: 'a.js', untracked: false },
+      { path: 'novo.txt', untracked: true },
+    ]);
+  });
+
+  it('a pending change explained but changed again in the same cycle comes back as new', () => {
+    let explainedNow = false;
+    const explained = () => explainedNow;
+    let state = settleCandidates({ pending: new Map(), changed: ['a.js'], explained, now: 1000 });
+    explainedNow = true; // the Edit's own write
+    state = settleCandidates({ pending: state.pending, changed: ['a.js'], explained, now: 2500 }); // the formatter right after
+    expect(state.pending.get('a.js')).toBe(2500);
+    explainedNow = false;
+    state = settleCandidates({ pending: state.pending, changed: [], explained, now: 4000 });
+    expect(state.emit).toEqual(['a.js']);
   });
 });

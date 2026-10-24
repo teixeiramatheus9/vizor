@@ -18,8 +18,9 @@ export const EDIT_STATUS = {
   BY_COMMAND: 'by-command', // a change no Edit/Write made (sed, formatter…)
 };
 
-// How long after an edit ends a change on disk still counts as that edit's.
-const EXPLAIN_WINDOW_MS = 5000;
+// A file that keeps changing (a log, a watch build) updates its open card
+// instead of piling a new one every poll (#94 review).
+const COMMAND_COALESCE_MS = 30000;
 const DEFAULT_MAX_SNAPSHOT_BYTES = 200 * 1024 * 1024;
 const bytesOf = (text) => (typeof text === 'string' ? text.length * 2 : 0);
 
@@ -54,6 +55,7 @@ export class EditTracker extends EventEmitter {
     };
     session.tasks.push(task);
     while (session.tasks.length > this.maxTasksPerSession) session.tasks.shift();
+    this.emit('task', { sessionId, ended: false });
     return task;
   }
 
@@ -61,6 +63,7 @@ export class EditTracker extends EventEmitter {
     const task = this.currentTask(sessionId);
     if (!task || task.endedAt !== null) return null;
     this.closeTask(task);
+    this.emit('task', { sessionId, ended: true });
     return task;
   }
 
@@ -109,10 +112,25 @@ export class EditTracker extends EventEmitter {
   // the command that probably did it as the reason.
   addCommandEdit(sessionId, { filePath, before, after, baseline = null, reason = null, note = null, uncertainOwner = false }) {
     const task = this.openTask(sessionId);
+    const open = task.edits.findLast(
+      (edit) =>
+        edit.filePath === filePath &&
+        edit.status === EDIT_STATUS.BY_COMMAND &&
+        this.now() - edit.endedAt <= COMMAND_COALESCE_MS,
+    );
+    if (open) {
+      // Same card, diffed from where it started.
+      this.applyContent(task, open, { before: open.commandBefore, after, baseline: open.baseline, reason, note });
+      open.uncertainOwner = open.uncertainOwner || uncertainOwner;
+      this.emit('change', { sessionId, edit: open });
+      this.enforceMemoryCeiling();
+      return open;
+    }
     const seq = task.edits.length + 1;
     const edit = this.newEdit(task, { tool_name: 'Bash', tool_use_id: `${task.id}#cmd${seq}` }, filePath);
     edit.status = EDIT_STATUS.BY_COMMAND;
     edit.uncertainOwner = uncertainOwner;
+    edit.commandBefore = before ?? null;
     this.applyContent(task, edit, { before, after, baseline, reason, note });
     this.emit('change', { sessionId, edit });
     this.enforceMemoryCeiling();
@@ -142,15 +160,25 @@ export class EditTracker extends EventEmitter {
     }
   }
 
-  // Whether an edit hook accounts for a change seen on disk at detectedAt.
-  explains(sessionId, filePath, detectedAt) {
-    for (const task of this.sessions.get(sessionId)?.tasks ?? [])
-      for (const edit of task.edits) {
-        if (edit.filePath !== filePath || edit.status === EDIT_STATUS.BY_COMMAND) continue;
-        if (edit.status === EDIT_STATUS.WRITING) return true;
-        if (edit.status === EDIT_STATUS.APPLIED && edit.endedAt >= detectedAt - EXPLAIN_WINDOW_MS) return true;
-      }
+  // An edit still in flight (any session) accounts for a change on disk. A
+  // landed edit is matched by content instead (contentsAnywhere): a time
+  // window would swallow a formatter run right after it.
+  explains(filePath) {
+    for (const session of this.sessions.values())
+      for (const edit of session.tasks.at(-1)?.edits ?? [])
+        if (edit.filePath === filePath && edit.status === EDIT_STATUS.WRITING) return true;
     return false;
+  }
+
+  // What each session's current task last saw in a file: a change on disk
+  // equal to one of these is that edit's own write, not a command's.
+  contentsAnywhere(filePath) {
+    const contents = new Set();
+    for (const session of this.sessions.values()) {
+      const current = session.tasks.at(-1)?.files.get(filePath)?.current;
+      if (typeof current === 'string') contents.add(current);
+    }
+    return [...contents];
   }
 
   snapshotBytes() {

@@ -10,18 +10,23 @@ export const EXPLAIN_WINDOW_MS = 5000;
 
 // `git status --porcelain=v1 -z`: "XY path\0"; a rename or copy carries the
 // original path as the next record, which is skipped.
-export function parseGitStatusZ(output) {
+export function parseGitStatusEntries(output) {
   const records = String(output ?? '').split('\0');
-  const paths = [];
+  const entries = [];
   for (let index = 0; index < records.length; index++) {
     const record = records[index];
     if (record.length < 4) continue;
     const status = record.slice(0, 2);
     const filePath = record.slice(3);
     if (status.includes('R') || status.includes('C')) index += 1;
-    if (!paths.includes(filePath)) paths.push(filePath);
+    if (!entries.some((entry) => entry.path === filePath))
+      entries.push({ path: filePath, untracked: status === '??' });
   }
-  return paths;
+  return entries;
+}
+
+export function parseGitStatusZ(output) {
+  return parseGitStatusEntries(output).map((entry) => entry.path);
 }
 
 export function changedPaths(prevSigs, nextSigs) {
@@ -43,7 +48,9 @@ export function settleCandidates({ pending, changed, explained, now }) {
   }
   for (const filePath of changed) {
     if (emit.includes(filePath) || next.has(filePath)) continue;
-    if (!pending.has(filePath)) next.set(filePath, now);
+    // Already pending (and just explained or emitted) yet changed again this
+    // cycle — a formatter right after an Edit: a new candidate, not lost.
+    next.set(filePath, now);
   }
   return { emit, pending: next };
 }

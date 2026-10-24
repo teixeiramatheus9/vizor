@@ -21,18 +21,20 @@ describe('command watcher', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  function setup({ explained = () => false } = {}) {
+  function setup({ explained = () => false, statFile: customStat } = {}) {
     const { repo, gitStatus, statFile } = fakeRepo();
     const changes = [];
     const logs = [];
+    const baselines = [];
     const watcher = createCommandWatcher({
       gitStatus,
-      statFile,
+      statFile: customStat ?? statFile,
       explained,
       onChange: (change) => changes.push(change),
+      onBaseline: (baseline) => baselines.push(baseline),
       log: (line) => logs.push(line),
     });
-    return { repo, watcher, changes, logs };
+    return { repo, watcher, changes, logs, baselines };
   }
 
   it('records a baseline first, then reports a change left unexplained for a cycle', async () => {
@@ -46,7 +48,7 @@ describe('command watcher', () => {
     await tick(); // candidate
     expect(changes).toEqual([]);
     await tick(); // still unexplained
-    expect(changes).toEqual([{ root: '/r', filePath: '/r/b.txt', owners: ['s1'] }]);
+    expect(changes).toEqual([{ root: '/r', filePath: '/r/b.txt', owners: ['s1'], untracked: false }]);
     await tick();
     expect(changes).toHaveLength(1);
   });
@@ -106,6 +108,52 @@ describe('command watcher', () => {
     repo.sigs['/r/c.txt'] = '4:4';
     await tick();
     await tick();
-    expect(changes).toEqual([{ root: '/r', filePath: '/r/c.txt', owners: ['s1', 's2'] }]);
+    expect(changes).toEqual([{ root: '/r', filePath: '/r/c.txt', owners: ['s1', 's2'], untracked: false }]);
+  });
+
+  it('a big pile of files already dirty does not switch the watcher off (#94 review)', async () => {
+    const { repo, watcher, changes } = setup();
+    repo.status = Array.from({ length: 250 }, (_, n) => `?? venv/f${n}\0`).join('');
+    for (let n = 0; n < 250; n++) repo.sigs[`/r/venv/f${n}`] = '1:1';
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    repo.status += ' M a.js\0';
+    repo.sigs['/r/a.js'] = '2:2';
+    await tick();
+    await tick();
+    expect(changes.map((change) => change.filePath)).toEqual(['/r/a.js']);
+  });
+
+  it('reports the files dirty at the baseline, and whether a change is a new file', async () => {
+    const { repo, watcher, changes, baselines } = setup();
+    repo.status = ' M pre.txt\0';
+    repo.sigs['/r/pre.txt'] = '1:1';
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    expect(baselines).toEqual([{ root: '/r', files: ['/r/pre.txt'] }]);
+    repo.status = ' M pre.txt\0?? novo.txt\0';
+    repo.sigs['/r/novo.txt'] = '3:3';
+    await tick();
+    await tick();
+    expect(changes).toEqual([{ root: '/r', filePath: '/r/novo.txt', owners: ['s1'], untracked: true }]);
+  });
+
+  it('keeps polling after a cycle throws', async () => {
+    let fail = true;
+    const { repo, watcher, changes } = setup({
+      statFile: async (abs) => {
+        if (fail && abs.endsWith('boom')) throw new Error('EIO');
+        return '5:5';
+      },
+    });
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    repo.status = ' M boom\0';
+    await tick(); // throws
+    fail = false;
+    await tick();
+    await tick();
+    expect(watcher.activeRoots()).toEqual(['/r']);
+    expect(changes.map((change) => change.filePath)).toEqual(['/r/boom']);
   });
 });

@@ -183,15 +183,44 @@ describe('command edits (#94)', () => {
     expect(edit).toMatchObject({ note: 'deleted', hunks: [] });
   });
 
-  it('explains a change by an edit in flight or one that just ended', () => {
-    let clock = 10000;
-    const tracker = new EditTracker({ now: () => clock });
+  it('only an edit still being written explains a change by itself (#94 review)', () => {
+    const tracker = makeTracker();
     tracker.beginEdit(pre('t1', '/repo/w.js'));
-    expect(tracker.explains('s1', '/repo/w.js', 10000)).toBe(true);
+    expect(tracker.explains('/repo/w.js')).toBe(true);
     tracker.completeEdit(post('t2', '/repo/e.js'), content('a', 'b'));
-    expect(tracker.explains('s1', '/repo/e.js', 14000)).toBe(true);
-    expect(tracker.explains('s1', '/repo/e.js', 16000)).toBe(false);
-    expect(tracker.explains('s1', '/repo/other.js', 10000)).toBe(false);
+    expect(tracker.explains('/repo/e.js')).toBe(false);
+    expect(tracker.explains('/repo/other.js')).toBe(false);
+  });
+
+  it('knows what any session last wrote to a file', () => {
+    const tracker = makeTracker();
+    tracker.completeEdit({ ...post('t1', '/repo/a.js'), session_id: 's2' }, content('a', 'b'));
+    expect(tracker.contentsAnywhere('/repo/a.js')).toEqual(['b']);
+    expect(tracker.contentsAnywhere('/repo/x.js')).toEqual([]);
+  });
+
+  it('announces when a task starts and ends', () => {
+    const tracker = makeTracker();
+    const seen = [];
+    tracker.on('task', ({ sessionId, ended }) => seen.push([sessionId, ended]));
+    tracker.startTask('s1');
+    tracker.endTask('s1');
+    expect(seen).toEqual([['s1', false], ['s1', true]]);
+  });
+
+  it('a file that keeps changing updates one card instead of piling up', () => {
+    let clock = 0;
+    const tracker = new EditTracker({ now: () => clock });
+    tracker.startTask('s1');
+    clock = 1000;
+    const first = tracker.addCommandEdit('s1', { filePath: '/repo/log.txt', before: 'a\n', after: 'a\nb\n' });
+    clock = 20000;
+    const again = tracker.addCommandEdit('s1', { filePath: '/repo/log.txt', before: 'a\nb\n', after: 'a\nb\nc\n' });
+    expect(again).toBe(first);
+    expect(tracker.currentTask('s1').edits).toHaveLength(1);
+    expect(first).toMatchObject({ added: 2, removed: 0 });
+    clock = 60000;
+    expect(tracker.addCommandEdit('s1', { filePath: '/repo/log.txt', before: 'x', after: 'y' })).not.toBe(first);
   });
 });
 

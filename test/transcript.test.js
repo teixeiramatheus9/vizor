@@ -11,6 +11,7 @@ import {
   readAiTitle,
   parseEditReason,
   parseLastBashCommand,
+  parseInterrupted,
   readEditReason,
 } from '../src/main/transcript.js';
 
@@ -269,5 +270,19 @@ describe('parseLastBashCommand (#94)', () => {
 
   it('cuts long commands', () => {
     expect(parseLastBashCommand([userLine('p'), bash('x'.repeat(300))].join('\n'))).toBe(`${'x'.repeat(200)}…`);
+  });
+});
+
+describe('parseInterrupted (#94 review)', () => {
+  const interrupt = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } });
+  const reply = assistantLine('feito');
+
+  it('sees a user interrupt as the last word of the turn', () => {
+    expect(parseInterrupted([userLine('faz'), reply, interrupt].join('\n'))).toBe(true);
+  });
+
+  it('is false once the conversation moved on, or never stopped', () => {
+    expect(parseInterrupted([userLine('faz'), interrupt, userLine('de novo'), reply].join('\n'))).toBe(false);
+    expect(parseInterrupted([userLine('faz'), reply].join('\n'))).toBe(false);
   });
 });
