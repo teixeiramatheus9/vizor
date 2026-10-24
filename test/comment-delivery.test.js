@@ -44,7 +44,7 @@ describe('comment delivery (#95, after review)', () => {
   });
 
   it('idle "waiting for your input" is no reason to hold', async () => {
-    const { delivery, calls, add } = setup({ session: inside({ status: 'waiting' }) });
+    const { delivery, calls, add } = setup({ session: inside({ status: 'waiting', updatedAt: 0 }) });
     add('oi');
     await delivery.flush('s1');
     expect(calls.pty).toHaveLength(2);
@@ -132,5 +132,13 @@ describe('comment delivery (#95, after review)', () => {
     add('dois');
     await Promise.all([delivery.flush('s1'), delivery.flush('s1')]);
     expect(calls.peer).toHaveLength(2);
+  });
+
+  it('does not type into a fresh notice that may still become a question (#96 review)', async () => {
+    const { delivery, calls, add, state } = setup({ session: inside({ status: 'waiting', updatedAt: Date.now() }), peer: 'no-channel' });
+    add('oi');
+    await delivery.flush('s1', { immediate: true });
+    expect(calls.pty).toEqual([]);
+    expect(state()[0][0]).toBe('queued');
   });
 });

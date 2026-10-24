@@ -100,7 +100,10 @@ function renderQuitButton(trayAvailable) {
 
 
 bubble.addEventListener('mousedown', (event) => {
-  if (managed && event.button === 0) window.manager.dragStart();
+  // macOS ctrl-click is a right-click: it also fires contextmenu (panel), so
+  // it must not start the drag/click path too, or the panel flashes.
+  const macContextClick = event.ctrlKey && navigator.platform.startsWith('Mac');
+  if (managed && event.button === 0 && !macContextClick) window.manager.dragStart();
 });
 window.addEventListener('mouseup', () => {
   if (managed) window.manager.dragEnd();

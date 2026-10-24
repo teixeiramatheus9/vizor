@@ -1,4 +1,5 @@
 import { bracketedPaste, flattenForTyping } from './comment-message.js';
+import { safeToTypeIdle } from './bubble-routing.js';
 
 // Sends queued 💬 comments to their session (#95), one at a time, in order.
 //
@@ -25,6 +26,7 @@ export function createCommentDelivery({
   sendPeer,
   typeReply,
   delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now = Date.now,
   log = () => {},
 }) {
   const flushing = new Set();
@@ -33,7 +35,8 @@ export function createCommentDelivery({
   async function deliver(session, comment, { immediate }) {
     const ptyId = session.term?.VIZOR_PTY_ID ?? null;
     const idle = IDLE.includes(session.status);
-    if (ptyId && idle && claudeInPty(session, ptyId)) {
+    // Typing needs more than idle: a fresh notice may still be a question.
+    if (ptyId && safeToTypeIdle(session, now()) && claudeInPty(session, ptyId)) {
       writePty(ptyId, bracketedPaste(comment.message));
       await delay(PASTE_ENTER_DELAY_MS);
       // A dialog or another program may have come up in between.
@@ -43,6 +46,9 @@ export function createCommentDelivery({
     }
     if ((await sendPeer(session, comment.message)) === 'sent') return { outcome: 'sent', channel: 'peer' };
     if (!idle) return { outcome: 'hold', channel: null };
+    // A Vizor session whose notice hasn't settled yet: try again shortly.
+    if (ptyId && !safeToTypeIdle(session, now()) && !session.needsPermission && !session.question)
+      return { outcome: 'hold', channel: null };
     if (!ptyId && immediate) {
       const typed = await typeReply(session, flattenForTyping(comment.message));
       if (typed === 'typed' || typed === 'sent') return { outcome: 'sent', channel: 'typing' };

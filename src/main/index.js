@@ -332,6 +332,7 @@ const repoRootCache = new Map(); // session cwd → repo root | null
 let workspacePushTimer = null;
 let lastNoticeSessionId = null; // the session the bubble opens the workspace on
 let workspaceSelectedSession = null; // what the workspace window shows (for notices)
+const answering = new Set(); // sessions with a pty answer in flight
 let workspaceRechecked = new Set(); // unplaced cwds whose repo was already re-listed
 let ptyHost = null; // created on the first terminal open
 const editPipeline = createEditPipeline({
@@ -1715,7 +1716,10 @@ ipcMain.handle('comments:add', async (event, { sessionId, editId, text } = {}) =
   commentStore.add({ sessionId, editId, text: valid.text, message: buildCommentMessage(edit, valid.text) });
   // immediate: the user just pressed Enviar — the only moment typing into a
   // terminal window is acceptable.
-  commentDelivery.flush(sessionId, { immediate: true }).catch((error) => log(`comment flush failed: ${error}`));
+  commentDelivery
+    .flush(sessionId, { immediate: true })
+    .then(() => flushHeldComments())
+    .catch((error) => log(`comment flush failed: ${error}`));
   return { ok: true };
 });
 
@@ -1729,11 +1733,22 @@ ipcMain.handle('comments:copy', (event, { sessionId, commentId } = {}) => {
   return true;
 });
 
-// A session that stops waiting gets its held comments.
+// A session that stops waiting gets its held comments. A comment held only
+// because a fresh notice hasn't settled is retried a moment later, since no
+// registry change will come to wake it.
+let heldRetryTimer = null;
 function flushHeldComments() {
+  let pending = false;
   for (const session of registry.list())
-    if (commentStore.nextToSend(session.id, session))
+    if (commentStore.nextToSend(session.id, session)) {
+      pending = true;
       commentDelivery.flush(session.id).catch((error) => log(`comment flush failed: ${error}`));
+    }
+  if (pending && !heldRetryTimer)
+    heldRetryTimer = setTimeout(() => {
+      heldRetryTimer = null;
+      flushHeldComments();
+    }, 3500);
 }
 
 ipcMain.on('workspace:selected', (event, sessionId) => {
@@ -2172,12 +2187,31 @@ ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
   // no window, and it cannot land on the wrong option if the list scrolled.
   const ptyId = session.term?.VIZOR_PTY_ID;
   if (ptyId && answerRoute({ session, claudeInFront: claudeInPty(session, ptyId) }) === 'pty') {
-    // The open question is the target here: arrows to the option, then Enter.
-    ptyHost.write(ptyId, answerKeys(index));
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    ptyHost.write(ptyId, '\r');
-    registry.markAnswered(sessionId);
-    return 'answered';
+    // One answer at a time per session: two chip clicks would mix arrows.
+    if (answering.has(sessionId)) return 'failed';
+    answering.add(sessionId);
+    try {
+      // The question the panel shows may be stale (answered in the terminal,
+      // replaced by a permission prompt): only press keys if the transcript
+      // still has THIS question pending, and the index is one of its options.
+      const fresh = session.transcriptPath
+        ? (await readTranscriptSnapshot(session.transcriptPath)).pendingQuestion
+        : null;
+      const shown = session.question?.questions?.[0];
+      const same =
+        fresh?.questions?.length === 1 &&
+        fresh.questions[0].question === shown?.question &&
+        JSON.stringify(fresh.questions[0].options) === JSON.stringify(shown?.options);
+      if (!same || index >= shown.options.length) return 'failed';
+      ptyHost.write(ptyId, answerKeys(index));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!claudeInPty(session, ptyId) || registry.sessions.get(sessionId)?.needsPermission) return 'failed';
+      ptyHost.write(ptyId, '\r');
+      registry.markAnswered(sessionId);
+      return 'answered';
+    } finally {
+      answering.delete(sessionId);
+    }
   }
   const optionText = session.question?.questions?.[0]?.options?.[index];
   const channel = readSessionChannel(session.id);
