@@ -400,9 +400,25 @@ window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
   render();
 });
 
+// Flow control (#113): tell main how much each terminal has actually drawn,
+// batched; main pauses a pty that runs too far ahead of the screen.
+const acks = new Map();
+let ackTimer = null;
+function ack(id, chars) {
+  acks.set(id, (acks.get(id) ?? 0) + chars);
+  if (ackTimer) return;
+  ackTimer = setTimeout(() => {
+    ackTimer = null;
+    for (const [terminalId, count] of acks) window.vizor.ackTerminal(terminalId, count);
+    acks.clear();
+  }, 50);
+}
+
 window.vizor.onTerminalData(({ id, data }) => {
   const view = views.get(id);
-  if (view?.ready) view.term.write(data);
+  // Dropped data (no view yet: the replay carries it) is acked too.
+  if (view?.ready) view.term.write(data, () => ack(id, data.length));
+  else ack(id, data.length);
 });
 
 window.vizor.onTerminalExit(() => renderTerminalArea());

@@ -11,6 +11,11 @@ export const PTY_BUFFER_CHARS = 1048576;
 // batching keeps the main process and the window responsive.
 export const PTY_BATCH_MS = 16;
 const CLAUDE_FALLBACK_MS = 1500;
+// Flow control (#113): output sent to the window but not yet drawn by xterm.
+// Past HIGH the pty is paused (the program blocks on write, like in any real
+// terminal), and resumed once the window catches up below LOW.
+export const PTY_FLOW_HIGH = 1048576;
+export const PTY_FLOW_LOW = 262144;
 const ENDED_BUFFER_CHARS = 65536;
 
 // A cut buffer can start mid escape sequence or mid surrogate pair, and the
@@ -72,6 +77,11 @@ export function createPtyHost({
     if (!entry.pending) return;
     const data = entry.pending;
     entry.pending = '';
+    entry.unacked += data.length;
+    if (!entry.paused && entry.unacked > PTY_FLOW_HIGH && entry.info.alive) {
+      entry.paused = true;
+      entry.child.pause?.();
+    }
     host.emit('data', { id: entry.info.id, data });
   }
 
@@ -85,7 +95,7 @@ export function createPtyHost({
       env: ptyEnv(process.env, id),
     });
     const info = { id, cwd, alive: true, exitCode: null, startedAt: Date.now(), title: null };
-    const entry = { info, child, buffer: '', pending: '', timer: null };
+    const entry = { info, child, buffer: '', pending: '', timer: null, unacked: 0, paused: false };
     terminals.set(id, entry);
 
     // Typed once the shell first speaks (its prompt is up), or after a silent
@@ -119,6 +129,22 @@ export function createPtyHost({
     });
     host.emit('change');
     return { ...info };
+  };
+
+  // The window drew `chars` more characters of this terminal's output.
+  host.ack = (id, chars) => {
+    const entry = terminals.get(id);
+    if (!entry || !Number.isFinite(chars) || chars <= 0) return;
+    entry.unacked = Math.max(0, entry.unacked - chars);
+    if (entry.paused && entry.unacked < PTY_FLOW_LOW) {
+      entry.paused = false;
+      if (entry.info.alive) entry.child.resume?.();
+    }
+  };
+
+  // The window (re)loaded: whatever was in flight will never be acked.
+  host.resetFlow = () => {
+    for (const id of terminals.keys()) host.ack(id, Number.MAX_SAFE_INTEGER);
   };
 
   host.write = (id, data) => {

@@ -1282,6 +1282,8 @@ workspaceWindow = workspaceAvailable(process.platform)
         }
       },
       onShow: () => {
+        // A (re)loaded page starts from the replay: nothing in flight survives.
+        ptyHost?.resetFlow();
         refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
       },
       isQuitting: () => appQuitting,
@@ -1416,6 +1418,8 @@ function ensurePtyHost() {
   ptyHost = createPtyHost({ spawn: pty.spawn, shell: process.env.SHELL || '/bin/bash' });
   ptyHost.on('data', (payload) => {
     if (workspaceWindow?.isReady()) workspaceWindow.send('pty:data', payload);
+    // Nobody to draw it: count it as drawn, or the terminal would pause (#113).
+    else ptyHost.ack(payload.id, payload.data.length);
   });
   ptyHost.on('exit', (payload) => {
     if (workspaceWindow?.isReady()) workspaceWindow.send('pty:exit', payload);
@@ -1452,6 +1456,9 @@ ipcMain.on('pty:write', (event, { id, data } = {}) => {
 ipcMain.on('pty:resize', (event, { id, cols, rows } = {}) => {
   const size = fromWorkspace(event) ? clampTerminalSize(cols, rows) : null;
   if (size) ptyHost?.resize(id, size.cols, size.rows);
+});
+ipcMain.on('pty:ack', (event, { id, chars } = {}) => {
+  if (fromWorkspace(event)) ptyHost?.ack(id, Number(chars));
 });
 ipcMain.on('pty:close', (event, id) => {
   if (fromWorkspace(event)) ptyHost?.close(id);
