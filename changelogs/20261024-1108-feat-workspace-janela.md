@@ -1,0 +1,1 @@
+- Nova janela de workspace (Linux), aberta pelo menu da bandeja: lista seus projetos, as worktrees de cada um e as sessões do Claude com status, separando as que rodam no Vizor das de outros terminais

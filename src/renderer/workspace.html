@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <title>Vizor — workspace</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="workspace.css" />
+  </head>
+  <body>
+    <header id="topbar"></header>
+    <main id="columns">
+      <nav id="sidebar" aria-label="Projetos"></nav>
+      <section class="pane" id="terminal-pane">
+        <div class="pane-bar">terminal</div>
+        <p class="placeholder">O terminal chega na próxima versão (#92).</p>
+      </section>
+      <section class="pane" id="file-pane">
+        <div class="pane-bar">arquivo vivo</div>
+        <p class="placeholder">O arquivo vivo chega na #93.</p>
+      </section>
+      <section class="pane" id="timeline-pane">
+        <div class="pane-bar">linha do tempo</div>
+        <p class="placeholder">A linha do tempo chega na #93.</p>
+      </section>
+    </main>
+    <script type="module" src="workspace.js"></script>
+  </body>
+</html>

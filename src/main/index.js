@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   globalShortcut,
   ipcMain,
   Menu,
@@ -29,6 +30,14 @@ import {
 import { EditTracker } from './edit-tracker.js';
 import { createEditPipeline } from './edit-pipeline.js';
 import { readIndexVersion } from './git-files.js';
+import { listWorktrees, repoRootOf } from './worktrees.js';
+import {
+  addProject,
+  buildWorkspaceTree,
+  removeProject,
+  workspaceAvailable,
+} from './workspace-model.js';
+import { createWorkspaceWindowManager } from './workspace-window.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -283,6 +292,14 @@ migrateLegacyInstall({
 // Every edit the AI makes, per session and task — the workspace's live diff
 // reads from here. Fed by the edit-tool hooks, never by the registry.
 const editTracker = new EditTracker();
+// Workspace state, declared up here because sendState (and with it
+// pushWorkspaceState) can run before the workspace block below is evaluated.
+let workspaceWindow = null;
+let appQuitting = false;
+let workspaceOpenedOnce = false;
+const worktreeCache = new Map(); // project root → Worktree[]
+const repoRootCache = new Map(); // session cwd → repo root | null
+let workspacePushTimer = null;
 const editPipeline = createEditPipeline({
   tracker: editTracker,
   readFile: (file) => fs.promises.readFile(file, 'utf8').catch(() => null),
@@ -371,6 +388,7 @@ function sendState() {
       economy: isEconomyMode(),
     },
   });
+  pushWorkspaceState();
 }
 
 function speakAsManager(text) {
@@ -446,7 +464,8 @@ function loadPersistedState() {
 function persistAnchor() {
   try {
     fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ bubble: bubbleAnchor }));
+    // Merge: the workspace window keeps its bounds in this same file.
+    fs.writeFileSync(stateFile, JSON.stringify({ ...loadPersistedState(), bubble: bubbleAnchor }));
   } catch (error) {
     log(`persistAnchor failed: ${error}`);
   }
@@ -891,8 +910,12 @@ function refreshTrayMenu() {
     toggle: () => (bubbleVisible() ? hideToTray() : showBubble()),
     find: findBubble,
     quit: () => app.quit(),
+    workspace: () => workspaceWindow?.show(),
   };
-  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible() }).map((item) =>
+  const template = trayMenuTemplate({
+    bubbleVisible: bubbleVisible(),
+    workspace: Boolean(workspaceWindow),
+  }).map((item) =>
     item.id ? { ...item, click: actions[item.id] } : item,
   );
   tray.setContextMenu(Menu.buildFromTemplate(template));
@@ -1166,6 +1189,125 @@ async function enrichNotification(session) {
     showTooltip();
   }
 }
+
+// --- workspace window (Linux only in v1) -----------------------------------
+// Nothing here runs for someone who never opens it: the window, the git
+// worktree lookups and the project auto-add all start at the first open.
+workspaceWindow = workspaceAvailable(process.platform)
+  ? createWorkspaceWindowManager({
+      BrowserWindow,
+      preloadPath: path.join(rendererDir, 'workspace-preload.cjs'),
+      htmlPath: path.join(rendererDir, 'workspace.html'),
+      loadBounds: () => loadPersistedState().workspace ?? null,
+      saveBounds: (bounds) => {
+        try {
+          fs.mkdirSync(configDir, { recursive: true });
+          fs.writeFileSync(stateFile, JSON.stringify({ ...loadPersistedState(), workspace: bounds }));
+        } catch (error) {
+          log(`workspace bounds save failed: ${error}`);
+        }
+      },
+      onShow: () => {
+        workspaceOpenedOnce = true;
+        refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
+      },
+      isQuitting: () => appQuitting,
+    })
+  : null;
+
+function workspaceProjects() {
+  return managerConfig.workspaceProjects ?? [];
+}
+
+function saveWorkspaceProjects(projects) {
+  managerConfig = { ...managerConfig, workspaceProjects: projects };
+  try {
+    saveConfig(configFile, managerConfig);
+  } catch (error) {
+    log(`workspace projects save failed: ${error}`);
+  }
+}
+
+// Outside sessions bring their repo in by themselves (spec §9.1): a session
+// in a repo not listed yet adds it. Non-git folders only come in by hand.
+async function autoAddProjects() {
+  let added = false;
+  for (const session of registry.list()) {
+    if (!session.cwd || repoRootCache.has(session.cwd)) continue;
+    const root = await repoRootOf(session.cwd);
+    repoRootCache.set(session.cwd, root);
+    if (root && !workspaceProjects().includes(root)) {
+      saveWorkspaceProjects(addProject(workspaceProjects(), root));
+      added = true;
+    }
+  }
+  return added;
+}
+
+async function refreshWorkspace() {
+  if (!workspaceWindow) return;
+  await autoAddProjects();
+  await Promise.all(
+    workspaceProjects().map(async (root) => worktreeCache.set(root, await listWorktrees(root))),
+  );
+  pushWorkspaceStateNow();
+}
+
+function pushWorkspaceStateNow() {
+  if (!workspaceWindow?.isOpen()) return;
+  const projects = workspaceProjects().map((root) => ({
+    root,
+    worktrees: worktreeCache.get(root) ?? [],
+  }));
+  const tree = buildWorkspaceTree({
+    projects,
+    sessions: listWithDisplayNames(),
+    taskOf: (sessionId) => editTracker.currentTask(sessionId),
+  });
+  workspaceWindow.send('workspace:state', {
+    tree,
+    theme: managerConfig.theme,
+    palette: managerConfig.palette,
+  });
+  // A session in a known repo that matches no worktree: one was just created.
+  const stale = tree.unplaced.some((cwd) => repoRootCache.get(cwd) && worktreeCache.has(repoRootCache.get(cwd)));
+  if (stale) {
+    for (const cwd of tree.unplaced) {
+      const root = repoRootCache.get(cwd);
+      if (root) worktreeCache.delete(root);
+    }
+    refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
+  }
+}
+
+function pushWorkspaceState() {
+  if (!workspaceWindow?.isOpen() || workspacePushTimer) return;
+  workspacePushTimer = setTimeout(() => {
+    workspacePushTimer = null;
+    if (workspaceOpenedOnce) {
+      autoAddProjects()
+        .then((added) => (added ? refreshWorkspace() : pushWorkspaceStateNow()))
+        .catch((error) => log(`workspace push failed: ${error}`));
+    }
+  }, 150);
+}
+
+editTracker.on('change', () => pushWorkspaceState());
+
+ipcMain.handle('workspace:add-project', async () => {
+  const result = await dialog.showOpenDialog({ title: 'Abrir projeto', properties: ['openDirectory'] });
+  if (result.canceled || !result.filePaths[0]) return;
+  const dir = result.filePaths[0];
+  saveWorkspaceProjects(addProject(workspaceProjects(), (await repoRootOf(dir)) ?? dir));
+  await refreshWorkspace();
+});
+
+ipcMain.on('workspace:remove-project', (_event, root) => {
+  if (typeof root !== 'string') return;
+  saveWorkspaceProjects(removeProject(workspaceProjects(), root));
+  worktreeCache.delete(root);
+  pushWorkspaceStateNow();
+});
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
@@ -1867,6 +2009,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  appQuitting = true;
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();

@@ -14,8 +14,9 @@ export function hasTrayHostIn(dbusNames) {
 // The tray is the only handle left when the bubble is parked, so it opens the
 // app and its settings directly — a menu that could only toggle the bubble
 // still made you click the bubble to get anywhere.
-export function trayMenuTemplate({ bubbleVisible }) {
+export function trayMenuTemplate({ bubbleVisible, workspace = false }) {
   return [
+    ...(workspace ? [{ id: 'workspace', label: 'Abrir o workspace' }] : []),
     { id: 'panel', label: 'Abrir o painel' },
     { id: 'settings', label: 'Configurações' },
     { type: 'separator' },
