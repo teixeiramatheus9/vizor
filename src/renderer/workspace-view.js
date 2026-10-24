@@ -76,7 +76,7 @@ function renderSession(session, worktreePath, selectedId) {
 
 function renderWorktree(worktree, selectedId) {
   const branch = worktree.branch === null ? '(sem branch)' : worktree.branch;
-  return `<li class="worktree${worktree.prunable ? ' prunable' : ''}" title="${escapeHtml(worktree.path)}"><div class="worktree-head">${
+  return `<li class="worktree${worktree.prunable ? ' prunable' : ''}" title="${escapeHtml(worktree.path)}"><div class="worktree-head" data-worktree="${escapeHtml(worktree.path)}">${
     ICONS.branch
   }<span class="branch">${escapeHtml(branch)}</span>${worktree.prunable ? '<span class="tag">(removida)</span>' : ''}</div><ul class="sessions">${worktree.sessions
     .map((session) => renderSession(session, worktree.path, selectedId))
@@ -117,4 +117,29 @@ export function renderTopBar(tree) {
   return `<span class="brand">vzr · workspace</span><span class="count-item" title="rodando">${ICONS.working}${
     tree.counts.working
   } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span><span class="spacer"></span><button class="add-project" data-add-project>Abrir projeto…</button>`;
+}
+
+// Tabs of the selected worktree's terminals, oldest first. Titles come from
+// the terminal itself (claude sets it to the chat's title).
+export function renderTabs(terminals, activeId, titles) {
+  const tabs = terminals
+    .map((terminal, index) => {
+      const title = titles?.[terminal.id] || `terminal ${index + 1}`;
+      const ended = terminal.alive ? '' : ` · encerrado (${terminal.exitCode ?? '?'})`;
+      return `<button class="tab${terminal.alive ? '' : ' exited'}" data-tab="${escapeHtml(terminal.id)}" aria-selected="${
+        terminal.id === activeId
+      }"><span class="tab-title">${escapeHtml(title)}${ended}</span><span class="tab-close" data-close-tab="${escapeHtml(
+        terminal.id,
+      )}" title="Fechar">×</span></button>`;
+    })
+    .join('');
+  return `${tabs}<button class="tab-new" data-new-terminal title="Novo terminal com claude">+</button>`;
+}
+
+export function renderTerminalPlaceholder(kind) {
+  if (kind === 'outside')
+    return '<p>Essa sessão roda em outro terminal.</p><button data-focus-outside>Ir pro terminal</button>';
+  if (kind.startsWith('unavailable:'))
+    return `<p>Terminal indisponível: ${escapeHtml(kind.slice('unavailable:'.length))}</p>`;
+  return '<p>Escolha uma worktree e abra um terminal com +.</p>';
 }
