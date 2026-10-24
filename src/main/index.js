@@ -27,7 +27,7 @@ import {
   readTranscriptSnapshot,
 } from './transcript.js';
 import { EditTracker } from './edit-tracker.js';
-import { captureToolEvent } from './edit-capture.js';
+import { createEditPipeline } from './edit-pipeline.js';
 import { readIndexVersion } from './git-files.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
@@ -283,7 +283,12 @@ migrateLegacyInstall({
 // Every edit the AI makes, per session and task — the workspace's live diff
 // reads from here. Fed by the edit-tool hooks, never by the registry.
 const editTracker = new EditTracker();
-const editQueues = new Map(); // sessionId → tail of that session's capture chain
+const editPipeline = createEditPipeline({
+  tracker: editTracker,
+  readFile: (file) => fs.promises.readFile(file, 'utf8').catch(() => null),
+  readIndexVersion,
+  readReason: readEditReason,
+});
 
 const registry = new SessionRegistry({
   folderAliasFor: (cwd) => managerConfig.folderAliases[cwd] ?? null,
@@ -1164,29 +1169,13 @@ async function enrichNotification(session) {
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
-//
-// One chain per session: two quick Posts on the same file must not read each
-// other's half-finished state (the second one's "previous" is the first one's
-// "after").
 function onToolEvent(event) {
-  const sessionId = event.session_id;
-  if (!sessionId) return;
-  const run = () =>
-    captureToolEvent(event, {
-      tracker: editTracker,
-      readFile: (file) => fs.promises.readFile(file, 'utf8').catch(() => null),
-      readIndexVersion,
-      readReason: readEditReason,
-    }).then((edit) => {
+  editPipeline
+    .push(event)
+    .then((edit) => {
       if (edit && event.hook_event_name === 'PostToolUse') logEdit(edit);
-    });
-  const tail = (editQueues.get(sessionId) ?? Promise.resolve())
-    .then(run)
+    })
     .catch((error) => log(`edit capture failed: ${error}`));
-  editQueues.set(sessionId, tail);
-  tail.then(() => {
-    if (editQueues.get(sessionId) === tail) editQueues.delete(sessionId);
-  });
 }
 
 function logEdit(edit) {
@@ -1207,11 +1196,10 @@ function onHookEvent(event) {
       message: humanizeNotification(event.message),
     };
   }
-  if (event?.session_id) {
-    if (event.hook_event_name === 'UserPromptSubmit')
-      editTracker.startTask(event.session_id, { prompt: event.prompt ?? null });
-    else if (event.hook_event_name === 'Stop') editTracker.endTask(event.session_id);
-  }
+  // Task boundaries ride the same per-session chain as the edits, so an
+  // edit still queued from this prompt can't land in the next one.
+  if (event?.hook_event_name === 'UserPromptSubmit' || event?.hook_event_name === 'Stop')
+    editPipeline.push(event).catch((error) => log(`edit task tracking failed: ${error}`));
   const session = registry.applyEvent(event);
   if (!session) return;
   if (event.hook_event_name === 'Stop') {

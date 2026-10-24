@@ -112,6 +112,12 @@ export class EditTracker extends EventEmitter {
     return edit;
   }
 
+  // The transcript can lag the hook; the reason then arrives after the edit.
+  setReason(edit, reason) {
+    edit.reason = reason;
+    this.emit('change', { sessionId: edit.sessionId, edit });
+  }
+
   knownContent(sessionId, filePath) {
     return this.currentTask(sessionId)?.files.get(filePath)?.current ?? null;
   }
