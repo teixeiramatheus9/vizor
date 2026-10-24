@@ -25,6 +25,7 @@ export const ICONS = {
   branch: svg('<circle cx="3.5" cy="3" r="1.2"/><circle cx="3.5" cy="9" r="1.2"/><circle cx="8.5" cy="4.5" r="1.2"/><path d="M3.5 4.2v3.6M8.5 5.7c0 1.8-2.5 1.6-4.4 2.6"/>'),
   folder: svg('<path d="M1.5 3.5a1 1 0 0 1 1-1h2.2l1 1.2h3.8a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1z"/>'),
   writing: svg('<path d="M8 2l2 2-5.5 5.5H2.5V7.5z"/>'),
+  skipped: svg('<circle cx="6" cy="6" r="4.5"/><path d="M3 9l6-6"/>'),
 };
 
 const STATUS_LABEL = {
@@ -144,4 +145,132 @@ export function renderTerminalPlaceholder(kind) {
   if (kind.startsWith('unavailable:'))
     return `<p>Terminal indisponível: ${escapeHtml(kind.slice('unavailable:'.length))}</p>`;
   return '<p>Escolha uma worktree e abra um terminal com +.</p>';
+}
+
+// --- inspector (#93): timeline, cards and the live file ---------------------
+
+const NOTE_COPY = {
+  'no-diff': 'não deu pra montar o diff',
+  'too-large': 'arquivo grande demais pra mostrar o diff',
+  binary: 'arquivo binário',
+  unreadable: 'não deu pra ler o arquivo',
+};
+
+function clock(time) {
+  if (!time) return '';
+  const date = new Date(time);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+export function editStatusIcon(edit) {
+  if (edit.status === 'writing') return ICONS.writing;
+  if (edit.status === 'not-applied') return ICONS.skipped;
+  return ICONS.done;
+}
+
+function editStatusLabel(edit) {
+  if (edit.status === 'writing') return '<span class="edit-state">escrevendo…</span>';
+  if (edit.status === 'not-applied') return '<span class="edit-state">não aplicada</span>';
+  return '';
+}
+
+function editCounts(edit) {
+  if (edit.note) return '±?';
+  return `+${edit.added} −${edit.removed}`;
+}
+
+export function renderTimeline(task, selectedId, { following, newCount }) {
+  const follow =
+    !following && newCount > 0 ? `<button data-follow>seguir a IA (${newCount})</button>` : '';
+  if (!task?.edits.length) return `${follow}<p class="empty">Nenhuma mudança nesta tarefa ainda.</p>`;
+  const rows = task.edits
+    .map(
+      (edit) =>
+        `<li class="edit status-${edit.status}" data-edit="${escapeHtml(edit.id)}" aria-selected="${
+          edit.id === selectedId
+        }"><div class="edit-line">${editStatusIcon(edit)}<span class="seq">#${edit.seq}</span><span class="edit-path">${escapeHtml(
+          edit.relPath,
+        )}</span>${editStatusLabel(edit)}<span class="count">${editCounts(edit)}</span><span class="time">${clock(
+          edit.startedAt,
+        )}</span></div>${edit.reason ? `<div class="reason">${escapeHtml(edit.reason)}</div>` : ''}</li>`,
+    )
+    .join('');
+  return `${follow}<ol class="timeline">${rows}</ol>`;
+}
+
+function renderHunkLines(lines) {
+  return lines
+    .map((line) => `<div class="row ${line[0] === '+' ? 'add' : 'del'}">${escapeHtml(line)}</div>`)
+    .join('');
+}
+
+export function renderCards(task, selectedId) {
+  if (!task?.edits.length) return '<p class="empty">Nenhuma mudança nesta tarefa ainda.</p>';
+  return task.edits
+    .map((edit) => {
+      const body = edit.note
+        ? `<p class="note">${NOTE_COPY[edit.note] ?? edit.note}</p>`
+        : `<pre class="code">${renderHunkLines(edit.hunks.flatMap((hunk) => hunk.lines))}</pre>`;
+      return `<article class="card status-${edit.status}" data-card="${escapeHtml(edit.id)}"${
+        edit.id === selectedId ? ' aria-current="true"' : ''
+      }><header>${editStatusIcon(edit)}<span>#${edit.seq} · ${escapeHtml(edit.relPath)} · ${clock(
+        edit.startedAt,
+      )}</span>${editStatusLabel(edit)}</header>${
+        edit.reason ? `<p class="reason">${escapeHtml(edit.reason)}</p>` : ''
+      }${body}</article>`;
+    })
+    .join('');
+}
+
+export function renderFileView(file, editsById, selectedId) {
+  const head = `<header class="file-head">${escapeHtml(file.relPath)}</header>`;
+  if (file.note) return `${head}<p class="note">${NOTE_COPY[file.note] ?? file.note}</p>`;
+  const banner = (id) => {
+    const edit = editsById[id];
+    if (!edit) return '';
+    return `<div class="banner" data-banner="${escapeHtml(id)}"${id === selectedId ? ' aria-current="true"' : ''}>#${
+      edit.seq
+    }${edit.reason ? ` · ${escapeHtml(edit.reason)}` : ''}</div>`;
+  };
+  const unplaced = file.unplaced?.length
+    ? `<div class="unplaced">edições sem posição neste arquivo: ${file.unplaced
+        .map((id) => (editsById[id] ? `<span data-banner="${escapeHtml(id)}">#${editsById[id].seq}</span>` : ''))
+        .join(' ')}</div>`
+    : '';
+  const rows = file.rows
+    .map(
+      (row, index) =>
+        `${(file.anchors?.[index] ?? []).map(banner).join('')}<div class="row ${row.kind}"><span class="gutter">${
+          row.oldNo ?? ''
+        }</span><span class="gutter">${row.newNo ?? ''}</span><span class="text">${escapeHtml(row.text)}</span></div>`,
+    )
+    .join('');
+  return `${head}${unplaced}<pre class="code file">${rows}</pre>`;
+}
+
+export function renderInspectorHeader({ mode, width }) {
+  const toggle = (value, label) =>
+    `<button data-mode="${value}" aria-pressed="${mode === value}">${label}</button>`;
+  const widthTitle = width === 'wide' ? 'Mais estreito' : 'Mais largo';
+  return `<div class="modes">${toggle('arquivo', 'Arquivo')}${toggle('cards', 'Cards')}</div><span class="spacer"></span><button data-width-next title="${widthTitle}">${
+    width === 'wide' ? '⇥' : '⇤'
+  }</button><button data-collapse title="Recolher">▸</button>`;
+}
+
+export function renderRail({ editCount, writing }) {
+  return `<button class="rail" data-expand title="Mostrar mudanças"><span class="badge">${editCount}</span>${
+    writing ? '<span class="dot writing"></span>' : ''
+  }</button>`;
+}
+
+export function renderTaskPicker(summaries, currentId) {
+  const options = summaries
+    .map(
+      (summary) =>
+        `<option value="${escapeHtml(summary.id)}"${summary.id === currentId ? ' selected' : ''}>${clock(
+          summary.startedAt,
+        )} · ${escapeHtml(summary.prompt || 'sem prompt')} (${summary.edits})</option>`,
+    )
+    .join('');
+  return `<select data-task-picker><option value="">tarefa atual</option>${options}</select>`;
 }
