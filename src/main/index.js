@@ -1282,9 +1282,14 @@ workspaceWindow = workspaceAvailable(process.platform)
         }
       },
       onShow: () => {
-        // A (re)loaded page starts from the replay: nothing in flight survives.
-        ptyHost?.resetFlow();
         refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
+      },
+      // A (re)loaded page starts from the replay, and a dead one acks
+      // nothing: either way, what was in flight will never be acked (#113).
+      onLoad: () => ptyHost?.resetFlow(),
+      onGone: () => {
+        log('workspace renderer gone — terminals resumed, reloading on next open');
+        ptyHost?.resetFlow();
       },
       isQuitting: () => appQuitting,
       // First frame in the palette's own colour (#108).
@@ -1561,7 +1566,6 @@ ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
 // Recorded for every session, workspace open or not — like the edits — but
 // git is only polled while some session has a task running there.
 const BASELINE_FILE_BYTES = MAX_DIFF_BYTES;
-const MAX_HEAD_PATHS = 200; // a branch switch touching thousands of files is not read card by card
 const BASELINE_TOTAL_BYTES = 20 * 1024 * 1024;
 const baselineSnapshots = new Map(); // root → Map<abs, content> of files dirty at task start
 
@@ -1586,8 +1590,10 @@ const commandWatcher = createCommandWatcher({
       timeout: 3000,
       maxBuffer: 16 * 1024 * 1024,
     })
-      .then(({ stdout }) => stdout.split('\0').filter(Boolean).slice(0, MAX_HEAD_PATHS))
-      .catch(() => []),
+      // Full list: the watcher skips a cycle past its cap — a truncated list
+      // would never trip it and become 200 arbitrary cards (review I-3).
+      .then(({ stdout }) => stdout.split('\0').filter(Boolean))
+      .catch(() => null),
   statFile: (abs) =>
     fs.promises.stat(abs).then(
       (stats) => `${stats.size}:${stats.mtimeMs}`,
@@ -1703,17 +1709,21 @@ async function recordCommandChange({ root, filePath, owners, untracked, fromHead
 // real paths (#132). Cached — called per tracked file on every comparison.
 const realPaths = new Map();
 function realPathOf(file) {
-  if (!realPaths.has(file)) {
-    let real = file;
-    try {
-      real = fs.realpathSync(file);
-    } catch {
-      // gone: compare as given
-    }
+  if (realPaths.has(file)) return realPaths.get(file);
+  try {
+    const real = fs.realpathSync(file);
     if (realPaths.size > 5000) realPaths.clear();
     realPaths.set(file, real);
+    return real;
+  } catch {
+    // Not there yet (a Write still waiting on permission): resolve the
+    // folder, and never cache — the file may appear in a moment (review M-4).
+    try {
+      return path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+    } catch {
+      return file;
+    }
   }
-  return realPaths.get(file);
 }
 
 const COMMAND_ROOT_RETRY_MS = 60000;
@@ -2374,7 +2384,11 @@ async function sendPeerMessage(session, text, { priority = null } = {}) {
 async function replyToSession(session, text) {
   // A panel reply is the user reacting to this chat right now — jump the
   // queue instead of waiting for whatever turn is in flight to finish.
-  if ((await sendPeerMessage(session, text, { priority: 'now' })) === 'sent') return 'sent';
+  const peer = await sendPeerMessage(session, text, { priority: 'now' });
+  if (peer === 'sent') return 'sent';
+  // A channel that answered but did not close may have delivered it: typing it
+  // too would send the reply twice (same rule as comments, #138).
+  if (peer === 'failed') return 'failed';
   return typeIntoTerminal(session, text);
 }
 

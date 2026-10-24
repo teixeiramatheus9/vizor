@@ -199,4 +199,36 @@ describe('command watcher', () => {
     expect(changes.map((change) => change.filePath)).toEqual(['/r/limpo.js']);
     expect(changes[0].fromHead).toBe('aaa');
   });
+
+  it('a branch switch touching too many files is skipped, not turned into cards (review I-3)', async () => {
+    let head = 'aaa';
+    const many = Array.from({ length: 5000 }, (_, n) => `f${n}.js`);
+    const { watcher, changes } = setup({
+      gitHead: async () => head,
+      gitChangedBetween: async () => many,
+    });
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    head = 'bbb';
+    await tick();
+    await tick();
+    expect(changes).toEqual([]);
+  });
+
+  it('a failed HEAD diff is retried instead of forgotten (review M-2)', async () => {
+    let head = 'aaa';
+    let fail = true;
+    const { watcher, changes } = setup({
+      gitHead: async () => head,
+      gitChangedBetween: async () => (fail ? null : ['x.js']),
+    });
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    head = 'bbb';
+    await tick(); // diff fails
+    fail = false;
+    await tick();
+    await tick();
+    expect(changes.map((change) => change.filePath)).toEqual(['/r/x.js']);
+  });
 });

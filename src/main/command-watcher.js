@@ -78,20 +78,24 @@ export function createCommandWatcher({
     // Paths that left the dirty set (reverted) are stat-ed once more too.
     const union = await signatures(root, [...new Set([...state.sigs.keys(), ...dirty])]);
     const changed = changedPaths(state.sigs, union);
+    let headSeen = true;
     if (head && state.head && head !== state.head && gitChangedBetween) {
-      for (const relPath of await gitChangedBetween(root, state.head, head)) {
+      const moved = await gitChangedBetween(root, state.head, head);
+      if (moved === null) headSeen = false; // diff failed: look at this move again next cycle
+      for (const relPath of moved ?? []) {
         if (!changed.includes(relPath)) changed.push(relPath);
         // Its "before" is the old HEAD's version — the index already matches disk.
         if (!state.headOrigin.has(relPath)) state.headOrigin.set(relPath, state.head);
       }
     }
-    state.head = head ?? state.head;
+    if (headSeen) state.head = head ?? state.head;
     state.sigs = new Map([...union].filter(([relPath]) => dirty.includes(relPath)));
     if (changed.length > MAX_DIRTY_PATHS) {
       // A mass rewrite (lockfile churn, a codegen): absorbed into the new
       // signatures, never replayed as hundreds of cards.
       log(`command watcher: ${changed.length} changed paths in ${root}, skipping this cycle`);
       state.pending = new Map();
+      state.headOrigin = new Map();
       return;
     }
     const settled = settleCandidates({
@@ -101,6 +105,9 @@ export function createCommandWatcher({
       now: now(),
     });
     state.pending = settled.pending;
+    // Origins of paths no longer pending (explained) must not outlive them.
+    for (const relPath of [...state.headOrigin.keys()])
+      if (!state.pending.has(relPath) && !settled.emit.includes(relPath)) state.headOrigin.delete(relPath);
     for (const relPath of settled.emit) {
       onChange({
         root,

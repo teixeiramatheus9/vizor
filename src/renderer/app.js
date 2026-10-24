@@ -976,7 +976,12 @@ const TOAST_TITLE = {
   hint: 'aviso do gerente',
 };
 
-document.getElementById('toast-open').addEventListener('click', openPanel);
+// [abrir] does what clicking the balloon does — once (it used to also bubble
+// into the balloon click: a panel flash, every badge cleared).
+document.getElementById('toast-open').addEventListener('click', (event) => {
+  event.stopPropagation();
+  window.manager.tooltipClick(tooltipSessionId);
+});
 document.getElementById('toast-close').addEventListener('click', (event) => {
   event.stopPropagation();
   hideTooltip();

@@ -278,7 +278,9 @@ async function refreshInspector({ scroll = false } = {}) {
 }
 
 function renderComposerPanel() {
-  const edit = composer && inspectorTask?.edits.find((item) => item.id === composer.editId);
+  // The composer keeps its own copy of the change: picking another task in
+  // the picker must not hide it or lose the draft (review I-4 of #136).
+  const edit = composer?.edit ?? null;
   if (!edit) {
     // Its change left the view (another task, another session): no hidden
     // composer keeping state behind the scenes (#136).
@@ -431,7 +433,9 @@ document.addEventListener('click', async (event) => {
   if (commentButton) {
     // A draft already typed follows to the newly picked change (#135).
     const draft = composer?.draft ?? '';
-    composer = { editId: commentButton.dataset.comment, draft, error: null };
+    const editId = commentButton.dataset.comment;
+    const edit = inspectorTask?.edits.find((item) => item.id === editId) ?? null;
+    composer = { editId, edit, draft, error: null };
     renderComposerPanel();
     return;
   }
