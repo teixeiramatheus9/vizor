@@ -58,8 +58,10 @@ export class SessionRegistry extends EventEmitter {
       needsPermission: false,
     };
     if (event.wave?.blockId) session.wave = event.wave;
-    if (event.term && typeof event.term === 'object' && Object.keys(event.term).length) {
-      session.term = event.term;
+    // The hook only sends a term with keys; main sends an empty one when it
+    // dropped an identity that didn't hold (#140) — that clears it.
+    if (event.term && typeof event.term === 'object') {
+      session.term = Object.keys(event.term).length ? event.term : null;
     }
     if (event.cwd) {
       session.cwd = event.cwd;
