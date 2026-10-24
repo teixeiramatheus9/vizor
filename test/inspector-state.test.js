@@ -57,4 +57,11 @@ describe('inspector follow-the-AI', () => {
     state = onTask(state, task(edit('x', 1), edit('y', 2)));
     expect(state.newCount).toBe(0);
   });
+
+  it('a new task while reading an old edit goes back to following (#93 review)', () => {
+    let state = onTask(initialInspector('s'), task(edit('a', 1), edit('b', 2)));
+    state = onSelect(state, 'a');
+    state = onTask(state, { id: 's:2', edits: [edit('c', 3)] });
+    expect(state).toMatchObject({ selectedId: 'c', following: true, newCount: 0 });
+  });
 });

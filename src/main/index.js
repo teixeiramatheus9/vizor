@@ -45,7 +45,7 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost } from './pty-host.js';
-import { inlineRows, placeBanners, serializeTask, taskSummaries } from './edit-view.js';
+import { fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -1428,23 +1428,33 @@ ipcMain.handle('edits:task', (event, { sessionId, taskId = null } = {}) => {
   };
 });
 
-// Only files the task touched: the window must not be able to read anything else.
+// Only files the task touched: the window must not be able to read anything
+// else. The rows are cached per task and file until its contents change —
+// every edit ping would otherwise re-diff the whole file on main.
+const fileViewCache = new Map(); // `${taskId}\0${filePath}` → { start, current, dropped, edits, view }
+
 ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}) => {
   if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof filePath !== 'string')
     return { error: 'pedido inválido' };
   const task = pickTask(sessionId, taskId);
-  const edits = task?.edits.filter((edit) => edit.filePath === filePath) ?? [];
-  if (!task || (!task.files.has(filePath) && !edits.length)) return { error: 'arquivo fora da tarefa' };
-  const view = serializeTask({ ...task, edits }, sessionWorktree(sessionId));
-  const relPath = view.edits[0]?.relPath ?? path.basename(filePath);
+  if (!task) return { error: 'arquivo fora da tarefa' };
   const file = task.files.get(filePath);
-  if (typeof file?.current !== 'string') {
-    const note = edits.findLast((edit) => edit.note)?.note ?? 'no-diff';
-    return { relPath, rows: [], anchors: {}, unplaced: [], note };
-  }
-  const { rows, note } = inlineRows(file.start, file.current);
-  if (note) return { relPath, rows: [], anchors: {}, unplaced: [], note };
-  return { relPath, rows, note: null, ...placeBanners(rows, view.edits) };
+  const edits = task.edits.filter((edit) => edit.filePath === filePath);
+  const signature = edits.map((edit) => `${edit.id}:${edit.status}:${edit.endedAt}`).join('|');
+  const key = `${task.id}\0${filePath}`;
+  const cached = fileViewCache.get(key);
+  if (
+    cached &&
+    cached.start === file?.start &&
+    cached.current === file?.current &&
+    cached.dropped === task.snapshotsDropped &&
+    cached.edits === signature
+  )
+    return cached.view;
+  const view = fileViewFor(task, filePath, sessionWorktree(sessionId));
+  if (fileViewCache.size > 50) fileViewCache.clear();
+  fileViewCache.set(key, { start: file?.start, current: file?.current, dropped: task.snapshotsDropped, edits: signature, view });
+  return view;
 });
 
 const INSPECTOR_MODES = ['arquivo', 'cards'];

@@ -26,6 +26,10 @@ export function onTask(state, task) {
   const edits = task?.edits ?? [];
   const ids = edits.map((edit) => edit.id);
   const newestId = newest(edits)?.id ?? null;
+  // A new task replaced the one being read (the old edit is gone): back to
+  // following instead of an empty detail.
+  if (state.taskId === null && state.selectedId && !ids.includes(state.selectedId))
+    return { ...state, following: true, selectedId: newestId, newestId, seenIds: ids, newCount: 0 };
   if (state.following)
     return { ...state, selectedId: newestId, newestId, seenIds: ids, newCount: 0 };
   // A past task is finished: nothing there is "new".

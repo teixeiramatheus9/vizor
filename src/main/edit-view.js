@@ -94,9 +94,43 @@ export function placeBanners(rows, edits) {
     const removed = lines.filter((line) => line[0] === '-').map((line) => line.slice(1));
     const [kind, candidates] = added.length ? ['add', added] : ['del', removed];
     const target = candidates.find(meaningful);
-    const index = target === undefined ? -1 : rows.findIndex((row) => row.kind === kind && row.text === target);
+    // The same line can be added in two places (a second `return null;`):
+    // of the matching rows, take the one closest to where the hunk landed.
+    const hunk = edit.hunks[0];
+    const near = kind === 'add' ? hunk?.newStart : hunk?.oldStart;
+    let index = -1;
+    let distance = Infinity;
+    if (target !== undefined)
+      rows.forEach((row, at) => {
+        if (row.kind !== kind || row.text !== target) return;
+        const gap = Math.abs((kind === 'add' ? row.newNo : row.oldNo) - (near ?? 0));
+        if (gap < distance) [index, distance] = [at, gap];
+      });
     if (index === -1) unplaced.push(edit.id);
     else (anchors[index] ??= []).push(edit.id);
   }
   return { anchors, unplaced };
+}
+
+// What the inspector's file view shows for one file of a task (spec §6.1):
+// the whole file as an inline diff from the task start — or, when that start
+// is unknown, the whole file unchanged with a "não deu pra montar o diff" seal.
+// Never all green unless the file was really created.
+export function fileViewFor(task, filePath, worktreePath) {
+  const edits = task?.edits.filter((edit) => edit.filePath === filePath) ?? [];
+  if (!task || (!task.files.has(filePath) && !edits.length)) return { error: 'arquivo fora da tarefa' };
+  const relPath = relativePath(filePath, worktreePath);
+  const empty = { relPath, rows: [], anchors: {}, unplaced: [], seal: null };
+  if (task.snapshotsDropped) return { ...empty, note: 'dropped' };
+  const file = task.files.get(filePath);
+  if (typeof file?.current !== 'string')
+    return { ...empty, note: edits.findLast((edit) => edit.note)?.note ?? 'no-diff' };
+  if (typeof file.start !== 'string') {
+    const rows = splitLines(file.current).map((text, at) => ({ kind: 'ctx', oldNo: at + 1, newNo: at + 1, text }));
+    return { ...empty, rows, note: null, seal: 'no-diff' };
+  }
+  const { rows, note } = inlineRows(file.start, file.current);
+  if (note) return { ...empty, note };
+  const view = serializeTask({ ...task, edits }, worktreePath);
+  return { ...empty, rows, note: null, ...placeBanners(rows, view.edits) };
 }

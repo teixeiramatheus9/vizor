@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { inlineRows, placeBanners, serializeTask, taskSummaries } from '../src/main/edit-view.js';
+import { fileViewFor, inlineRows, placeBanners, serializeTask, taskSummaries } from '../src/main/edit-view.js';
 
 const edit = (id, seq, filePath, lines, extra = {}) => ({
   id,
@@ -103,5 +103,47 @@ describe('placeBanners', () => {
   it('keeps edits sharing a row in seq order', () => {
     const placed = placeBanners(rows, [edit('e2', 2, '/r/a', ['+novo']), edit('e1', 1, '/r/a', ['+novo'])]);
     expect(placed.anchors).toEqual({ [at('novo', 'add')]: ['e1', 'e2'] });
+  });
+});
+
+describe('fileViewFor (#93 review)', () => {
+  const base = (files, edits) => ({ id: 's:1', prompt: '', startedAt: 1, endedAt: null, snapshotsDropped: false, files: new Map(files), edits });
+
+  it('a file whose start is unknown is shown whole, unchanged, with the seal — never all green', () => {
+    const task = base([['/r/a.js', { start: null, current: 'x\ny\n' }]], [edit('e1', 1, '/r/a.js', [], { note: 'no-diff' })]);
+    const view = fileViewFor(task, '/r/a.js', '/r');
+    expect(view.seal).toBe('no-diff');
+    expect(view.rows.map((row) => row.kind)).toEqual(['ctx', 'ctx']);
+    expect(view.note).toBeNull();
+  });
+
+  it('a created file is all additions, without a seal', () => {
+    const task = base([['/r/n.js', { start: '', current: 'a\n' }]], [edit('e1', 1, '/r/n.js', ['+a'])]);
+    expect(fileViewFor(task, '/r/n.js', '/r')).toMatchObject({ seal: null, note: null, rows: [{ kind: 'add' }] });
+  });
+
+  it('dropped snapshots say so', () => {
+    const task = { ...base([['/r/a.js', { start: null, current: null }]], [edit('e1', 1, '/r/a.js', ['+a'])]), snapshotsDropped: true };
+    expect(fileViewFor(task, '/r/a.js', '/r').note).toBe('dropped');
+  });
+
+  it('refuses files the task never touched', () => {
+    expect(fileViewFor(base([], []), '/etc/passwd', '/r')).toEqual({ error: 'arquivo fora da tarefa' });
+  });
+});
+
+describe('placeBanners with repeated lines (#93 review)', () => {
+  it('picks the matching row closest to where the edit landed', () => {
+    const before = Array.from({ length: 60 }, (_, n) => `l${n}`).join('\n') + '\n';
+    const lines = before.split('\n');
+    lines.splice(11, 0, '  return null;');
+    lines.splice(53, 0, '  return null;');
+    const rows = inlineRows(before, lines.join('\n')).rows;
+    const e1 = edit('e1', 1, '/r/a', ['+  return null;'], { hunks: [{ oldStart: 11, oldLines: 0, newStart: 12, newLines: 1, lines: ['+  return null;'] }] });
+    const e2 = edit('e2', 2, '/r/a', ['+  return null;'], { hunks: [{ oldStart: 52, oldLines: 0, newStart: 54, newLines: 1, lines: ['+  return null;'] }] });
+    const { anchors } = placeBanners(rows, [e1, e2]);
+    const rowOf = (id) => Number(Object.keys(anchors).find((key) => anchors[key].includes(id)));
+    expect(rows[rowOf('e1')].newNo).toBe(12);
+    expect(rows[rowOf('e2')].newNo).toBe(54);
   });
 });

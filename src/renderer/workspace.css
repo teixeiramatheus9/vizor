@@ -463,8 +463,8 @@ body[data-inspector-width='collapsed'] #columns {
   overflow: auto;
 }
 
-.empty,
-.note {
+#inspector .empty,
+#inspector .note {
   padding: 12px 10px;
   color: var(--muted);
 }
@@ -529,7 +529,7 @@ body[data-inspector-width='collapsed'] #columns {
 }
 
 .banner,
-.unplaced {
+.file-unplaced {
   margin: 4px 8px 2px;
   padding: 3px 8px;
   border-left: 2px solid var(--accent);

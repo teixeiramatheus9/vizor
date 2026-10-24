@@ -51,7 +51,9 @@ let inspector = initialInspector(null);
 let inspectorTask = null;
 let inspectorSummaries = [];
 let fileView = null;
-let scrollPending = false; // scroll to the selection on the next detail render
+let scrollPending = false; // scroll to the selection once its element renders
+let fileSignature = null; // what the current fileView was built from
+let pickerSignature = null;
 
 function cssVar(name) {
   return getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -168,28 +170,60 @@ function renderInspector() {
   const writing = edits.some((edit) => edit.status === 'writing');
   railEl.innerHTML = renderRail({ editCount: edits.length, writing });
   inspectorHead.innerHTML = renderInspectorHeader({ mode: prefs.mode, width: prefs.width, editCount: edits.length, writing });
-  taskPickerEl.innerHTML = inspector.sessionId ? renderTaskPicker(inspectorSummaries, inspector.taskId) : '';
+  // Rebuilt only when it changes: an open dropdown must survive edit pings.
+  const picker = inspector.sessionId ? renderTaskPicker(inspectorSummaries, inspector.taskId) : '';
+  if (picker !== pickerSignature) {
+    pickerSignature = picker;
+    taskPickerEl.innerHTML = picker;
+  }
   timelineEl.innerHTML = renderTimeline(inspectorTask, inspector.selectedId, inspector);
+  // Keep the reader's place: the selected item stays where it was on screen
+  // even when the AI inserts lines above it.
+  const anchorSelector =
+    prefs.mode === 'cards' ? '[data-card][aria-current="true"]' : '[data-banner][aria-current="true"]';
+  const anchorBefore = detailEl.querySelector(anchorSelector);
+  const offsetBefore = anchorBefore ? anchorBefore.offsetTop - detailEl.scrollTop : null;
   if (prefs.mode === 'cards') detailEl.innerHTML = renderCards(inspectorTask, inspector.selectedId);
   else if (fileView && !fileView.error) {
     const byId = Object.fromEntries(edits.map((edit) => [edit.id, edit]));
     detailEl.innerHTML = renderFileView(fileView, byId, inspector.selectedId);
   } else detailEl.innerHTML = '';
-  if (scrollPending) {
+  const anchor = detailEl.querySelector(anchorSelector);
+  // A pending scroll waits until its target exists: following an edit that
+  // is still being written, the banner only appears once it lands.
+  if (scrollPending && anchor) {
     scrollPending = false;
-    const target =
-      prefs.mode === 'cards'
-        ? detailEl.querySelector('[data-card][aria-current="true"]')
-        : detailEl.querySelector('[data-banner][aria-current="true"]');
-    target?.scrollIntoView({ block: 'center' });
+    anchor.scrollIntoView({ block: 'center' });
     timelineEl.querySelector('[data-edit][aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-  }
+  } else if (anchor && offsetBefore !== null) detailEl.scrollTop = anchor.offsetTop - offsetBefore;
+}
+
+// What the file view depends on: the selected file's edits. Pings about
+// other files (or a reason arriving) must not re-fetch a 2 MB file.
+function selectedFileSignature() {
+  const edit = selectedEdit();
+  if (!edit) return null;
+  return `${inspector.sessionId}|${inspector.taskId}|${edit.filePath}|${(inspectorTask?.edits ?? [])
+    .filter((item) => item.filePath === edit.filePath)
+    .map((item) => `${item.id}:${item.status}:${item.endedAt}`)
+    .join(',')}`;
 }
 
 async function loadFileView() {
   const edit = selectedEdit();
   if (prefs.mode !== 'arquivo' || !edit) {
     fileView = null;
+    fileSignature = null;
+    renderInspector();
+    return;
+  }
+  // Collapsed: nothing to show, fetch when it opens.
+  if (prefs.width === 'collapsed') {
+    renderInspector();
+    return;
+  }
+  const signature = selectedFileSignature();
+  if (fileView && signature === fileSignature) {
     renderInspector();
     return;
   }
@@ -204,6 +238,7 @@ async function loadFileView() {
   const result = await window.vizor.getFileView(inspector.sessionId, inspector.taskId, edit.filePath);
   if (!acceptsFile(inspector, request.token)) return;
   fileView = result;
+  fileSignature = signature;
   renderInspector();
 }
 
@@ -256,7 +291,7 @@ window.vizor.getPrefs().then((saved) => {
 document.addEventListener('keydown', (event) => {
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'e') {
     event.preventDefault();
-    savePrefs({ width: prefs.width === 'collapsed' ? lastOpenWidth : 'collapsed' });
+    savePrefs({ width: prefs.width === 'collapsed' ? lastOpenWidth : 'collapsed' }).then(() => loadFileView());
   }
 });
 
@@ -330,7 +365,8 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (target.closest('[data-expand]')) {
-    savePrefs({ width: lastOpenWidth });
+    await savePrefs({ width: lastOpenWidth });
+    await loadFileView();
     return;
   }
   const remove = target.closest('[data-remove-project]');

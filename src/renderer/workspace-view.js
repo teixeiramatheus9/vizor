@@ -234,8 +234,9 @@ export function renderFileView(file, editsById, selectedId) {
       edit.seq
     }${edit.reason ? ` · ${escapeHtml(edit.reason)}` : ''}</div>`;
   };
+  const seal = file.seal ? `<p class="note seal">${NOTE_COPY[file.seal] ?? file.seal}</p>` : '';
   const unplaced = file.unplaced?.length
-    ? `<div class="unplaced">edições sem posição neste arquivo: ${file.unplaced
+    ? `<div class="file-unplaced">edições sem posição neste arquivo: ${file.unplaced
         .map((id) => (editsById[id] ? `<span data-banner="${escapeHtml(id)}">#${editsById[id].seq}</span>` : ''))
         .join(' ')}</div>`
     : '';
@@ -247,7 +248,7 @@ export function renderFileView(file, editsById, selectedId) {
         }</span><span class="gutter">${row.newNo ?? ''}</span><span class="text">${escapeHtml(row.text)}</span></div>`,
     )
     .join('');
-  return `${head}${unplaced}<pre class="code filediff">${rows}</pre>`;
+  return `${head}${seal}${unplaced}<pre class="code filediff">${rows}</pre>`;
 }
 
 export function renderInspectorHeader({ mode, width }) {
@@ -265,8 +266,11 @@ export function renderRail({ editCount, writing }) {
   }</button>`;
 }
 
+// The first summary is the current task, already the "tarefa atual" option:
+// listing it again by id would freeze following when picked.
 export function renderTaskPicker(summaries, currentId) {
   const options = summaries
+    .slice(1)
     .map(
       (summary) =>
         `<option value="${escapeHtml(summary.id)}"${summary.id === currentId ? ' selected' : ''}>${clock(

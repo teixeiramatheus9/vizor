@@ -259,8 +259,15 @@ describe('inspector', () => {
     expect(html).toContain('writing');
   });
 
-  it('task picker starts with the current task', () => {
-    const html = renderTaskPicker([{ id: 't2', prompt: '<x>', startedAt: at, edits: 2 }], null);
+  it('task picker starts with the current task and lists only the earlier ones', () => {
+    const html = renderTaskPicker(
+      [
+        { id: 't3', prompt: 'atual', startedAt: at, edits: 1 },
+        { id: 't2', prompt: '<x>', startedAt: at, edits: 2 },
+      ],
+      null,
+    );
+    expect(html).not.toContain('value="t3"');
     expect(html).toContain('data-task-picker');
     expect(html).toContain('<option value="">tarefa atual</option>');
     expect(html).toContain('&lt;x&gt;');
@@ -272,5 +279,12 @@ describe('inspector', () => {
     expect(renderFileView({ relPath: 'c.js', rows: [], anchors: {}, unplaced: [], note: 'writing' }, {}, 'w')).toContain(
       'a IA está escrevendo neste arquivo…',
     );
+  });
+
+  it('file view with a seal shows the whole file plus the warning (#93 review)', () => {
+    const html = renderFileView({ relPath: 'a.js', rows: [{ kind: 'ctx', oldNo: 1, newNo: 1, text: 'x' }], anchors: {}, unplaced: [], note: null, seal: 'no-diff' }, {}, null);
+    expect(html).toContain('não deu pra montar o diff');
+    expect(html).toContain('<span class="text">x</span>');
+    expect(html).not.toContain('class="unplaced"');
   });
 });
