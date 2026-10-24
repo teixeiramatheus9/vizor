@@ -22,6 +22,7 @@ export function serializeTask(task, worktreePath) {
     prompt: task.prompt,
     startedAt: task.startedAt,
     endedAt: task.endedAt,
+    snapshotsDropped: Boolean(task.snapshotsDropped),
     edits: task.edits.map((edit) => ({
       id: edit.id,
       seq: edit.seq,
@@ -37,6 +38,7 @@ export function serializeTask(task, worktreePath) {
       removed: edit.removed,
       baseline: edit.baseline,
       hunks: edit.hunks,
+      uncertainOwner: Boolean(edit.uncertainOwner),
     })),
   };
 }
@@ -133,4 +135,8 @@ export function fileViewFor(task, filePath, worktreePath) {
   if (note) return { ...empty, note };
   const view = serializeTask({ ...task, edits }, worktreePath);
   return { ...empty, rows, note: null, ...placeBanners(rows, view.edits) };
+}
+
+export function commandReason(command) {
+  return command ? `$ ${command}` : 'origem desconhecida';
 }

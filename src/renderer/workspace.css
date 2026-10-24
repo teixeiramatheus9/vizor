@@ -582,3 +582,15 @@ body[data-inspector-width='collapsed'] #rail {
   background: var(--warn);
   animation: pulse 1.2s ease-in-out infinite;
 }
+
+.edit-state.command {
+  color: var(--text-3);
+}
+
+.tag.uncertain {
+  padding: 0 4px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  color: var(--warn);
+  font-size: 10px;
+}

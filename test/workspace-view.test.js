@@ -288,3 +288,27 @@ describe('inspector', () => {
     expect(html).not.toContain('class="unplaced"');
   });
 });
+
+describe('command changes in the inspector (#94)', () => {
+  const at = new Date(2026, 9, 24, 14, 2).getTime();
+  const cmd = (extra = {}) => ({ id: 'c', seq: 3, filePath: '/r/b.txt', relPath: 'b.txt', toolName: 'Bash', status: 'by-command',
+    startedAt: at, endedAt: at, reason: '$ sed', note: null, added: 1, removed: 1, baseline: 'git',
+    hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-x', '+y'] }], ...extra });
+  const task = (edits) => ({ id: 's:1', prompt: '', startedAt: at, endedAt: null, edits });
+
+  it('labels command changes and an uncertain owner', () => {
+    const html = renderTimeline(task([cmd()]), null, { following: true, newCount: 0 });
+    expect(html).toContain('por comando');
+    expect(html).toContain(ICONS.command);
+    expect(html).not.toContain('dono incerto');
+    expect(renderTimeline(task([cmd({ uncertainOwner: true })]), null, { following: true, newCount: 0 })).toContain('dono incerto');
+    expect(renderCards(task([cmd({ uncertainOwner: true })]), null)).toContain('dono incerto');
+  });
+
+  it('says a file was deleted, or that old contents were dropped', () => {
+    expect(renderCards(task([cmd({ note: 'deleted', hunks: [] })]), null)).toContain('arquivo apagado');
+    expect(renderFileView({ relPath: 'b.txt', rows: [], anchors: {}, unplaced: [], note: 'dropped' }, {}, null)).toContain(
+      'conteúdo antigo descartado pra economizar memória',
+    );
+  });
+});

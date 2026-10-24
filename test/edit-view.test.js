@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fileViewFor, inlineRows, placeBanners, serializeTask, taskSummaries } from '../src/main/edit-view.js';
+import { commandReason, fileViewFor, inlineRows, placeBanners, serializeTask, taskSummaries } from '../src/main/edit-view.js';
 
 const edit = (id, seq, filePath, lines, extra = {}) => ({
   id,
@@ -145,5 +145,17 @@ describe('placeBanners with repeated lines (#93 review)', () => {
     const rowOf = (id) => Number(Object.keys(anchors).find((key) => anchors[key].includes(id)));
     expect(rows[rowOf('e1')].newNo).toBe(12);
     expect(rows[rowOf('e2')].newNo).toBe(54);
+  });
+});
+
+describe('command edits in the inspector data (#94)', () => {
+  it('keeps the uncertain owner flag and says where the change came from', () => {
+    const task = { id: 's:1', prompt: '', startedAt: 1, endedAt: null, snapshotsDropped: true, files: new Map(),
+      edits: [edit('c1', 1, '/r/b.txt', ['+y'], { status: 'by-command', uncertainOwner: true })] };
+    const view = serializeTask(task, '/r');
+    expect(view.edits[0].uncertainOwner).toBe(true);
+    expect(view.snapshotsDropped).toBe(true);
+    expect(commandReason("sed -i 's/x/y/' b.txt")).toBe("$ sed -i 's/x/y/' b.txt");
+    expect(commandReason(null)).toBe('origem desconhecida');
   });
 });

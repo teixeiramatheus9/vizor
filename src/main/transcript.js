@@ -246,3 +246,38 @@ export async function readEditReason(transcriptPath, toolUseId) {
     return null;
   }
 }
+
+// The command behind a change no Edit/Write made (#94): the last Bash call of
+// the session since the user's prompt — never an older turn's, never a
+// subagent's. A guess, so the inspector shows it as "$ <command>".
+export function parseLastBashCommand(jsonlText, { maxChars = 200 } = {}) {
+  const lines = jsonlText.split('\n');
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry?.isSidechain) continue;
+    if (isUserPrompt(entry)) return null;
+    if (!isAssistantEntry(entry) || !Array.isArray(entry.message?.content)) continue;
+    const call = entry.message.content.findLast(
+      (block) => block?.type === 'tool_use' && block.name === 'Bash' && typeof block.input?.command === 'string',
+    );
+    if (!call) continue;
+    const command = call.input.command.replace(/\s+/g, ' ').trim();
+    return command.length > maxChars ? `${command.slice(0, maxChars)}…` : command;
+  }
+  return null;
+}
+
+export async function readLastBashCommand(transcriptPath) {
+  try {
+    return parseLastBashCommand(await readTail(transcriptPath));
+  } catch {
+    return null;
+  }
+}
