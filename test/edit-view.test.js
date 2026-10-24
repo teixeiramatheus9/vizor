@@ -159,3 +159,20 @@ describe('command edits in the inspector data (#94)', () => {
     expect(commandReason(null)).toBe('origem desconhecida');
   });
 });
+
+describe('edits that never landed (#125)', () => {
+  const base = (files, edits) => ({ id: 's:1', prompt: '', startedAt: 1, endedAt: null, snapshotsDropped: false, files: new Map(files), edits });
+
+  it('a file touched only by edits that never landed says so', () => {
+    const task = base([], [edit('e1', 1, '/r/a.js', [], { status: 'not-applied' })]);
+    expect(fileViewFor(task, '/r/a.js', '/r').note).toBe('not-applied');
+  });
+
+  it('never lists an edit that did not land among the unplaced ones', () => {
+    const task = base(
+      [['/r/a.js', { start: 'a\n', current: 'b\n' }]],
+      [edit('e1', 1, '/r/a.js', ['-a', '+b']), edit('e2', 2, '/r/a.js', ['+nunca'], { status: 'not-applied' })],
+    );
+    expect(fileViewFor(task, '/r/a.js', '/r').unplaced).toEqual([]);
+  });
+});

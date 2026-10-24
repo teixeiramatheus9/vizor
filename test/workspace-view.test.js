@@ -359,3 +359,17 @@ describe('comments (#95)', () => {
     expect(renderComments([{ id: 'c1', editId: 'a', text: 'x', status: 'copied' }])).toContain('copiado — cola no terminal da sessão');
   });
 });
+
+describe('backlog fixes (#125, #139)', () => {
+  it('copy for an edit that never landed', () => {
+    expect(renderFileView({ relPath: 'a.js', rows: [], anchors: {}, unplaced: [], note: 'not-applied' }, {}, null)).toContain(
+      'essa mudança não chegou a ser aplicada',
+    );
+  });
+
+  it('unplaced edits can be commented in file mode', () => {
+    const ev = { id: 'u1', seq: 4, relPath: 'a.js', reason: 'r', status: 'applied' };
+    const html = renderFileView({ relPath: 'a.js', rows: [], anchors: {}, unplaced: ['u1'], note: null }, { u1: ev }, null);
+    expect(html).toContain('data-comment="u1"');
+  });
+});

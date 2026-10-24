@@ -158,6 +158,7 @@ const NOTE_COPY = {
   writing: 'a IA está escrevendo neste arquivo…',
   deleted: 'arquivo apagado',
   dropped: 'conteúdo antigo descartado pra economizar memória',
+  'not-applied': 'essa mudança não chegou a ser aplicada',
 };
 
 function clock(time) {
@@ -276,7 +277,13 @@ export function renderFileView(file, editsById, selectedId, commentsByEdit = {})
   const seal = file.seal ? `<p class="note seal">${NOTE_COPY[file.seal] ?? file.seal}</p>` : '';
   const unplaced = file.unplaced?.length
     ? `<div class="file-unplaced">edições sem posição neste arquivo: ${file.unplaced
-        .map((id) => (editsById[id] ? `<span data-banner="${escapeHtml(id)}">#${editsById[id].seq}</span>` : ''))
+        .map((id) =>
+          editsById[id]
+            ? `<span data-banner="${escapeHtml(id)}">#${editsById[id].seq}</span>${commentButton(id)}${renderComments(
+                commentsByEdit[id],
+              )}`
+            : '',
+        )
         .join(' ')}</div>`
     : '';
   const rows = file.rows
