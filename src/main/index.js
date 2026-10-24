@@ -71,7 +71,7 @@ import { loadConfig, saveConfig } from './config-store.js';
 import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
 import { VOICES } from './sherpa-installer.js';
-import { THEMES, PALETTES } from './themes.js';
+import { THEMES, PALETTES, backgroundFor } from './themes.js';
 import { PANEL_SCALE, clampScale, panelSizeForScale } from './panel-size.js';
 import {
   anchorVisible,
@@ -1285,6 +1285,14 @@ workspaceWindow = workspaceAvailable(process.platform)
         refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
       },
       isQuitting: () => appQuitting,
+      // First frame in the palette's own colour (#108).
+      background: () => {
+        try {
+          return backgroundFor(managerConfig, fs.readFileSync(path.join(rendererDir, 'tokens.css'), 'utf8'));
+        } catch {
+          return '#0d1117';
+        }
+      },
     })
   : null;
 

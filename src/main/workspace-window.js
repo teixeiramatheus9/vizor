@@ -25,6 +25,7 @@ export function createWorkspaceWindowManager({
   saveBounds,
   onShow,
   isQuitting,
+  background = () => '#0d1117',
 }) {
   let win = null;
   let loaded = false;
@@ -47,7 +48,7 @@ export function createWorkspaceWindowManager({
       minWidth: 900,
       minHeight: 560,
       title: 'Vizor — workspace',
-      backgroundColor: '#0d1117',
+      backgroundColor: background(),
       show: false,
       autoHideMenuBar: true,
       webPreferences: { preload: preloadPath, contextIsolation: true },
