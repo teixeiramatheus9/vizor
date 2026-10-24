@@ -157,14 +157,11 @@ export function createPtyHost({
     flush(entry);
     return entry.buffer;
   };
-  // Whether something other than the shell is in front (node-pty's .process
-  // is the foreground program on Linux). A comment is only pasted there while
-  // claude runs: into a bare shell prompt it would run as a command (#95).
-  host.runsProgram = (id) => {
+  // The terminal device of a live pty (/dev/pts/N): with the session's pid,
+  // it tells whether that claude is the job in front (pty-foreground.js).
+  host.ttyPath = (id) => {
     const entry = terminals.get(id);
-    const front = entry?.info.alive ? entry.child.process : null;
-    if (!front) return false;
-    return front.split('/').pop() !== String(shell).split('/').pop();
+    return entry?.info.alive ? (entry.child._pty ?? null) : null;
   };
   host.aliveCount = () => [...terminals.values()].filter((entry) => entry.info.alive).length;
 

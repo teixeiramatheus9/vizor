@@ -213,10 +213,11 @@ function renderHunkLines(lines) {
 }
 
 const COMMENT_STATE = {
-  queued: 'na fila — a sessão está esperando você',
+  queued: 'na fila — sai quando a sessão liberar',
   sending: 'enviando…',
   sent: 'enviado',
-  failed: 'falhou — o texto foi copiado',
+  copied: 'copiado — cola no terminal da sessão',
+  failed: 'não deu pra entregar',
 };
 
 const commentButton = (id) =>
@@ -229,7 +230,11 @@ export function renderComments(comments) {
       (comment) =>
         `<li class="comment status-${comment.status}"><span class="comment-text">💬 ${escapeHtml(
           comment.text,
-        )}</span><span class="comment-state">${COMMENT_STATE[comment.status] ?? ''}</span></li>`,
+        )}</span><span class="comment-state">${COMMENT_STATE[comment.status] ?? ''}${
+          comment.status === 'failed'
+            ? ` <button class="copy-comment" data-copy-comment="${escapeHtml(comment.id)}" title="Copiar o comentário">copiar</button>`
+            : ''
+        }</span></li>`,
     )
     .join('')}</ul>`;
 }

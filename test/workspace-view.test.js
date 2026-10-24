@@ -332,10 +332,12 @@ describe('comments (#95)', () => {
   it('shows each comment under its edit with its state, escaped', () => {
     const byEdit = { a: [comment('queued', '<img onerror=1>'), comment('sending'), comment('sent'), comment('failed')] };
     const html = renderCards(task([ev('a', 1), ev('b', 2)]), null, byEdit);
-    expect(html).toContain('na fila — a sessão está esperando você');
+    expect(html).toContain('na fila — sai quando a sessão liberar');
     expect(html).toContain('enviando…');
     expect(html).toContain('enviado');
-    expect(html).toContain('falhou — o texto foi copiado');
+    expect(html).toContain('não deu pra entregar');
+    expect(html).toContain('data-copy-comment="c-failed" title="Copiar o comentário"');
+    expect(html).not.toContain('data-copy-comment="c-sent"');
     expect(html).toContain('&lt;img onerror=1&gt;');
     expect(html).not.toContain('<img onerror');
     expect(html.indexOf('data-card="b"')).toBeGreaterThan(html.lastIndexOf('comment status-'));
@@ -351,5 +353,9 @@ describe('comments (#95)', () => {
     expect(html).toContain('Escreve alguma coisa');
     expect(html).toContain('data-comment-send');
     expect(html).toContain('data-comment-cancel');
+  });
+
+  it('a comment left on the clipboard says so (#95 review)', () => {
+    expect(renderComments([{ id: 'c1', editId: 'a', text: 'x', status: 'copied' }])).toContain('copiado — cola no terminal da sessão');
   });
 });

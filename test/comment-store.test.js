@@ -15,11 +15,28 @@ describe('comment store', () => {
     expect(add(store, 'a')).toMatchObject({ id: 'c1', status: 'queued', text: 'a', message: 'msg a', editId: 'e1' });
   });
 
-  it('holds everything while the session waits for the user', () => {
+  it('holds while a permission prompt or a question is open — not while merely idle (#95 review)', () => {
     const store = makeStore();
     add(store, 'a');
-    expect(store.nextToSend('s1', 'waiting')).toBeNull();
-    expect(store.nextToSend('s1', 'working').id).toBe('c1');
+    expect(store.nextToSend('s1', { status: 'waiting', needsPermission: true })).toBeNull();
+    expect(store.nextToSend('s1', { status: 'waiting', question: { questions: [{}] } })).toBeNull();
+    expect(store.nextToSend('s1', { status: 'waiting' }).id).toBe('c1');
+    expect(store.nextToSend('s1', null)).toBeNull();
+  });
+
+  it('a comment put back in the queue waits for the next flush', () => {
+    const store = makeStore();
+    add(store, 'a');
+    store.markSending('c1');
+    store.requeue('c1');
+    expect(store.list('s1')[0].status).toBe('queued');
+  });
+
+  it('records a comment left on the clipboard by the typing fallback', () => {
+    const store = makeStore();
+    add(store, 'a');
+    store.markCopied('c1');
+    expect(store.list('s1')[0].status).toBe('copied');
   });
 
   it('sends one at a time, in order, each once', () => {
@@ -29,10 +46,10 @@ describe('comment store', () => {
     add(store, 'c');
     const sent = [];
     for (;;) {
-      const next = store.nextToSend('s1', 'done');
+      const next = store.nextToSend('s1', { status: 'done' });
       if (!next) break;
       store.markSending(next.id);
-      expect(store.nextToSend('s1', 'done')).toBeNull();
+      expect(store.nextToSend('s1', { status: 'done' })).toBeNull();
       store.markSent(next.id, 'pty');
       sent.push(next.text);
     }
@@ -48,7 +65,7 @@ describe('comment store', () => {
     store.markSending('c1');
     store.markFailed('c1');
     expect(store.list('s1')[0].status).toBe('failed');
-    expect(store.nextToSend('s1', 'done').id).toBe('c2');
+    expect(store.nextToSend('s1', { status: 'done' }).id).toBe('c2');
   });
 
   it('forgets a session', () => {

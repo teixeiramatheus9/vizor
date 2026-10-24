@@ -291,8 +291,11 @@ function closeComposer() {
 }
 
 async function sendComposer() {
-  if (!composer) return;
+  // One send per click: Ctrl+Enter plus a click must not queue it twice.
+  if (!composer || composer.sending) return;
+  composer.sending = true;
   const result = await window.vizor.addComment(inspector.sessionId, composer.editId, composer.draft);
+  if (composer) composer.sending = false;
   if (!result?.ok) {
     composer.error = result?.error ?? 'Não deu pra comentar';
     renderComposerPanel();
@@ -388,6 +391,12 @@ document.addEventListener('click', async (event) => {
   if (commentButton) {
     composer = { editId: commentButton.dataset.comment, draft: '', error: null };
     renderComposerPanel();
+    return;
+  }
+  const copy = target.closest('[data-copy-comment]');
+  if (copy) {
+    window.vizor.copyComment(inspector.sessionId, copy.dataset.copyComment);
+    copy.textContent = 'copiado';
     return;
   }
   if (target.closest('[data-comment-send]')) {

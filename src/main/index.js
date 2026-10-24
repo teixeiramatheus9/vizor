@@ -53,6 +53,7 @@ import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit
 import { buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
 import { createCommentDelivery } from './comment-delivery.js';
+import { inForeground } from './pty-foreground.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -1641,14 +1642,27 @@ editTracker.on('change', scheduleCommandRoots);
 
 // --- 💬 comments on a change (#95) -----------------------------------------
 const commentStore = createCommentStore();
+// Is the session's own claude the job in front of that Vizor terminal? Its
+// pid comes from Claude Code's session registry; /proc says whether it leads
+// the terminal's foreground group, on THAT pty, and isn't stopped.
+function claudeInPty(session, ptyId) {
+  const tty = ptyHost?.ttyPath(ptyId);
+  const pid = session?.id ? readSessionPid(session.id) : null;
+  if (!tty || !pid) return false;
+  try {
+    return inForeground({ stat: fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), ttyRdev: fs.statSync(tty).rdev });
+  } catch {
+    return false;
+  }
+}
+
 const commentDelivery = createCommentDelivery({
   store: commentStore,
   sessionOf: (sessionId) => registry.sessions.get(sessionId) ?? null,
-  ptyUsable: (ptyId) => Boolean(ptyHost?.runsProgram(ptyId)),
+  claudeInPty,
   writePty: (ptyId, data) => ptyHost?.write(ptyId, data),
   sendPeer: (session, text) => sendPeerMessage(session, text),
   typeReply: (session, text) => typeIntoTerminal(session, text),
-  copyToClipboard: (text) => clipboard.writeText(text),
   log,
 });
 
@@ -1668,14 +1682,26 @@ ipcMain.handle('comments:add', async (event, { sessionId, editId, text } = {}) =
     : null;
   if (!edit) return { ok: false, error: 'mudança não encontrada' };
   commentStore.add({ sessionId, editId, text: valid.text, message: buildCommentMessage(edit, valid.text) });
-  commentDelivery.flush(sessionId).catch((error) => log(`comment flush failed: ${error}`));
+  // immediate: the user just pressed Enviar — the only moment typing into a
+  // terminal window is acceptable.
+  commentDelivery.flush(sessionId, { immediate: true }).catch((error) => log(`comment flush failed: ${error}`));
   return { ok: true };
+});
+
+// "copiar" on a comment that could not be delivered: the clipboard is only
+// ever written because the user asked.
+ipcMain.handle('comments:copy', (event, { sessionId, commentId } = {}) => {
+  if (!fromWorkspace(event)) return false;
+  const comment = commentStore.list(sessionId).find((item) => item.id === commentId);
+  if (!comment) return false;
+  clipboard.writeText(comment.message);
+  return true;
 });
 
 // A session that stops waiting gets its held comments.
 function flushHeldComments() {
   for (const session of registry.list())
-    if (commentStore.nextToSend(session.id, session.status))
+    if (commentStore.nextToSend(session.id, session))
       commentDelivery.flush(session.id).catch((error) => log(`comment flush failed: ${error}`));
 }
 

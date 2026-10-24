@@ -235,13 +235,13 @@ describe('createPtyHost', () => {
     expect(host.list()[0].title).toBe('meu chat');
   });
 
-  it('tells when the shell itself is in front, i.e. claude has exited (#95)', () => {
+  it('gives the terminal device of a live pty (#95)', () => {
     const { host, spawned } = makeHost();
     host.open({ cwd: '/r' });
-    spawned[0].process = 'claude';
-    expect(host.runsProgram('p1')).toBe(true);
-    spawned[0].process = 'zsh';
-    expect(host.runsProgram('p1')).toBe(false);
-    expect(host.runsProgram('nope')).toBe(false);
+    spawned[0]._pty = '/dev/pts/7';
+    expect(host.ttyPath('p1')).toBe('/dev/pts/7');
+    spawned[0].emitExit(0);
+    expect(host.ttyPath('p1')).toBeNull();
+    expect(host.ttyPath('nope')).toBeNull();
   });
 });
