@@ -151,7 +151,7 @@ function renderProject(project, selectedId, selectedWorktree, folds) {
     project.root,
   )}">${foldToggle(`p:${project.root}`, open, 'o projeto')}${ICONS.folder}<span class="project-name">${escapeHtml(
     project.name,
-  )}</span>${open ? '' : foldSummary(all)}<button class="remove" data-remove-project="${escapeHtml(
+  )}</span>${open || !all.length ? '' : foldSummary(all)}<button class="remove" data-remove-project="${escapeHtml(
     project.root,
   )}" title="Tirar da lista">×</button></header>${worktrees}</section>`;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { linkTerminals, restorePlan, tabsToSave, terminalCommand } from '../src/main/workspace-tabs.js';
+import { linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds } from '../src/main/workspace-tabs.js';
 
 const ID = '4b706711-9840-4931-8b0f-d6d51518d6ba';
 
@@ -24,10 +24,11 @@ describe('tabsToSave', () => {
     { id: 'p2', cwd: '/r/wt', alive: true },
     { id: 'p3', cwd: '/r', alive: false },
   ];
+  const none = new Set();
 
   it('keeps the live tabs in order, each with the chat running in it', () => {
     const sessions = [{ id: ID, term: { VIZOR_PTY_ID: 'p2' } }];
-    expect(tabsToSave({ terminals, sessions, liveIds: new Set([ID]), activeId: 'p2' })).toEqual({
+    expect(tabsToSave({ terminals, sessions, ended: none, activeId: 'p2' })).toEqual({
       tabs: [
         { cwd: '/r', sessionId: null },
         { cwd: '/r/wt', sessionId: ID },
@@ -36,30 +37,41 @@ describe('tabsToSave', () => {
     });
   });
 
-  it('a chat that already ended in its tab is not resumed: the tab comes back as a shell', () => {
+  it('a chat seen ending in its tab is not resumed: the tab comes back as a shell', () => {
     const sessions = [{ id: ID, term: { VIZOR_PTY_ID: 'p2' } }];
-    expect(tabsToSave({ terminals, sessions, liveIds: new Set(), activeId: null }).tabs[1]).toEqual({
+    expect(tabsToSave({ terminals, sessions, ended: new Set([ID]), activeId: null }).tabs[1]).toEqual({
       cwd: '/r/wt',
       sessionId: null,
     });
   });
 
-  it('with no live registry to read (null), trusts the tab mapping', () => {
+  it('liveness at save time does not matter: a logout kills the chats before the save (review C-1)', () => {
     const sessions = [{ id: ID, term: { VIZOR_PTY_ID: 'p1' } }];
-    expect(tabsToSave({ terminals, sessions, liveIds: null, activeId: 'p9' })).toEqual({
-      tabs: [
-        { cwd: '/r', sessionId: ID },
-        { cwd: '/r/wt', sessionId: null },
-      ],
-      active: null,
-    });
+    expect(tabsToSave({ terminals, sessions, ended: none, activeId: null }).tabs[0].sessionId).toBe(ID);
   });
 
   it('a tab resumed at start keeps its chat before any hook event names it', () => {
     expect(
-      tabsToSave({ terminals, sessions: [], liveIds: new Set([ID]), activeId: null, resumed: new Map([['p2', ID]]) })
-        .tabs[1],
+      tabsToSave({ terminals, sessions: [], ended: none, activeId: null, resumed: new Map([['p2', ID]]) }).tabs[1],
     ).toEqual({ cwd: '/r/wt', sessionId: ID });
+  });
+
+  it('a chat the hooks place in a tab beats an old resume mapping', () => {
+    const other = 'aaaaaaaa-0000-4000-8000-000000000000';
+    const sessions = [{ id: other, term: { VIZOR_PTY_ID: 'p2' } }];
+    expect(
+      tabsToSave({ terminals, sessions, ended: none, activeId: null, resumed: new Map([['p2', ID]]) }).tabs[1]
+        .sessionId,
+    ).toBe(other);
+  });
+
+  it('never saves one chat in two tabs (review I-2)', () => {
+    const sessions = [{ id: ID, term: { VIZOR_PTY_ID: 'p2' } }];
+    expect(
+      tabsToSave({ terminals, sessions, ended: none, activeId: null, resumed: new Map([['p1', ID]]) }).tabs.map(
+        (tab) => tab.sessionId,
+      ),
+    ).toEqual([null, ID]);
   });
 
   it('the most recent chat of a tab wins (sessions come newest first)', () => {
@@ -67,7 +79,28 @@ describe('tabsToSave', () => {
       { id: ID, term: { VIZOR_PTY_ID: 'p1' } },
       { id: 'aaaaaaaa-0000-0000-0000-000000000000', term: { VIZOR_PTY_ID: 'p1' } },
     ];
-    expect(tabsToSave({ terminals, sessions, liveIds: null, activeId: null }).tabs[0].sessionId).toBe(ID);
+    expect(tabsToSave({ terminals, sessions, ended: none, activeId: null }).tabs[0].sessionId).toBe(ID);
+  });
+});
+
+describe('trackChatEnds', () => {
+  it('a chat ends only after it was seen alive, and comes back when alive again', () => {
+    const seen = new Set();
+    const ended = new Set();
+    trackChatEnds({ watched: [ID], liveIds: new Set(), seen, ended });
+    expect(ended.has(ID)).toBe(false); // never seen: still starting
+    trackChatEnds({ watched: [ID], liveIds: new Set([ID]), seen, ended });
+    trackChatEnds({ watched: [ID], liveIds: new Set(), seen, ended });
+    expect(ended.has(ID)).toBe(true);
+    trackChatEnds({ watched: [ID], liveIds: new Set([ID]), seen, ended });
+    expect(ended.has(ID)).toBe(false);
+  });
+
+  it('an unreadable registry (null) says nothing', () => {
+    const seen = new Set([ID]);
+    const ended = new Set();
+    trackChatEnds({ watched: [ID], liveIds: null, seen, ended });
+    expect(ended.size).toBe(0);
   });
 });
 
@@ -94,6 +127,14 @@ describe('restorePlan', () => {
         { cwd: '/r', why: 'conversa aberta em outro lugar' },
       ],
     });
+  });
+
+  it('never resumes one chat twice (review I-2)', () => {
+    const saved = { tabs: [{ cwd: '/r', sessionId: ID }, { cwd: '/r', sessionId: ID }], active: 1 };
+    expect(restorePlan({ saved, liveIds: new Set(), dirExists: exists }).open).toEqual([
+      { cwd: '/r', sessionId: ID, active: false },
+      { cwd: '/r', sessionId: null, active: true },
+    ]);
   });
 
   it('survives a missing or broken saved state', () => {

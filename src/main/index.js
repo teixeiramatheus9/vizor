@@ -50,7 +50,7 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost, withoutClaudeSession } from './pty-host.js';
-import { linkTerminals, restorePlan, tabsToSave, terminalCommand, isSessionId } from './workspace-tabs.js';
+import { linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
 import { listConversations } from './conversations.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
@@ -1523,7 +1523,8 @@ function outsideStatus(sessionId) {
   if (!isSessionId(sessionId)) return { canBring: false, why: 'conversa sem id do Claude Code' };
   if (!isDirectory(session.cwd)) return { canBring: false, why: 'a pasta dela não existe mais' };
   const live = readLiveSessionIds();
-  if (live === null || live.has(sessionId))
+  if (live === null) return { canBring: false, why: 'não dá pra saber se ela ainda está aberta em outro terminal' };
+  if (live.has(sessionId))
     return { canBring: false, why: 'ainda aberta no outro terminal. Feche lá e retome pelo + desta worktree.' };
   return { canBring: true, why: null };
 }
@@ -1546,24 +1547,42 @@ let tabsSaveTimer = null;
 // Once the quit snapshot is taken, the ptys being killed must not overwrite it.
 let tabsFrozen = false;
 
+// Chats in tabs seen alive, and the ones seen ending since (trackChatEnds):
+// only an end observed during the run drops a tab's chat from the save.
+const chatsSeenAlive = new Set();
+const chatsEnded = new Set();
+let lastTabsJson = null;
+
+function chatsInTabs() {
+  return [
+    ...resumedChats.values(),
+    ...linkedSessions(registry.list())
+      .filter((session) => session.term?.VIZOR_PTY_ID)
+      .map((session) => session.id),
+  ];
+}
+
 function saveWorkspaceTabs() {
   if (tabsFrozen || !ptyHost) return;
   const snapshot = tabsToSave({
     terminals: ptyHost.list(),
     sessions: linkedSessions(registry.list()),
-    liveIds: readLiveSessionIds(),
+    ended: chatsEnded,
     activeId: activeTerminalId,
     resumed: resumedChats,
   });
+  const workspaceTabs = { ...snapshot, windowOpen: Boolean(workspaceWindow?.isOpen()) };
+  // Saves follow every hook event: write only what changed.
+  const json = JSON.stringify(workspaceTabs);
+  if (json === lastTabsJson) return;
   try {
     fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(
-      stateFile,
-      JSON.stringify({
-        ...loadPersistedState(),
-        workspaceTabs: { ...snapshot, windowOpen: Boolean(workspaceWindow?.isOpen()) },
-      }),
-    );
+    // Atomic: a crash mid-write must not leave a state.json that parses to
+    // nothing — it also holds the bubble's place and the window bounds.
+    const temp = `${stateFile}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify({ ...loadPersistedState(), workspaceTabs }));
+    fs.renameSync(temp, stateFile);
+    lastTabsJson = json;
   } catch (error) {
     log(`workspace tabs save failed: ${error}`);
   }
@@ -1578,6 +1597,7 @@ function scheduleTabsSave() {
 }
 
 function freezeWorkspaceTabs() {
+  if (tabsFrozen) return;
   clearTimeout(tabsSaveTimer);
   tabsSaveTimer = null;
   saveWorkspaceTabs();
@@ -2047,6 +2067,9 @@ function verifiedTerm(event) {
 
 function onHookEvent(event) {
   event = verifiedTerm(event);
+  // The chat speaks for itself now: its own term says which tab (if any) it
+  // runs in, so the resume mapping would only go stale (review I-2).
+  for (const [ptyId, sessionId] of resumedChats) if (sessionId === event?.session_id) resumedChats.delete(ptyId);
   if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
     onToolEvent(event);
     return;
@@ -2115,6 +2138,7 @@ ipcMain.handle('sessions:rescan', () => {
 // A chat resumed in a tab sends no hook event until the user types: adopt it
 // from Claude Code's own registry so the sidebar lists it meanwhile (#155).
 function adoptResumedChats() {
+  if (appQuitting) return;
   const missing = new Set([...resumedChats.values()].filter((sessionId) => !registry.sessions.has(sessionId)));
   if (!missing.size) return;
   const records = readAdoptableSessions()?.filter((record) => missing.has(record.sessionId));
@@ -2742,8 +2766,15 @@ function hydrateRegistry() {
 // way out, so without this they linger frozen on their last status.
 function reapDeadSessions() {
   adoptResumedChats();
+  const liveIds = readLiveSessionIds();
+  if (!appQuitting) {
+    trackChatEnds({ watched: chatsInTabs(), liveIds, seen: chatsSeenAlive, ended: chatsEnded });
+    // A resumed chat that ended no longer stands for its tab (review I-2).
+    for (const [ptyId, sessionId] of resumedChats) if (chatsEnded.has(sessionId)) resumedChats.delete(ptyId);
+    scheduleTabsSave();
+  }
   const before = [...registry.sessions.keys()];
-  registry.reconcileLiveSessions(readLiveSessionIds());
+  registry.reconcileLiveSessions(liveIds);
   for (const sessionId of before)
     if (!registry.sessions.has(sessionId)) {
       editTracker.forgetSession(sessionId);
@@ -2801,7 +2832,7 @@ app.whenReady().then(() => {
   restoreWorkspaceTabs();
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);
   setInterval(reapDeadSessions, LIVENESS_INTERVAL_MS);
-  updaterHandle = setupUpdater({ onStatus: onUpdateStatus, log });
+  updaterHandle = setupUpdater({ onStatus: onUpdateStatus, log, beforeExit: freezeWorkspaceTabs });
   applyShortcuts();
 });
 

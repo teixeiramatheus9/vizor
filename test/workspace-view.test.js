@@ -423,6 +423,10 @@ describe('collapsible sidebar (#152)', () => {
     expect(html).toContain('data-fold="s:b" aria-expanded="false"');
   });
 
+  it('a folded project with nothing inside shows no summary', () => {
+    expect(renderSidebar(tree([]), null, null, { 'p:/r': false })).not.toContain('fold-summary');
+  });
+
   it('singular copy', () => {
     const html = renderSidebar(tree([session('a', { files: files(1) })]), null, null, { 'p:/r': false });
     expect(html).toContain('1 sessão · 1 arquivo');

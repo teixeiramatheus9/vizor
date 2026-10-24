@@ -140,9 +140,26 @@ async function openNewTerminal(kind, sessionId = null) {
   renderTerminalArea();
 }
 
+// A tab opened outside the tab bar: shown at once when the state already
+// lists it, else as soon as a push does.
+function focusNewTab(id) {
+  const terminal = terminals.find((item) => item.id === id);
+  if (!terminal) {
+    pendingTab = id;
+    return;
+  }
+  pendingTab = null;
+  selectedWorktree = terminal.cwd;
+  activeTab = terminal.id;
+  render();
+  reportSelection();
+}
+
 // Main restores this on the next start (#155).
+// Only a real tab: browsing a worktree with none must not erase the one to
+// bring back (review).
 function reportActiveTab() {
-  if (activeTab === lastReportedTab) return;
+  if (!activeTab || activeTab === lastReportedTab) return;
   lastReportedTab = activeTab;
   window.vizor.reportActiveTab(activeTab);
 }
@@ -563,15 +580,7 @@ document.addEventListener('click', async (event) => {
   const goTab = target.closest('[data-go-tab]');
   if (goTab) {
     closeMenu();
-    pendingTab = goTab.dataset.goTab;
-    const terminal = terminals.find((item) => item.id === pendingTab);
-    if (terminal) {
-      pendingTab = null;
-      selectedWorktree = terminal.cwd;
-      activeTab = terminal.id;
-      render();
-      reportSelection();
-    }
+    focusNewTab(goTab.dataset.goTab);
     return;
   }
   const resume = target.closest('[data-resume]');
@@ -595,7 +604,9 @@ document.addEventListener('click', async (event) => {
       return;
     }
     outsideStatus.delete(sessionId);
-    pendingTab = result.id;
+    // The state listing the new tab usually lands before this reply: select
+    // it now, or a later push would yank the focus mid-typing (review I-3).
+    focusNewTab(result.id);
     return;
   }
   const commentButton = target.closest('[data-comment]');

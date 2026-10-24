@@ -21,21 +21,42 @@ export function terminalCommand({ kind, sessionId } = {}) {
 }
 
 // What to save: the live tabs in order, each with the chat running in it.
-// `sessions` come newest first, so a tab that ran several chats keeps the last.
-// A chat no longer alive (it ended inside its tab) is not resumed; liveIds
-// null means the registry could not be read — trust the tab mapping then.
+// `sessions` come newest first, so a tab that ran several chats keeps the last;
 // `resumed` (pty id → session id) covers a chat resumed in a tab that sent no
-// hook event yet, so the registry does not know it.
-export function tabsToSave({ terminals, sessions, liveIds, activeId, resumed = new Map() }) {
+// hook event yet. Liveness is NOT read here: on a logout the chats die before
+// the save. A chat is dropped only when `ended` says it was seen ending during
+// the run (trackChatEnds). One chat is never saved in two tabs; the tab the
+// hooks name wins over an old resume mapping.
+export function tabsToSave({ terminals, sessions, ended, activeId, resumed = new Map() }) {
   const live = terminals.filter((terminal) => terminal.alive);
+  const hooked = new Map();
+  for (const terminal of live) {
+    const session = sessions.find((candidate) => candidate.term?.VIZOR_PTY_ID === terminal.id);
+    if (session) hooked.set(terminal.id, session.id);
+  }
+  const used = new Set(hooked.values());
   const tabs = live.map((terminal) => {
-    const sessionId =
-      sessions.find((candidate) => candidate.term?.VIZOR_PTY_ID === terminal.id)?.id ?? resumed.get(terminal.id);
-    const running = sessionId && (liveIds === null || liveIds.has(sessionId));
-    return { cwd: terminal.cwd, sessionId: running ? sessionId : null };
+    let sessionId = hooked.get(terminal.id) ?? null;
+    if (!sessionId && resumed.has(terminal.id) && !used.has(resumed.get(terminal.id))) {
+      sessionId = resumed.get(terminal.id);
+      used.add(sessionId);
+    }
+    return { cwd: terminal.cwd, sessionId: sessionId && !ended.has(sessionId) ? sessionId : null };
   });
   const active = live.findIndex((terminal) => terminal.id === activeId);
   return { tabs, active: active === -1 ? null : active };
+}
+
+// Called on each liveness check (never during a quit): a watched chat ends
+// once it was seen alive and then is gone; alive again, it is back.
+export function trackChatEnds({ watched, liveIds, seen, ended }) {
+  if (!liveIds) return;
+  for (const sessionId of watched) {
+    if (liveIds.has(sessionId)) {
+      seen.add(sessionId);
+      ended.delete(sessionId);
+    } else if (seen.has(sessionId)) ended.add(sessionId);
+  }
 }
 
 // What to reopen. A chat already open somewhere else is not resumed a second
@@ -43,17 +64,21 @@ export function tabsToSave({ terminals, sessions, liveIds, activeId, resumed = n
 export function restorePlan({ saved, liveIds, dirExists }) {
   const plan = { open: [], skipped: [] };
   if (!Array.isArray(saved?.tabs)) return plan;
+  const resuming = new Set();
   saved.tabs.forEach((tab, index) => {
     if (typeof tab?.cwd !== 'string') return;
     if (!dirExists(tab.cwd)) {
       plan.skipped.push({ cwd: tab.cwd, why: 'pasta não existe' });
       return;
     }
-    const sessionId = isSessionId(tab.sessionId) ? tab.sessionId : null;
+    // The same chat twice would be two processes on one history: the second
+    // tab comes back as a shell.
+    const sessionId = isSessionId(tab.sessionId) && !resuming.has(tab.sessionId) ? tab.sessionId : null;
     if (sessionId && liveIds?.has(sessionId)) {
       plan.skipped.push({ cwd: tab.cwd, why: 'conversa aberta em outro lugar' });
       return;
     }
+    if (sessionId) resuming.add(sessionId);
     plan.open.push({ cwd: tab.cwd, sessionId, active: index === saved.active });
   });
   return plan;

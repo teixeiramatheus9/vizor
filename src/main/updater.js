@@ -56,7 +56,9 @@ async function installDmg(dmgFile) {
 //   (native auth prompt), then relaunches — no manual uninstall/reinstall.
 // - dmg/unknown: opens the latest release page.
 // - dev (not packaged): disabled.
-export function setupUpdater({ onStatus, log, fetchFn = fetch }) {
+// beforeExit: the deb/rpm relaunch uses app.exit, which skips before-quit —
+// whatever must be saved on quit is saved here instead.
+export function setupUpdater({ onStatus, log, fetchFn = fetch, beforeExit = () => {} }) {
   // checkFailed: the last check could not reach the releases — the settings
   // button must say so instead of "already on the latest" (#55).
   const status = { mode: 'off', available: null, ready: null, installing: false, failed: false, checkFailed: false };
@@ -168,6 +170,7 @@ export function setupUpdater({ onStatus, log, fetchFn = fetch }) {
       await execFileAsync(elevated.file, elevated.args, { timeout: INSTALL_TIMEOUT_MS });
     }
     log('updater: installed, relaunching');
+    beforeExit();
     app.relaunch();
     app.exit(0);
   };
