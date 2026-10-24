@@ -157,6 +157,15 @@ export function createPtyHost({
     flush(entry);
     return entry.buffer;
   };
+  // Whether something other than the shell is in front (node-pty's .process
+  // is the foreground program on Linux). A comment is only pasted there while
+  // claude runs: into a bare shell prompt it would run as a command (#95).
+  host.runsProgram = (id) => {
+    const entry = terminals.get(id);
+    const front = entry?.info.alive ? entry.child.process : null;
+    if (!front) return false;
+    return front.split('/').pop() !== String(shell).split('/').pop();
+  };
   host.aliveCount = () => [...terminals.values()].filter((entry) => entry.info.alive).length;
 
   host.killAll = () => {

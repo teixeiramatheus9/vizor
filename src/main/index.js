@@ -2089,18 +2089,25 @@ ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
 //    cannot deliver to the wrong chat because it is addressed by session id.
 // 2. The terminal window (xdotool), for builds where the messaging channel is
 //    gated off or the session predates it.
-async function replyToSession(session, text) {
+async function sendPeerMessage(session, text, { priority = null } = {}) {
   const channel = session?.id ? readSessionChannel(session.id) : null;
-  if (channel) {
-    // A panel reply is the user reacting to this chat right now — jump the
-    // queue instead of waiting for whatever turn is in flight to finish.
-    const outcome = await sendUserMessage(channel.socketPath, text, {
-      token: channel.token,
-      priority: 'now',
-    });
-    if (outcome === 'sent') return 'sent';
-    log(`peer channel unusable for ${session.id} (${outcome}) — falling back to the terminal`);
-  }
+  if (!channel) return 'no-channel';
+  const outcome = await sendUserMessage(channel.socketPath, text, {
+    token: channel.token,
+    ...(priority ? { priority } : {}),
+  });
+  if (outcome !== 'sent') log(`peer channel unusable for ${session.id} (${outcome}) — falling back to the terminal`);
+  return outcome;
+}
+
+async function replyToSession(session, text) {
+  // A panel reply is the user reacting to this chat right now — jump the
+  // queue instead of waiting for whatever turn is in flight to finish.
+  if ((await sendPeerMessage(session, text, { priority: 'now' })) === 'sent') return 'sent';
+  return typeIntoTerminal(session, text);
+}
+
+async function typeIntoTerminal(session, text) {
   return terminal.sendReplyToWarp(await sessionSearchKeys(session), text, {
     writeClipboard: (value) => clipboard.writeText(value),
     terminal: managerConfig.terminal,

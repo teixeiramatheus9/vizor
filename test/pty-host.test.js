@@ -234,4 +234,14 @@ describe('createPtyHost', () => {
     host.setTitle('nope', 'x');
     expect(host.list()[0].title).toBe('meu chat');
   });
+
+  it('tells when the shell itself is in front, i.e. claude has exited (#95)', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r' });
+    spawned[0].process = 'claude';
+    expect(host.runsProgram('p1')).toBe(true);
+    spawned[0].process = 'zsh';
+    expect(host.runsProgram('p1')).toBe(false);
+    expect(host.runsProgram('nope')).toBe(false);
+  });
 });
