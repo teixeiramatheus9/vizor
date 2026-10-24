@@ -648,6 +648,10 @@ updateCheckButton.addEventListener('click', async () => {
       updateCheckFeedback.textContent = `# v${status.available} disponível — clica no banner acima`;
     } else if (status.mode === 'off') {
       updateCheckFeedback.textContent = '# modo dev — atualização desligada';
+    } else if (status.checkFailed) {
+      // The check itself failed (offline, rate limit, missing release asset):
+      // never claim "latest" on a failure (#55).
+      updateCheckFeedback.textContent = '# não consegui checar agora — tenta mais tarde';
     } else {
       updateCheckFeedback.textContent = `# você já está na mais recente (v${status.currentVersion}) ✓`;
     }
