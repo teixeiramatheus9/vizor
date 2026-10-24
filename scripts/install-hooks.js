@@ -96,6 +96,29 @@ export function removeAppHooks(settings) {
   return removeMatching(settings, (candidate) => candidate.includes(HOOK_MARKER));
 }
 
+// Our tool hook belongs in exactly one group: copies made by hand (or by an
+// old install) would run the hook twice per edit (#103).
+function dedupeToolHooks(settings, command) {
+  const next = { ...settings, hooks: { ...(settings.hooks ?? {}) } };
+  for (const eventName of TOOL_HOOK_EVENTS) {
+    let seen = false;
+    const groups = (next.hooks[eventName] ?? [])
+      .map((group) => {
+        if (!Array.isArray(group.hooks)) return group;
+        const hooks = group.hooks.filter((hook) => {
+          if (!isCanonicalToolHook(group, hook, command)) return true;
+          if (seen) return false;
+          seen = true;
+          return true;
+        });
+        return { ...group, hooks };
+      })
+      .filter((group) => !Array.isArray(group.hooks) || group.hooks.length > 0);
+    if (next.hooks[eventName]) next.hooks[eventName] = groups;
+  }
+  return next;
+}
+
 export function ensureHooks(settings, command) {
   const cleaned = removeMatching(settings, (candidate, group, hook, eventName) => {
     if (!candidate.includes(HOOK_MARKER)) return false;
@@ -104,7 +127,7 @@ export function ensureHooks(settings, command) {
     // every tool call, or make Claude Code wait on it.
     return TOOL_HOOK_EVENTS.includes(eventName) && !isCanonicalToolHook(group, hook, command);
   });
-  return addHooks(cleaned, command);
+  return addHooks(dedupeToolHooks(cleaned, command), command);
 }
 
 function main() {
