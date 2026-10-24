@@ -494,12 +494,10 @@ describe('haloState', () => {
     ).toBeNull();
   });
 
-  it('an explicitly empty term clears the terminal identity (#140)', () => {
+  it('drops only a VIZOR_PTY_ID main found not to hold (#140)', () => {
     const registry = new SessionRegistry();
-    registry.applyEvent({ hook_event_name: 'UserPromptSubmit', session_id: 'x1', cwd: '/r', term: { VIZOR_PTY_ID: 'p1' } });
-    registry.applyEvent({ hook_event_name: 'Stop', session_id: 'x1', cwd: '/r', term: {} });
-    expect(registry.sessions.get('x1').term).toBeNull();
-    registry.applyEvent({ hook_event_name: 'Stop', session_id: 'x1', cwd: '/r' });
-    expect(registry.sessions.get('x1').term).toBeNull();
+    registry.applyEvent({ hook_event_name: 'UserPromptSubmit', session_id: 'x1', cwd: '/r', term: { VIZOR_PTY_ID: 'p1', TMUX: 't' } });
+    registry.applyEvent({ hook_event_name: 'Stop', session_id: 'x1', cwd: '/r', dropPtyId: true });
+    expect(registry.sessions.get('x1').term).toEqual({ TMUX: 't' });
   });
 });

@@ -1851,7 +1851,7 @@ function verifiedTerm(event) {
   }
   if (holds) return event;
   const { VIZOR_PTY_ID: _dropped, ...rest } = event.term;
-  return { ...event, term: rest };
+  return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
 }
 
 function onHookEvent(event) {

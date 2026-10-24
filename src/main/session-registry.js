@@ -58,10 +58,13 @@ export class SessionRegistry extends EventEmitter {
       needsPermission: false,
     };
     if (event.wave?.blockId) session.wave = event.wave;
-    // The hook only sends a term with keys; main sends an empty one when it
-    // dropped an identity that didn't hold (#140) — that clears it.
-    if (event.term && typeof event.term === 'object') {
-      session.term = Object.keys(event.term).length ? event.term : null;
+    if (event.term && typeof event.term === 'object' && Object.keys(event.term).length) {
+      session.term = event.term;
+    }
+    // Main found the session's VIZOR_PTY_ID doesn't hold (#140): drop only that.
+    if (event.dropPtyId && session.term?.VIZOR_PTY_ID) {
+      const { VIZOR_PTY_ID: _dropped, ...rest } = session.term;
+      session.term = Object.keys(rest).length ? rest : null;
     }
     if (event.cwd) {
       session.cwd = event.cwd;
