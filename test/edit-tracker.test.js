@@ -163,3 +163,60 @@ describe('EditTracker', () => {
     expect(tracker.currentTask('s1')).toBeNull();
   });
 });
+
+describe('command edits (#94)', () => {
+  it('records a change made by a command, with its diff and reason', () => {
+    const tracker = makeTracker();
+    tracker.startTask('s1');
+    const edit = tracker.addCommandEdit('s1', {
+      filePath: FILE, before: 'a\n', after: 'b\n', baseline: 'git', reason: '$ sed', note: null, uncertainOwner: true,
+    });
+    expect(edit).toMatchObject({
+      status: EDIT_STATUS.BY_COMMAND, toolName: 'Bash', added: 1, removed: 1, reason: '$ sed', uncertainOwner: true, seq: 1,
+    });
+    expect(tracker.currentTask('s1').files.get(FILE)).toEqual({ start: 'a\n', current: 'b\n' });
+  });
+
+  it('a deleted file is a card without a diff', () => {
+    const tracker = makeTracker();
+    const edit = tracker.addCommandEdit('s1', { filePath: FILE, before: 'a', after: null, note: 'deleted' });
+    expect(edit).toMatchObject({ note: 'deleted', hunks: [] });
+  });
+
+  it('explains a change by an edit in flight or one that just ended', () => {
+    let clock = 10000;
+    const tracker = new EditTracker({ now: () => clock });
+    tracker.beginEdit(pre('t1', '/repo/w.js'));
+    expect(tracker.explains('s1', '/repo/w.js', 10000)).toBe(true);
+    tracker.completeEdit(post('t2', '/repo/e.js'), content('a', 'b'));
+    expect(tracker.explains('s1', '/repo/e.js', 14000)).toBe(true);
+    expect(tracker.explains('s1', '/repo/e.js', 16000)).toBe(false);
+    expect(tracker.explains('s1', '/repo/other.js', 10000)).toBe(false);
+  });
+});
+
+describe('memory ceiling (#94)', () => {
+  it('drops snapshots of the oldest finished tasks first, never a current one', () => {
+    let clock = 0;
+    const tracker = new EditTracker({ now: () => ++clock, maxSnapshotBytes: 100 });
+    const fill = (session, id) =>
+      tracker.completeEdit({ ...post(id, `/repo/${id}.js`), session_id: session }, content('x'.repeat(20), 'y'.repeat(20)));
+    tracker.startTask('s1');
+    fill('s1', 'old1');
+    tracker.startTask('s2');
+    fill('s2', 'old2');
+    tracker.startTask('s1');
+    fill('s1', 'new1');
+    tracker.startTask('s2');
+    fill('s2', 'new2');
+    const [old1, cur1] = tracker.tasks('s1');
+    const [old2, cur2] = tracker.tasks('s2');
+    expect(old1.snapshotsDropped).toBe(true);
+    expect(old2.snapshotsDropped).toBe(true);
+    expect(old1.files.get('/repo/old1.js')).toEqual({ start: null, current: null });
+    expect(old1.edits[0].hunks.length).toBeGreaterThan(0);
+    expect(cur1.snapshotsDropped).toBe(false);
+    expect(cur2.snapshotsDropped).toBe(false);
+    expect(tracker.snapshotBytes()).toBeLessThanOrEqual(2 * 2 * 40);
+  });
+});
