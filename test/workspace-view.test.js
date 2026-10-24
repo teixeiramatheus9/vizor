@@ -1,0 +1,92 @@
+import { describe, it, expect } from 'vitest';
+import {
+  ICONS,
+  escapeHtml,
+  renderEmpty,
+  renderSidebar,
+  renderTopBar,
+  statusIcon,
+} from '../src/renderer/workspace-view.js';
+
+const session = (id, extra = {}) => ({
+  id, name: id, status: 'working', unread: false, needsPermission: false, inside: false, files: [], ...extra,
+});
+const tree = (sessions, worktree = {}) => ({
+  projects: [
+    { root: '/r', name: 'r', worktrees: [{ path: '/r', branch: 'main', prunable: false, sessions, ...worktree }] },
+  ],
+  unplaced: [],
+  counts: { working: 2, waiting: 1 },
+});
+
+describe('escapeHtml', () => {
+  it('escapes markup, ampersands and quotes', () => {
+    expect(escapeHtml(`<a href="x">&'</a>`)).toBe('&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;');
+  });
+});
+
+describe('statusIcon', () => {
+  it('permission beats waiting, waiting beats the rest', () => {
+    expect(statusIcon(session('s', { status: 'waiting', needsPermission: true }))).toBe(ICONS.permission);
+    expect(statusIcon(session('s', { status: 'waiting' }))).toBe(ICONS.waiting);
+    expect(statusIcon(session('s', { status: 'done' }))).toBe(ICONS.done);
+    expect(statusIcon(session('s'))).toBe(ICONS.working);
+  });
+});
+
+describe('renderSidebar', () => {
+  it('escapes every name and path it shows', () => {
+    const html = renderSidebar(tree([session('<img onerror=1>')], { branch: 'a&b' }), null);
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img onerror=1&gt;');
+    expect(html).toContain('a&amp;b');
+  });
+
+  it('marks the selected session', () => {
+    const html = renderSidebar(tree([session('s1'), session('s2')]), 's2');
+    expect(html).toContain('data-session="s2" aria-selected="true"');
+    expect(html).toContain('data-session="s1" aria-selected="false"');
+  });
+
+  it('shows file counts, unknown counts as ±?', () => {
+    const files = [
+      { filePath: '/r/src/a.js', added: 6, removed: 1, writing: false },
+      { filePath: '/r/b.js', added: null, removed: null, writing: true },
+    ];
+    const html = renderSidebar(tree([session('s1', { files })]), 's1');
+    expect(html).toContain('a.js');
+    expect(html).toContain('+6 −1');
+    expect(html).toContain('±?');
+  });
+
+  it('labels detached and removed worktrees', () => {
+    expect(renderSidebar(tree([], { branch: null }), null)).toContain('(sem branch)');
+    expect(renderSidebar(tree([], { prunable: true }), null)).toContain('(removida)');
+  });
+
+  it('tells sessions in the Vizor from the ones in another terminal', () => {
+    const html = renderSidebar(tree([session('in', { inside: true }), session('out')]), null);
+    expect(html).toContain('title="no Vizor"');
+    expect(html).toContain('title="em outro terminal"');
+  });
+
+  it('offers to drop a project from the list', () => {
+    expect(renderSidebar(tree([]), null)).toContain('data-remove-project="/r" title="Tirar da lista"');
+  });
+
+  it('renders the empty state with no projects', () => {
+    expect(renderSidebar({ projects: [], unplaced: [], counts: { working: 0, waiting: 0 } }, null)).toBe(
+      renderEmpty(),
+    );
+    expect(renderEmpty()).toContain('Nenhum projeto ainda');
+    expect(renderEmpty()).toContain('Abrir projeto…');
+  });
+});
+
+describe('renderTopBar', () => {
+  it('shows how many sessions run and wait', () => {
+    const html = renderTopBar(tree([]));
+    expect(html).toContain('2 rodando');
+    expect(html).toContain('1 esperando');
+  });
+});
