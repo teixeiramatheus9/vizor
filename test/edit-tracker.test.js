@@ -249,3 +249,22 @@ describe('memory ceiling (#94)', () => {
     expect(tracker.snapshotBytes()).toBeLessThanOrEqual(2 * 2 * 40);
   });
 });
+
+describe('id-less hook events out of order (#102)', () => {
+  it('a Pre without id arriving right after its own Post does not leave a ghost', () => {
+    let clock = 1000;
+    const tracker = new EditTracker({ now: () => clock });
+    tracker.completeEdit(post(undefined), content('a', 'b'));
+    clock = 1500;
+    expect(tracker.beginEdit(pre(undefined))).toBeNull();
+    expect(tracker.currentTask('s1').edits.map((edit) => edit.status)).toEqual(['applied']);
+  });
+
+  it('a later id-less Pre on the same file is a new edit', () => {
+    let clock = 1000;
+    const tracker = new EditTracker({ now: () => clock });
+    tracker.completeEdit(post(undefined), content('a', 'b'));
+    clock = 5000;
+    expect(tracker.beginEdit(pre(undefined)).status).toBe('writing');
+  });
+});

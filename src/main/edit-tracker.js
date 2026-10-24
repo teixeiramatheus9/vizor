@@ -21,6 +21,7 @@ export const EDIT_STATUS = {
 // A file that keeps changing (a log, a watch build) updates its open card
 // instead of piling a new one every poll (#94 review).
 const COMMAND_COALESCE_MS = 30000;
+const LATE_PRE_MS = 2000;
 const DEFAULT_MAX_SNAPSHOT_BYTES = 200 * 1024 * 1024;
 const bytesOf = (text) => (typeof text === 'string' ? text.length * 2 : 0);
 
@@ -79,6 +80,12 @@ export class EditTracker extends EventEmitter {
     if (!sessionId || !filePath) return null;
     if (event.tool_use_id && this.findById(sessionId, event.tool_use_id)) return null;
     const task = this.openTask(sessionId);
+    // Without an id, a Pre landing just after an applied edit of the same file
+    // is that edit's own late Pre (async hooks race) — not a new edit (#102).
+    if (!event.tool_use_id) {
+      const last = task.edits.findLast((edit) => edit.filePath === filePath);
+      if (last?.status === EDIT_STATUS.APPLIED && this.now() - last.endedAt < LATE_PRE_MS) return null;
+    }
     // Claude edits one thing at a time: a new Pre on the same file means the
     // previous one never landed (e.g. permission denied) — unless its Post is
     // still in flight, in which case completeEdit revives it.
