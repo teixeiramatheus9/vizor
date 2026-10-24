@@ -594,3 +594,90 @@ body[data-inspector-width='collapsed'] #rail {
   color: var(--warn);
   font-size: 10px;
 }
+
+/* --- comments (#95) --- */
+.comment-button {
+  margin-left: auto;
+  border: none;
+  padding: 0 4px;
+  opacity: 0.55;
+}
+
+.comment-button:hover {
+  opacity: 1;
+}
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.comments {
+  flex-basis: 100%;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.card .comments {
+  padding: 0 8px 6px;
+}
+
+.comment {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 2px 0;
+  color: var(--text-2);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+}
+
+.comment-text {
+  white-space: pre-wrap;
+}
+
+.comment-state {
+  flex: none;
+  color: var(--muted);
+}
+
+.comment.status-queued .comment-state {
+  color: var(--warn);
+}
+
+#composer {
+  border-top: 1px solid var(--border);
+  background: var(--bg-header);
+  padding: 6px 8px;
+}
+
+#composer header {
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+
+#composer textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.composer-error {
+  margin: 4px 0 0;
+  color: var(--warn);
+}
+
+.composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}

@@ -6,6 +6,8 @@ import {
   renderSidebar,
   editStatusIcon,
   renderCards,
+  renderComments,
+  renderComposer,
   renderFileView,
   renderInspectorHeader,
   renderRail,
@@ -310,5 +312,44 @@ describe('command changes in the inspector (#94)', () => {
     expect(renderFileView({ relPath: 'b.txt', rows: [], anchors: {}, unplaced: [], note: 'dropped' }, {}, null)).toContain(
       'conteúdo antigo descartado pra economizar memória',
     );
+  });
+});
+
+describe('comments (#95)', () => {
+  const at = new Date(2026, 9, 24, 14, 2).getTime();
+  const ev = (id, seq, extra = {}) => ({ id, seq, filePath: `/r/${id}.js`, relPath: `${id}.js`, toolName: 'Edit', status: 'applied',
+    startedAt: at, endedAt: at, reason: 'porque', note: null, added: 1, removed: 0, baseline: 'reverse',
+    hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ['+x'] }], ...extra });
+  const task = (edits) => ({ id: 's:1', prompt: '', startedAt: at, endedAt: null, edits });
+  const comment = (status, text = 'oi') => ({ id: `c-${status}`, editId: 'a', text, status });
+
+  it('every card and banner offers to comment', () => {
+    expect(renderCards(task([ev('a', 1)]), null)).toContain('data-comment="a" title="Comentar esta mudança"');
+    const file = { relPath: 'a.js', rows: [{ kind: 'add', oldNo: null, newNo: 1, text: 'x' }], anchors: { 0: ['a'] }, unplaced: [] };
+    expect(renderFileView(file, { a: ev('a', 1) }, null)).toContain('data-comment="a" title="Comentar esta mudança"');
+  });
+
+  it('shows each comment under its edit with its state, escaped', () => {
+    const byEdit = { a: [comment('queued', '<img onerror=1>'), comment('sending'), comment('sent'), comment('failed')] };
+    const html = renderCards(task([ev('a', 1), ev('b', 2)]), null, byEdit);
+    expect(html).toContain('na fila — a sessão está esperando você');
+    expect(html).toContain('enviando…');
+    expect(html).toContain('enviado');
+    expect(html).toContain('falhou — o texto foi copiado');
+    expect(html).toContain('&lt;img onerror=1&gt;');
+    expect(html).not.toContain('<img onerror');
+    expect(html.indexOf('data-card="b"')).toBeGreaterThan(html.lastIndexOf('comment status-'));
+    const file = { relPath: 'a.js', rows: [{ kind: 'add', oldNo: null, newNo: 1, text: 'x' }], anchors: { 0: ['a'] }, unplaced: [] };
+    expect(renderFileView(file, { a: ev('a', 1) }, null, byEdit)).toContain('enviando…');
+    expect(renderComments([])).toBe('');
+  });
+
+  it('the composer names the change and keeps the draft', () => {
+    const html = renderComposer({ edit: ev('b', 2), draft: '<b>rascunho</b>', error: 'Escreve alguma coisa' });
+    expect(html).toContain('Comentando #2 · b.js');
+    expect(html).toContain('&lt;b&gt;rascunho&lt;/b&gt;</textarea>');
+    expect(html).toContain('Escreve alguma coisa');
+    expect(html).toContain('data-comment-send');
+    expect(html).toContain('data-comment-cancel');
   });
 });

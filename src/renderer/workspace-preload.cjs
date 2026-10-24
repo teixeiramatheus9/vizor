@@ -18,5 +18,6 @@ contextBridge.exposeInMainWorld('vizor', {
   getFileView: (sessionId, taskId, filePath) => ipcRenderer.invoke('edits:file', { sessionId, taskId, filePath }),
   getPrefs: () => ipcRenderer.invoke('workspace:prefs', {}),
   setPrefs: (set) => ipcRenderer.invoke('workspace:prefs', { set }),
+  addComment: (sessionId, editId, text) => ipcRenderer.invoke('comments:add', { sessionId, editId, text }),
   onEditsChanged: (callback) => ipcRenderer.on('edits:changed', (_event, payload) => callback(payload)),
 });

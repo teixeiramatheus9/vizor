@@ -3,6 +3,7 @@ import { FitAddon } from '../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs'
 import { WebglAddon } from '../../node_modules/@xterm/addon-webgl/lib/addon-webgl.mjs';
 import {
   renderCards,
+  renderComposer,
   renderFileView,
   renderInspectorHeader,
   renderRail,
@@ -53,6 +54,11 @@ let inspectorSummaries = [];
 let fileView = null;
 let scrollPending = false; // scroll to the selection once its element renders
 let fileSignature = null; // what the current fileView was built from
+let inspectorComments = []; // the selected session's 💬 comments
+// The composer lives outside #detail/#timeline: edit pings re-render those,
+// never the draft being typed.
+const composerEl = document.getElementById('composer');
+let composer = null; // { editId, draft, error }
 let pickerSignature = null;
 
 function cssVar(name) {
@@ -183,10 +189,12 @@ function renderInspector() {
     prefs.mode === 'cards' ? '[data-card][aria-current="true"]' : '[data-banner][aria-current="true"]';
   const anchorBefore = detailEl.querySelector(anchorSelector);
   const offsetBefore = anchorBefore ? anchorBefore.offsetTop - detailEl.scrollTop : null;
-  if (prefs.mode === 'cards') detailEl.innerHTML = renderCards(inspectorTask, inspector.selectedId);
+  const commentsByEdit = {};
+  for (const comment of inspectorComments) (commentsByEdit[comment.editId] ??= []).push(comment);
+  if (prefs.mode === 'cards') detailEl.innerHTML = renderCards(inspectorTask, inspector.selectedId, commentsByEdit);
   else if (fileView && !fileView.error) {
     const byId = Object.fromEntries(edits.map((edit) => [edit.id, edit]));
-    detailEl.innerHTML = renderFileView(fileView, byId, inspector.selectedId);
+    detailEl.innerHTML = renderFileView(fileView, byId, inspector.selectedId, commentsByEdit);
   } else detailEl.innerHTML = '';
   const anchor = detailEl.querySelector(anchorSelector);
   // A pending scroll waits until its target exists: following an edit that
@@ -252,10 +260,11 @@ async function refreshInspector({ scroll = false } = {}) {
     return;
   }
   const before = inspector.selectedId;
-  const { task, summaries } = await window.vizor.getTaskEdits(sessionId, inspector.taskId);
+  const { task, summaries, comments } = await window.vizor.getTaskEdits(sessionId, inspector.taskId);
   if (inspector.sessionId !== sessionId) return; // switched meanwhile
   inspectorTask = task;
   inspectorSummaries = summaries;
+  inspectorComments = comments ?? [];
   inspector = onTask(inspector, task);
   // Scroll only when the selection moved (following, or a click) — never on a
   // plain refresh of the same selection.
@@ -263,8 +272,53 @@ async function refreshInspector({ scroll = false } = {}) {
   await loadFileView();
 }
 
+function renderComposerPanel() {
+  const edit = composer && inspectorTask?.edits.find((item) => item.id === composer.editId);
+  composerEl.hidden = !edit;
+  if (!edit) return;
+  composerEl.innerHTML = renderComposer({ edit, draft: composer.draft, error: composer.error });
+  const textarea = composerEl.querySelector('[data-comment-draft]');
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+}
+
+function closeComposer() {
+  composer = null;
+  composerEl.hidden = true;
+  composerEl.innerHTML = '';
+  // Back to the terminal the user was typing in.
+  views.get(activeTab)?.term.focus();
+}
+
+async function sendComposer() {
+  if (!composer) return;
+  const result = await window.vizor.addComment(inspector.sessionId, composer.editId, composer.draft);
+  if (!result?.ok) {
+    composer.error = result?.error ?? 'Não deu pra comentar';
+    renderComposerPanel();
+    return;
+  }
+  closeComposer();
+  refreshInspector();
+}
+
+composerEl.addEventListener('input', (event) => {
+  if (composer && event.target.matches('[data-comment-draft]')) composer.draft = event.target.value;
+});
+
+composerEl.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeComposer();
+  } else if (event.key === 'Enter' && event.ctrlKey) {
+    event.preventDefault();
+    sendComposer();
+  }
+});
+
 function selectInspectorSession(sessionId) {
   if (inspector.sessionId === sessionId) return;
+  if (composer) closeComposer();
   inspector = initialInspector(sessionId);
   inspectorTask = null;
   fileView = null;
@@ -330,6 +384,21 @@ new ResizeObserver(() => fitActive()).observe(termHost);
 
 document.addEventListener('click', async (event) => {
   const target = event.target;
+  const commentButton = target.closest('[data-comment]');
+  if (commentButton) {
+    composer = { editId: commentButton.dataset.comment, draft: '', error: null };
+    renderComposerPanel();
+    return;
+  }
+  if (target.closest('[data-comment-send]')) {
+    sendComposer();
+    return;
+  }
+  if (target.closest('[data-comment-cancel]')) {
+    closeComposer();
+    return;
+  }
+  if (target.closest('#composer')) return;
   const editRow = target.closest('[data-edit]');
   if (editRow) {
     inspector = onSelect(inspector, editRow.dataset.edit);
