@@ -24,6 +24,7 @@ export const DEFAULT_CONFIG = {
   bridgeAutoSetupDone: false,
   announceWhenFocusUnknown: true,
   folderAliases: {},
+  workspaceProjects: [],
 };
 
 export function loadConfig(file) {
