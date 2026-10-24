@@ -84,6 +84,9 @@ process.stdin.on('end', () => {
   } catch {
     process.exit(0);
   }
+  // Claude Code always sends an object; anything else would throw on the
+  // property writes below and break the exit-0 promise.
+  if (!event || typeof event !== 'object' || Array.isArray(event)) process.exit(0);
   if (TOOL_EVENTS.includes(event?.hook_event_name)) event = slimToolEvent(event);
   const { WAVETERM_BLOCKID, WAVETERM_TABID, WAVETERM_JWT } = process.env;
   if (WAVETERM_BLOCKID && WAVETERM_TABID && WAVETERM_JWT) {

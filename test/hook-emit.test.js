@@ -282,4 +282,10 @@ describe('hook-emit', () => {
     await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile, VIZOR_PTY_ID: 'pty-1' });
     expect((await received).term).toEqual({ VIZOR_PTY_ID: 'pty-1' });
   });
+  it('exits 0 on JSON that is not an object, even inside a terminal', async () => {
+    for (const input of ['null', '"x"', '42', '[]']) {
+      const exitCode = await runHook(input, { VIZOR_SOCKET: '/nonexistent.sock', TMUX: 'x' });
+      expect(exitCode).toBe(0);
+    }
+  });
 });
