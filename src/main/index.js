@@ -1525,6 +1525,7 @@ ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
 // Recorded for every session, workspace open or not — like the edits — but
 // git is only polled while some session has a task running there.
 const BASELINE_FILE_BYTES = MAX_DIFF_BYTES;
+const MAX_HEAD_PATHS = 200; // a branch switch touching thousands of files is not read card by card
 const BASELINE_TOTAL_BYTES = 20 * 1024 * 1024;
 const baselineSnapshots = new Map(); // root → Map<abs, content> of files dirty at task start
 
@@ -1539,6 +1540,18 @@ const commandWatcher = createCommandWatcher({
     })
       .then(({ stdout }) => stdout)
       .catch(() => null),
+  gitHead: (root) =>
+    execFileAsync('git', ['--no-optional-locks', 'rev-parse', 'HEAD'], { cwd: root, timeout: 3000 })
+      .then(({ stdout }) => stdout.trim() || null)
+      .catch(() => null),
+  gitChangedBetween: (root, from, to) =>
+    execFileAsync('git', ['--no-optional-locks', 'diff', '--name-only', '-z', from, to], {
+      cwd: root,
+      timeout: 3000,
+      maxBuffer: 16 * 1024 * 1024,
+    })
+      .then(({ stdout }) => stdout.split('\0').filter(Boolean).slice(0, MAX_HEAD_PATHS))
+      .catch(() => []),
   statFile: (abs) =>
     fs.promises.stat(abs).then(
       (stats) => `${stats.size}:${stats.mtimeMs}`,
@@ -1587,7 +1600,18 @@ async function readForCommand(filePath) {
   }
 }
 
-async function recordCommandChange({ root, filePath, owners, untracked }) {
+async function readHeadVersion(root, head, filePath) {
+  const relative = path.relative(root, filePath).split(path.sep).join('/');
+  return execFileAsync('git', ['--no-optional-locks', 'show', `${head}:${relative}`], {
+    cwd: root,
+    timeout: 3000,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+    .then(({ stdout }) => stdout)
+    .catch(() => null); // not at that HEAD, or git failed: fall back to the other baselines
+}
+
+async function recordCommandChange({ root, filePath, owners, untracked, fromHead }) {
   const { content: after, note: readNote } = await readForCommand(filePath);
   // An edit's own write (its Post landed after the poll): not a command's.
   if (after !== null && editTracker.contentsAnywhere(filePath).includes(after)) return;
@@ -1605,6 +1629,10 @@ async function recordCommandChange({ root, filePath, owners, untracked }) {
     if (before === null && baselineSnapshots.get(root)?.has(filePath)) {
       before = baselineSnapshots.get(root).get(filePath);
       baseline = 'task-start';
+    }
+    if (before === null && fromHead) {
+      before = await readHeadVersion(root, fromHead, filePath);
+      baseline = 'head';
     }
     if (before === null && after !== null) {
       if (untracked) {

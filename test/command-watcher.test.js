@@ -21,7 +21,7 @@ describe('command watcher', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  function setup({ explained = () => false, statFile: customStat } = {}) {
+  function setup({ explained = () => false, statFile: customStat, gitHead, gitChangedBetween } = {}) {
     const { repo, gitStatus, statFile } = fakeRepo();
     const changes = [];
     const logs = [];
@@ -33,6 +33,7 @@ describe('command watcher', () => {
       onChange: (change) => changes.push(change),
       onBaseline: (baseline) => baselines.push(baseline),
       log: (line) => logs.push(line),
+      ...(gitHead ? { gitHead, gitChangedBetween } : {}),
     });
     return { repo, watcher, changes, logs, baselines };
   }
@@ -48,7 +49,7 @@ describe('command watcher', () => {
     await tick(); // candidate
     expect(changes).toEqual([]);
     await tick(); // still unexplained
-    expect(changes).toEqual([{ root: '/r', filePath: '/r/b.txt', owners: ['s1'], untracked: false }]);
+    expect(changes).toEqual([{ root: '/r', filePath: '/r/b.txt', owners: ['s1'], untracked: false, fromHead: null }]);
     await tick();
     expect(changes).toHaveLength(1);
   });
@@ -108,7 +109,7 @@ describe('command watcher', () => {
     repo.sigs['/r/c.txt'] = '4:4';
     await tick();
     await tick();
-    expect(changes).toEqual([{ root: '/r', filePath: '/r/c.txt', owners: ['s1', 's2'], untracked: false }]);
+    expect(changes).toEqual([{ root: '/r', filePath: '/r/c.txt', owners: ['s1', 's2'], untracked: false, fromHead: null }]);
   });
 
   it('a big pile of files already dirty does not switch the watcher off (#94 review)', async () => {
@@ -135,7 +136,7 @@ describe('command watcher', () => {
     repo.sigs['/r/novo.txt'] = '3:3';
     await tick();
     await tick();
-    expect(changes).toEqual([{ root: '/r', filePath: '/r/novo.txt', owners: ['s1'], untracked: true }]);
+    expect(changes).toEqual([{ root: '/r', filePath: '/r/novo.txt', owners: ['s1'], untracked: true, fromHead: null }]);
   });
 
   it('keeps polling after a cycle throws', async () => {
@@ -155,5 +156,47 @@ describe('command watcher', () => {
     await tick();
     expect(watcher.activeRoots()).toEqual(['/r']);
     expect(changes.map((change) => change.filePath)).toEqual(['/r/boom']);
+  });
+
+  it('takes the baseline right away, so an early change is not absorbed (#128)', async () => {
+    const { repo, watcher, changes } = setup();
+    watcher.setActive('/r', ['s1']);
+    await vi.advanceTimersByTimeAsync(0);
+    repo.status = ' M cedo.txt\0';
+    repo.sigs['/r/cedo.txt'] = '7:7';
+    await tick();
+    await tick();
+    expect(changes.map((change) => change.filePath)).toEqual(['/r/cedo.txt']);
+  });
+
+  it('backs off a folder where git keeps failing (#129)', async () => {
+    const { repo, watcher } = setup();
+    repo.broken = true;
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    const calls = repo.statusCalls;
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    expect(repo.statusCalls).toBe(calls);
+    await vi.advanceTimersByTimeAsync(30000);
+    repo.broken = false;
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    expect(repo.statusCalls).toBeGreaterThan(calls);
+  });
+
+  it('a commit, checkout or pull that touches clean files is seen through HEAD (#131)', async () => {
+    let head = 'aaa';
+    const { watcher, changes } = setup({
+      gitHead: async () => head,
+      gitChangedBetween: async (root, from, to) => (from === 'aaa' && to === 'bbb' ? ['limpo.js'] : []),
+    });
+    watcher.setActive('/r', ['s1']);
+    await tick();
+    head = 'bbb';
+    await tick();
+    await tick();
+    expect(changes.map((change) => change.filePath)).toEqual(['/r/limpo.js']);
+    expect(changes[0].fromHead).toBe('aaa');
   });
 });
