@@ -256,7 +256,9 @@ async function refreshInspector({ scroll = false } = {}) {
   if (!sessionId) {
     inspectorTask = null;
     inspectorSummaries = [];
+    inspectorComments = [];
     fileView = null;
+    fileSignature = null;
     renderInspector();
     return;
   }
@@ -277,8 +279,15 @@ async function refreshInspector({ scroll = false } = {}) {
 
 function renderComposerPanel() {
   const edit = composer && inspectorTask?.edits.find((item) => item.id === composer.editId);
-  composerEl.hidden = !edit;
-  if (!edit) return;
+  if (!edit) {
+    // Its change left the view (another task, another session): no hidden
+    // composer keeping state behind the scenes (#136).
+    composer = null;
+    composerEl.hidden = true;
+    composerEl.innerHTML = '';
+    return;
+  }
+  composerEl.hidden = false;
   composerEl.innerHTML = renderComposer({ edit, draft: composer.draft, error: composer.error });
   const textarea = composerEl.querySelector('[data-comment-draft]');
   textarea.focus();
@@ -324,6 +333,8 @@ composerEl.addEventListener('keydown', (event) => {
 
 function selectInspectorSession(sessionId) {
   if (inspector.sessionId === sessionId) return;
+  // null: nothing selected — the inspector empties instead of showing the
+  // previous session's changes (#124).
   if (composer) closeComposer();
   inspector = initialInspector(sessionId);
   inspectorTask = null;
@@ -368,6 +379,11 @@ window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;
   terminals = list ?? [];
+  // The inspected session is gone (closed, reaped): stop showing it (#124).
+  if (inspector.sessionId && !findSession(inspector.sessionId)) {
+    if (selectedId === inspector.sessionId) selectedId = null;
+    selectInspectorSession(null);
+  }
   if (pendingFocus && findSession(pendingFocus)) {
     const sessionId = pendingFocus;
     pendingFocus = null;
@@ -397,7 +413,9 @@ document.addEventListener('click', async (event) => {
   const target = event.target;
   const commentButton = target.closest('[data-comment]');
   if (commentButton) {
-    composer = { editId: commentButton.dataset.comment, draft: '', error: null };
+    // A draft already typed follows to the newly picked change (#135).
+    const draft = composer?.draft ?? '';
+    composer = { editId: commentButton.dataset.comment, draft, error: null };
     renderComposerPanel();
     return;
   }
@@ -506,6 +524,7 @@ document.addEventListener('click', async (event) => {
   if (worktree) {
     selectedWorktree = worktree.dataset.worktree;
     selectedId = null;
+    selectInspectorSession(null);
     render();
     reportSelection();
     return;
