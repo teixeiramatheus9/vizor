@@ -35,6 +35,10 @@ import { buildOrchestra, nextFocus } from './maestro/orchestra.js';
 import { createPendingOrder } from './maestro/pending-order.js';
 import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
 import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
+import { createConductor } from './maestro/conductor.js';
+import { shouldSuggest } from './maestro/reviewer.js';
+import { criticalOf } from '../renderer/graph-view.js';
+import { testOutcomeOf } from './voice/narration.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
@@ -438,6 +442,17 @@ function recordGuardOutcome(request, outcome) {
   }
 }
 
+// An action with no way back, in the Maestro: the voice offers a review first (#162).
+function reviewerHint(ask) {
+  if (!maestroOn() || !ask.irreversible) return '';
+  const musician = maestroOrchestra.find((item) => item.sessionId === ask.sessionId);
+  if (!musician) return '';
+  const name = musician.number ?? musician.name;
+  return spokenLang() === 'en'
+    ? ` No way back: say "chama um avaliador pra ${name}" for a review first.`
+    : ` Isso não tem volta: se quiser uma revisão antes, diga "chama um avaliador pra ${name}".`;
+}
+
 function onGuardMessage(message, reply) {
   if (message.type === 'guard-event') {
     recordGuardOutcome(message, message.outcome ?? 'barrado');
@@ -452,7 +467,7 @@ function onGuardMessage(message, reply) {
   if (!ask) return;
   // The balloon announces; the choices live in the panel and the workspace.
   // In voice mode the session speaks it (priority 2) and takes the answer.
-  if (voiceSession) voiceSession.onGuardAsk({ speech: guardSpeech(ask, spokenLang()) });
+  if (voiceSession) voiceSession.onGuardAsk({ speech: `${guardSpeech(ask, spokenLang())}${reviewerHint(ask)}` });
   sendToRenderer('tooltip', {
     projectName: path.basename(ask.cwd ?? '') || 'Claude',
     text: ask.summary,
@@ -663,6 +678,45 @@ function maestroImpacts() {
 }
 
 ipcMain.handle('maestro:graph', (_event, root) => (typeof root === 'string' ? graphFor(root)?.graph() ?? null : null));
+
+// --- the conducting gerente (#162): your orders, kept until a músico's turn ends
+const maestroConductor = createConductor({ lang: () => spokenLang() });
+const turnTests = new Map(); // sessionId → the last test verdict of its current turn
+const reviewerOffered = new Set(); // músicos already offered a reviewer
+
+function runConductor(actions) {
+  for (const action of actions) {
+    if (action.type === 'prompt') {
+      turnTests.delete(action.sessionId); // a new turn starts with this prompt
+      // Not safe to type yet (a question on screen, just settling): tried again.
+      const deliver = (tries) =>
+        voiceDeliverPrompt(action.sessionId, action.text)
+          .then((outcome) => {
+            if (outcome === 'hold' && tries < 5) setTimeout(() => deliver(tries + 1), 2000);
+            else if (outcome !== 'sent') log(`conductor prompt to ${action.sessionId.slice(0, 8)}: ${outcome}`);
+          })
+          .catch((error) => log(`conductor prompt failed: ${error}`));
+      deliver(0);
+    } else if (voiceSession) voiceSession.onConductorAction(action);
+    else speakAsManager(action.text);
+  }
+  pushWorkspaceState();
+}
+
+// A músico's turn ended: the gerente's order moves on, and a big or risky
+// change offers a reviewer (once per músico).
+function maestroTurnEnded(musician) {
+  runConductor(maestroConductor.turnEnded(musician.sessionId, { tests: turnTests.get(musician.sessionId) ?? null }));
+  turnTests.delete(musician.sessionId);
+  if (!voiceSession || reviewerOffered.has(musician.sessionId)) return;
+  const graph = musician.root ? graphIndexers.get(musician.root)?.graph() : null;
+  const impact = maestroImpacts().find((item) => item.sessionId === musician.sessionId);
+  if (!graph || graph.unavailable || !impact) return;
+  const offer = shouldSuggest(impact, criticalOf(graph), reviewerOffered);
+  if (!offer) return;
+  reviewerOffered.add(musician.sessionId);
+  voiceSession.onSuggestReviewer({ musician, ...offer });
+}
 
 function maestroFocus(sessionId) {
   maestroFocusId = sessionId;
@@ -1510,6 +1564,7 @@ async function generateVoiceForStop(session) {
     // The plan it declared lights up on the graph, dashed (#159).
     const plan = playing.root ? parsePlan(snapshot.lastAssistantMessage, playing.root) : [];
     if (plan.length) maestroPlans.set(session.id, plan);
+    if (maestroOn()) maestroTurnEnded(playing);
   }
   // The chat bound to the voice answers in its own words, not the gerente's
   // alert — and no tokens go to the alert (#161).
@@ -1679,6 +1734,9 @@ function pushWorkspaceStateNow() {
   maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
   maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
   if (maestroOn()) for (const musician of maestroOrchestra) graphFor(musician.root);
+  // A músico gone with an order pending: the gerente says it could not do it.
+  for (const { sessionId } of maestroConductor.list())
+    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) queueMicrotask(() => runConductor(maestroConductor.sessionGone(sessionId)));
   for (const sessionId of [...maestroNarrators.keys(), ...maestroPlans.keys()])
     if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) {
       maestroNarrators.delete(sessionId);
@@ -1690,7 +1748,13 @@ function pushWorkspaceStateNow() {
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
-    maestro: { on: maestroOn(), orchestra: maestroOrchestra, focusedId: maestroFocusId, impacts: maestroOn() ? maestroImpacts() : [] },
+    maestro: {
+      on: maestroOn(),
+      orchestra: maestroOrchestra,
+      focusedId: maestroFocusId,
+      impacts: maestroOn() ? maestroImpacts() : [],
+      orders: Object.fromEntries(maestroConductor.list().map((order) => [order.sessionId, order.label])),
+    },
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2407,6 +2471,8 @@ function onHookEvent(event, reply) {
   if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
     voiceSession?.onToolEvent(event);
     maestroNarrate(event);
+    const verdict = testOutcomeOf(event);
+    if (verdict && event.session_id) turnTests.set(event.session_id, verdict);
     if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name)) graphTouched(event);
   }
   // The chat speaks for itself now: its own term says which tab (if any) it
@@ -3784,6 +3850,8 @@ function createVoiceSessionForApp() {
     focus: maestroFocus,
     interrupt: maestroInterrupt,
     pendingOrder: maestroOrder,
+    conductor: maestroConductor,
+    startOrderNow: (sessionId) => runConductor(maestroConductor.turnEnded(sessionId, { tests: null })),
     linkedSessions: (number) => {
       const root = voiceRoot();
       return root ? taskLinks.linksFor(root, number) : [];

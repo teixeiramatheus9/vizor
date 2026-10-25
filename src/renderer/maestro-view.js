@@ -21,17 +21,23 @@ export function balloonText(text, max = BALLOON_MAX) {
   return { short: `${full.slice(0, max).replace(/\s+\S*$/, '')}…`, full, cut: true };
 }
 
-export function renderOrchestra(orchestra, focusedId) {
+// orders: sessionId → the label of the gerente's pending order for it (#162).
+export function renderOrchestra(orchestra, focusedId, orders = {}) {
   const rows = orchestra.map(
     (musician) =>
       `<button class="musician" data-musician="${escapeHtml(musician.sessionId)}"${
         musician.sessionId === focusedId ? ' aria-current="true"' : ''
       }><span class="musician-dot" style="background:${escapeHtml(musician.color)}"></span><span class="musician-text"><b>${escapeHtml(
         musician.name,
-      )}</b> ${escapeHtml(musician.label)}<span class="musician-status">${escapeHtml(STATUS_LABEL[musician.status] ?? musician.status)}</span></span></button>`,
+      )}</b> ${escapeHtml(musician.label)}<span class="musician-status">${escapeHtml(STATUS_LABEL[musician.status] ?? musician.status)}</span>${
+        orders[musician.sessionId] ? `<span class="musician-order">↪ quando terminar: ${escapeHtml(orders[musician.sessionId])}</span>` : ''
+      }</span></button>`,
   );
   const empty = orchestra.length ? '' : '<div class="orchestra-empty">nenhum chat do Claude aberto no workspace</div>';
-  return `<div class="maestro-title">orquestra</div>${rows.join('')}${empty}<div class="musician manager"><span class="musician-dot"></span><span class="musician-text">gerente · segue suas ordens</span></div>`;
+  return `<div class="maestro-title">orquestra</div>${rows.join('')}${empty}<div class="musician manager"><span class="musician-dot"></span><span class="musician-text">gerente · ${(() => {
+    const count = Object.keys(orders).length;
+    return count ? `segue ${count} ${count === 1 ? 'ordem' : 'ordens'}` : 'segue suas ordens';
+  })()}</span></div>`;
 }
 
 // say: { source, text }, source a session id or 'manager'.

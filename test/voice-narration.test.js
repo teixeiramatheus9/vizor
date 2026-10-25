@@ -70,3 +70,14 @@ describe('narration', () => {
     time += 0;
   });
 });
+
+describe('testOutcomeOf (the conductor reads the tests of a turn)', async () => {
+  const { testOutcomeOf } = await import('../src/main/voice/narration.js');
+  it('testOutcomeOf: passed, failed, or nothing', () => {
+    expect(testOutcomeOf(post('Bash', { command: 'npm test' }, ' Tests  10 passed (10)'))).toBe('passed');
+    expect(testOutcomeOf(post('Bash', { command: 'npx vitest run' }, ' Tests  3 failed | 10 passed'))).toBe('failed');
+    expect(testOutcomeOf(post('Bash', { command: 'pytest' }, 'FAILED test_x.py'))).toBe('failed');
+    expect(testOutcomeOf(post('Bash', { command: 'ls' }, 'passed'))).toBeNull();
+    expect(testOutcomeOf(pre('Bash', { command: 'npm test' }))).toBeNull();
+  });
+});

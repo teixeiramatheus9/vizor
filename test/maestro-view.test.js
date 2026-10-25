@@ -96,3 +96,13 @@ describe('músicos without a task show as A1, A2…', () => {
     expect(renderBalloon({ source: 'x', text: 'oi' }, () => a1)).toContain('A1:');
   });
 });
+
+describe('the orchestra shows the gerente\'s orders', () => {
+  it("the orchestra shows a músico's pending order and the gerente counts them", () => {
+    const html = renderOrchestra([musician('a', 22), musician('b', 31)], 'a', { a: 'rodar os testes e abrir a PR' });
+    expect(html).toContain('↪ quando terminar: rodar os testes e abrir a PR');
+    expect(html).toContain('gerente · segue 1 ordem');
+    expect(renderOrchestra([musician('a', 22)], 'a', { a: 'x', b: 'y' })).toContain('segue 2 ordens');
+    expect(renderOrchestra([musician('a', 22)], 'a')).toContain('gerente · segue suas ordens');
+  });
+});

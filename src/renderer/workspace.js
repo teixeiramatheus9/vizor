@@ -783,7 +783,7 @@ window.addEventListener('mouseup', (event) => {
 
 function renderMaestro() {
   if (!maestro.on) return;
-  orchestraEl.innerHTML = renderOrchestra(maestro.orchestra, maestro.focusedId);
+  orchestraEl.innerHTML = renderOrchestra(maestro.orchestra, maestro.focusedId, maestro.orders ?? {});
   renderGraphColumn();
   consequencesEl.innerHTML = renderConsequences(maestroLines.get(maestro.focusedId) ?? []);
   balloonEl.innerHTML = renderBalloon(maestroSaid, musicianOf, { full: maestroSaidFull });

@@ -1170,3 +1170,8 @@ svg.graph line.import.picked {
 svg.graph line.call.picked {
   opacity: 1;
 }
+.musician-order {
+  display: block;
+  color: var(--accent);
+  font-size: 11px;
+}

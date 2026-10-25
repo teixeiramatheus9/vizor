@@ -42,6 +42,16 @@ function testOutcome(tail, lines) {
   return null;
 }
 
+// A test run's verdict, for the conducting gerente (#162): 'passed',
+// 'failed', or null when the event is not a finished test run.
+export function testOutcomeOf(event) {
+  if (event?.tool_name !== 'Bash' || event.hook_event_name !== 'PostToolUse') return null;
+  if (!TEST_RUNNER.test(String(event.tool_input?.command ?? ''))) return null;
+  const line = testOutcome(String(event.tool_output_tail ?? ''), LINES.pt);
+  if (!line) return null;
+  return line === LINES.pt.testsPassed ? 'passed' : 'failed';
+}
+
 const lower = (text) => (text ? text.charAt(0).toLowerCase() + text.slice(1) : text);
 
 export function createNarrator({ now = Date.now, lang = 'pt' } = {}) {
