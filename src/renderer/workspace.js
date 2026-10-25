@@ -26,6 +26,7 @@ import {
   onTask,
   stillWanted,
 } from './inspector-state.js';
+import { renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -37,6 +38,8 @@ const newMenu = document.getElementById('new-menu');
 let lastTree = null;
 // The voice mode (#161): the chat can fold away so the code takes the screen.
 let chatHidden = false;
+// The Maestro stage (#159): on, the orchestra and the focused músico, from main.
+let maestro = { on: false, orchestra: [], focusedId: null };
 let voiceInfo = null;
 let terminals = [];
 let selectedId = null; // selected session
@@ -288,7 +291,7 @@ async function renderTerminalArea() {
 
 function render() {
   if (!lastTree) return;
-  topbar.innerHTML = renderTopBar(lastTree, { chatHidden, voice: voiceInfo });
+  topbar.innerHTML = renderTopBar(lastTree, { chatHidden, voice: voiceInfo, maestro: maestro.on });
   sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds);
   renderTerminalArea();
 }
@@ -524,7 +527,7 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice }) => {
+window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage }) => {
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;
@@ -561,6 +564,7 @@ window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, g
     views.delete(id);
   }
   render();
+  applyMaestro(stage);
 });
 
 // Flow control (#113): tell main how much each terminal has actually drawn,
@@ -588,6 +592,106 @@ window.vizor.onTerminalExit(() => renderTerminalArea());
 
 new ResizeObserver(() => fitActive()).observe(termHost);
 
+// --- Maestro (#159) ----------------------------------------------------------
+// The stage rearranges the same window: orchestra | code | impact, the chat
+// and the sidebar out of the way. The inspector's file view, following the
+// AI, is the code in the middle; nothing here is saved as a preference.
+let maestroSaved = null; // the view before the stage, put back on leaving
+let maestroSaid = null; // { source, text } in the balloon
+let maestroSaidFull = false;
+let maestroOrderShown = null;
+let maestroOrderTimer = null;
+const maestroLines = new Map(); // sessionId → narration lines
+const orchestraEl = document.getElementById('maestro-orchestra');
+const impactEl = document.getElementById('maestro-impact');
+const balloonEl = document.getElementById('maestro-balloon');
+const orderEl = document.getElementById('maestro-order');
+const consequencesEl = document.getElementById('maestro-consequences');
+
+const musicianOf = (sessionId) => maestro.orchestra.find((musician) => musician.sessionId === sessionId) ?? null;
+
+function renderMaestro() {
+  if (!maestro.on) return;
+  orchestraEl.innerHTML = renderOrchestra(maestro.orchestra, maestro.focusedId);
+  impactEl.innerHTML = renderImpact(musicianOf(maestro.focusedId));
+  consequencesEl.innerHTML = renderConsequences(maestroLines.get(maestro.focusedId) ?? []);
+  balloonEl.innerHTML = renderBalloon(maestroSaid, musicianOf, { full: maestroSaidFull });
+  orderEl.innerHTML = renderOrder(maestroOrderShown);
+  placeBalloon();
+}
+
+// Over the line the AI is on: the selected edit's banner, when it is in view.
+function placeBalloon() {
+  const anchor = detailEl.querySelector('[data-banner][aria-current="true"]');
+  const host = detailEl.getBoundingClientRect();
+  const top = anchor ? anchor.getBoundingClientRect().top - host.top - balloonEl.offsetHeight - 6 : 0;
+  balloonEl.style.top = `${detailEl.offsetTop}px`;
+  balloonEl.style.transform = `translateY(${Math.max(0, Math.min(top, host.height - balloonEl.offsetHeight))}px)`;
+}
+detailEl.addEventListener('scroll', () => maestro.on && placeBalloon());
+
+function focusMusicianView(sessionId) {
+  if (!sessionId) return;
+  selectSession(sessionId);
+  inspector = onFollow(inspector);
+  fileView = null;
+  refreshInspector({ scroll: true });
+}
+
+function enterMaestro() {
+  maestroSaved = { mode: prefs.mode, width: prefs.width, chatHidden };
+  document.body.dataset.maestro = 'true';
+  // The code in the middle is the file view, wide; not saved as a preference.
+  prefs.mode = 'arquivo';
+  prefs.width = 'wide';
+  chatHidden = true;
+  document.body.dataset.chatHidden = 'true';
+  focusMusicianView(maestro.focusedId);
+  render();
+  renderMaestro();
+}
+
+function leaveMaestro() {
+  delete document.body.dataset.maestro;
+  if (maestroSaved) {
+    prefs.mode = maestroSaved.mode;
+    prefs.width = maestroSaved.width;
+    chatHidden = maestroSaved.chatHidden;
+    document.body.dataset.chatHidden = String(chatHidden);
+  }
+  maestroSaved = null;
+  render();
+  loadFileView();
+  requestAnimationFrame(fitActive);
+}
+
+function applyMaestro(next) {
+  if (!next) return;
+  const was = maestro;
+  maestro = next;
+  if (next.on && !was.on) enterMaestro();
+  else if (!next.on && was.on) leaveMaestro();
+  else if (next.on && next.focusedId !== was.focusedId) focusMusicianView(next.focusedId);
+  renderMaestro();
+}
+
+window.vizor.onMaestroSay((say) => {
+  maestroSaid = say;
+  maestroSaidFull = false;
+  renderMaestro();
+});
+window.vizor.onMaestroNarration(({ sessionId, text }) => {
+  const lines = [...(maestroLines.get(sessionId) ?? []), text].slice(-20);
+  maestroLines.set(sessionId, lines);
+  renderMaestro();
+});
+window.vizor.onMaestroOrder((order) => {
+  maestroOrderShown = order;
+  clearInterval(maestroOrderTimer);
+  maestroOrderTimer = order ? setInterval(renderMaestro, 250) : null;
+  renderMaestro();
+});
+
 function setChatHidden(hidden) {
   chatHidden = hidden;
   document.body.dataset.chatHidden = String(hidden);
@@ -614,6 +718,20 @@ window.vizor.onVoice(({ action, file }) => {
 
 document.addEventListener('click', async (event) => {
   const target = event.target;
+  if (target.closest('[data-toggle-maestro]')) {
+    window.vizor.setMaestro(!maestro.on);
+    return;
+  }
+  const musician = target.closest('[data-musician]');
+  if (musician) {
+    window.vizor.focusMusician(musician.dataset.musician);
+    return;
+  }
+  if (target.closest('[data-balloon-more]')) {
+    maestroSaidFull = true;
+    renderMaestro();
+    return;
+  }
   if (target.closest('[data-toggle-chat]')) {
     setChatHidden(!chatHidden);
     return;

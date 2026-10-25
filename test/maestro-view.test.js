@@ -77,3 +77,13 @@ describe('the Maestro stage markup', () => {
     expect(renderConsequences([])).toContain('consequências');
   });
 });
+
+describe('the balloon opened in full ("ver tudo")', () => {
+  it('shows the whole text, escaped, without the button', () => {
+    const long = `<b>${'x '.repeat(200)}fim</b>`;
+    const html = renderBalloon({ source: 'manager', text: long }, () => null, { full: true });
+    expect(html).toContain('fim');
+    expect(html).not.toContain('data-balloon-more');
+    expect(html).not.toContain('<b>');
+  });
+});

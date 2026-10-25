@@ -195,7 +195,7 @@ const VOICE_STATES = {
 
 // voice: { state, target } while the voice mode is on (#161); chatHidden:
 // the terminal folded away so code and diff take the screen.
-export function renderTopBar(tree, { chatHidden = false, voice = null } = {}) {
+export function renderTopBar(tree, { chatHidden = false, voice = null, maestro = false } = {}) {
   const voiceLabel = voice
     ? `<span class="voice-state" data-voice="${escapeHtml(voice.state)}" title="modo voz">🎙 ${escapeHtml(
         VOICE_STATES[voice.state] ?? voice.state,
@@ -203,7 +203,9 @@ export function renderTopBar(tree, { chatHidden = false, voice = null } = {}) {
     : '';
   return `<span class="brand">vzr · workspace</span><span class="count-item" title="rodando">${ICONS.working}${
     tree.counts.working
-  } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span>${voiceLabel}<span class="spacer"></span><button class="toggle-chat" data-toggle-chat title="${
+  } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span>${voiceLabel}<span class="spacer"></span><button class="toggle-maestro" data-toggle-maestro aria-pressed="${maestro}" title="${
+    maestro ? 'Sair do modo Maestro' : 'Modo Maestro: o código no centro, você rege pela voz'
+  }">♪ Maestro</button><button class="toggle-chat" data-toggle-chat title="${
     chatHidden ? 'Mostrar o terminal do chat' : 'Esconder o terminal: código e diff ocupam a tela'
   }">${chatHidden ? 'Mostrar chat' : 'Esconder chat'}</button><button class="add-project" data-add-project>Abrir projeto…</button>`;
 }

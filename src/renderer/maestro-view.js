@@ -35,13 +35,15 @@ export function renderOrchestra(orchestra, focusedId) {
 }
 
 // say: { source, text }, source a session id or 'manager'.
-export function renderBalloon(say, musicianOf) {
+// full: the whole text, after a click on "ver tudo".
+export function renderBalloon(say, musicianOf, { full = false } = {}) {
   if (!say?.text) return '';
   const musician = say.source === 'manager' ? null : musicianOf(say.source);
   const who = musician ? `#${musician.number}:` : 'gerente:';
-  const { short, cut } = balloonText(say.text);
-  const more = cut ? ' <button class="balloon-more" data-balloon-more>ver tudo</button>' : '';
-  return `<div class="balloon"><span class="balloon-who">${escapeHtml(who)}</span> ${escapeHtml(short)}${more}</div>`;
+  const text = balloonText(say.text);
+  const shown = full ? text.full : text.short;
+  const more = text.cut && !full ? ' <button class="balloon-more" data-balloon-more>ver tudo</button>' : '';
+  return `<div class="balloon${full ? ' full' : ''}"><span class="balloon-who">${escapeHtml(who)}</span> ${escapeHtml(shown)}${more}</div>`;
 }
 
 export function renderOrder(order, now = Date.now()) {

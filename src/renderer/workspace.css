@@ -870,3 +870,180 @@ body[data-chat-hidden='true'] #terminal-pane {
 #topbar .voice-state[data-voice='muted'] {
   color: var(--muted);
 }
+
+/* --- Maestro (#159): orchestra | code | impact, the chat out of the way --- */
+.maestro-only {
+  display: none;
+}
+body[data-maestro='true'] #columns {
+  grid-template-columns: 170px minmax(0, 1fr) 33% !important;
+}
+body[data-maestro='true'] #sidebar,
+body[data-maestro='true'] #terminal-pane,
+body[data-maestro='true'] #inspector-head,
+body[data-maestro='true'] #task-picker,
+body[data-maestro='true'] #timeline,
+body[data-maestro='true'] #rail {
+  display: none !important;
+}
+body[data-maestro='true'] .maestro-only {
+  display: block;
+}
+body[data-maestro='true'] #inspector {
+  position: relative;
+}
+#maestro-orchestra,
+#maestro-impact {
+  overflow-y: auto;
+  background: var(--bg-footer);
+  padding: 8px;
+}
+#maestro-orchestra {
+  border-right: 1px solid var(--border);
+}
+#maestro-impact {
+  border-left: 1px solid var(--border);
+}
+.maestro-title {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 2px 0 6px;
+}
+.musician {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 5px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.musician[aria-current='true'] {
+  background: var(--bg-surface);
+  outline: 1px solid var(--accent);
+}
+.musician.manager {
+  cursor: default;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.musician-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  margin-top: 4px;
+  background: var(--muted);
+}
+.musician-status {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.orchestra-empty,
+.impact-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px;
+}
+#maestro-order:empty,
+#maestro-balloon:empty,
+#maestro-consequences:empty {
+  display: none;
+}
+.maestro-order {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--warn);
+  border-radius: 6px;
+  color: var(--warn);
+  font-size: 13px;
+}
+.maestro-order .order-hint {
+  color: var(--muted);
+}
+#maestro-balloon {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  z-index: 3;
+  pointer-events: none;
+  transition: transform 0.15s ease-out;
+}
+#maestro-balloon .balloon {
+  pointer-events: auto;
+  position: relative;
+  background: var(--text);
+  color: var(--bg-surface);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 13px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 30%);
+}
+#maestro-balloon .balloon::after {
+  content: '';
+  position: absolute;
+  left: 18px;
+  bottom: -6px;
+  border: 6px solid transparent;
+  border-top-color: var(--text);
+  border-bottom: 0;
+}
+#maestro-balloon .balloon.full {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.balloon-who {
+  font-weight: 700;
+}
+.balloon-more {
+  border: 0;
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+#maestro-consequences {
+  border-top: 1px solid var(--border);
+  background: var(--bg-footer);
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.consequence {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.impact-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+}
+.impact-files li {
+  padding: 3px 4px;
+}
+.impact-files li.writing {
+  color: var(--accent);
+}
+.impact-files .added {
+  color: var(--accent);
+}
+.impact-files .removed {
+  color: var(--warn);
+}
+#topbar .toggle-maestro {
+  margin-right: 8px;
+}
+#topbar .toggle-maestro[aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+}

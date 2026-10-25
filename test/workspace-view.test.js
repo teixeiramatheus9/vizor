@@ -502,3 +502,13 @@ describe('bring an outside chat into the Vizor (#156)', () => {
     expect(renderTerminalPlaceholder('outside')).not.toContain('data-bring');
   });
 });
+
+describe('renderTopBar: the Maestro button (#159)', () => {
+  const tree = { projects: [], unplaced: [], unplacedSessions: [], counts: { working: 0, waiting: 0 } };
+  it('toggles the stage and is lit while it is on', () => {
+    expect(renderTopBar(tree)).toContain('data-toggle-maestro');
+    expect(renderTopBar(tree)).not.toMatch(/data-toggle-maestro[^>]*aria-pressed="true"/);
+    expect(renderTopBar(tree, { maestro: true })).toMatch(/data-toggle-maestro[^>]*aria-pressed="true"/);
+    expect(renderTopBar(tree, { maestro: true })).toContain('♪ Maestro');
+  });
+});
