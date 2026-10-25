@@ -3,7 +3,9 @@
 // worktree's branch and the conversation's title are the clues. Two
 // candidates are offered, never guessed.
 
-const cites = (number) => new RegExp(`(^|[^0-9])${number}([^0-9]|$)`);
+// In a branch, a task number sits between slashes, dashes or underscores:
+// feat/22-login yes, feat/0.22.0 (a version) and feat/122-x no.
+const cites = (number) => new RegExp(`(^|[-_/])${number}([-_/]|$)`);
 const titleCites = (number) => new RegExp(`(#|\\b(task|tarefa|issue|pr|demanda)\\s+#?)${number}([^0-9]|$)`, 'i');
 
 export function resolveTask({ number, links = [], conversations = [], worktrees = [] }) {
@@ -12,7 +14,7 @@ export function resolveTask({ number, links = [], conversations = [], worktrees 
     const linked = byId.get(sessionId);
     if (linked) return { sessionId, cwd: linked.cwd };
   }
-  const worktree = worktrees.find((item) => item.branch && cites(number).test(item.branch.split('/').pop() ?? ''));
+  const worktree = worktrees.find((item) => item.branch && cites(number).test(item.branch));
   if (worktree) {
     const newest = conversations
       .filter((item) => item.cwd === worktree.path)

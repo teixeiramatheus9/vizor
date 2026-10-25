@@ -26,7 +26,12 @@ export function createVoiceSession(deps) {
   let pendingConfirm = null;
   let pendingAsk = false;
   let lastHeard = null;
+  let lastHeardAt = -Infinity;
+  let pendingChoice = null; // { number, candidates } after "achei 2 conversas"
   let queuedPrompt = null;
+  const now = deps.now ?? Date.now;
+  const CORRECTION_WINDOW_MS = 15000;
+  const ORDINAL = ['a primeira', 'a segunda', 'a terceira', 'a quarta', 'a quinta'];
 
   // A voice reads emoji out loud ("rosto suando"): they never reach it.
   const speakable = (text) => String(text ?? '').replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '').replace(/\s{2,}/g, ' ').trim();
@@ -42,20 +47,27 @@ export function createVoiceSession(deps) {
     queuedPrompt = null;
   }
 
+  async function openFound(number, found) {
+    const opened = await deps.openOrFocus({ sessionId: found.sessionId, cwd: found.cwd });
+    const sessionId = opened?.sessionId ?? found.sessionId;
+    deps.linkTask(number, sessionId);
+    bind(sessionId, number);
+    const info = deps.sessionInfo(sessionId) ?? {};
+    const where = info.lastMessage ? ` ${firstSentence(info.lastMessage)}` : '';
+    say(`Abri a ${number}${info.title ? `, ${info.title}` : ''}.${where}`);
+  }
+
   async function resumeTask(number) {
     const found = await deps.resolveTask(number);
     if (found.sessionId) {
-      const opened = await deps.openOrFocus({ sessionId: found.sessionId, cwd: found.cwd });
-      const sessionId = opened?.sessionId ?? found.sessionId;
-      deps.linkTask(number, sessionId);
-      bind(sessionId, number);
-      const info = deps.sessionInfo(sessionId) ?? {};
-      const where = info.lastMessage ? ` ${firstSentence(info.lastMessage)}` : '';
-      say(`Abri a ${number}${info.title ? `, ${info.title}` : ''}.${where}`);
+      await openFound(number, found);
       return;
     }
     if (found.candidates) {
-      say(`Achei ${found.candidates.length} conversas da ${number}: ${joinNames(found.candidates.map((item) => item.title))}. Diga "fala com o chat" e o nome.`);
+      const candidates = found.candidates.slice(0, ORDINAL.length);
+      pendingChoice = { number, candidates };
+      deps.showLines(candidates.map((item, index) => `${index + 1}. ${item.title}`));
+      say(`Achei ${candidates.length} conversas da ${number}: ${candidates.map((item, index) => `${ORDINAL[index]}, ${item.title}`).join('; ')}. Qual?`);
       return;
     }
     pendingConfirm = { kind: 'new-chat', number, cwd: found.cwd ?? deps.projectRoot() };
@@ -71,6 +83,10 @@ export function createVoiceSession(deps) {
     }
     if (pending.kind === 'new-chat') {
       const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
+      if (!opened?.sessionId) {
+        say('Não consegui abrir o chat novo.');
+        return;
+      }
       deps.linkTask(pending.number, opened.sessionId);
       bind(opened.sessionId, pending.number);
       say(`Abri um chat novo pra ${pending.number}.`);
@@ -92,6 +108,13 @@ export function createVoiceSession(deps) {
       }
       case 'resume-task':
         return resumeTask(intent.number);
+      case 'choose': {
+        const choice = pendingChoice?.candidates[intent.index - 1];
+        if (!choice) return say('Não tem essa opção.');
+        const { number } = pendingChoice;
+        pendingChoice = null;
+        return openFound(number, choice);
+      }
       case 'talk-to-chat': {
         const sessionId = deps.findChat(intent.query);
         if (!sessionId) return say('Não achei esse chat.');
@@ -156,10 +179,16 @@ export function createVoiceSession(deps) {
         pendingAsk,
         hasLastReply: Boolean(cursor),
         pendingConfirm: Boolean(pendingConfirm),
+        pendingChoice: Boolean(pendingChoice),
+        canCorrect: Boolean(lastHeard) && now() - lastHeardAt < CORRECTION_WINDOW_MS,
       });
       if (intent.type !== 'confirm' && intent.type !== 'correct') pendingConfirm = null;
+      if (intent.type !== 'choose' && intent.type !== 'resume-task') pendingChoice = null;
       await act(intent, heard);
-      if (intent.type !== 'correct' && intent.type !== 'confirm') lastHeard = heard;
+      if (intent.type !== 'correct' && intent.type !== 'confirm') {
+        lastHeard = heard;
+        lastHeardAt = now();
+      }
     },
 
     // The bound chat finished a turn: its answer, spoken. True when handled,

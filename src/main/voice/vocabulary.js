@@ -119,15 +119,50 @@ function distance(a, b) {
   return row[b.length];
 }
 
-function candidatesOf(terms, learned) {
-  const candidates = [];
-  for (const pair of learned) candidates.push({ key: phoneticKey(pair.heard), out: pair.meant, learned: true });
-  for (const term of terms) for (const form of spokenForms(term)) candidates.push({ key: phoneticKey(form), out: term.text, learned: false });
-  return candidates.filter((candidate) => candidate.key.length >= 3);
+const bigramsOf = (key) => {
+  const grams = new Set();
+  for (let index = 0; index < key.length - 1; index++) grams.add(key.slice(index, index + 2));
+  return [...grams];
+};
+
+// Built once per project (and per scan/learning), not per utterance: the
+// candidates plus an inverted index of their bigrams. One edit destroys at
+// most two bigrams, so a candidate within d edits shares at least
+// max(len) - 1 - 2d of them — only those reach the costly comparison.
+export function buildCandidates(terms, learned = []) {
+  const items = [];
+  for (const pair of learned) items.push({ key: phoneticKey(pair.heard), out: pair.meant, learned: true });
+  for (const term of terms) for (const form of spokenForms(term)) items.push({ key: phoneticKey(form), out: term.text, learned: false });
+  const list = items.filter((candidate) => candidate.key.length >= 3);
+  const index = new Map();
+  list.forEach((candidate, position) => {
+    for (const gram of bigramsOf(candidate.key)) {
+      if (!index.has(gram)) index.set(gram, []);
+      index.get(gram).push(position);
+    }
+  });
+  return { list, index };
+}
+
+function nearCandidates(windowKey, built) {
+  const shared = new Map();
+  for (const gram of bigramsOf(windowKey))
+    for (const position of built.index.get(gram) ?? []) shared.set(position, (shared.get(position) ?? 0) + 1);
+  const near = [];
+  for (const [position, count] of shared) {
+    const candidate = built.list[position];
+    const longest = Math.max(windowKey.length, candidate.key.length);
+    const edits = Math.floor(longest * 0.25);
+    if (count >= longest - 1 - 2 * edits) near.push(candidate);
+  }
+  return near;
 }
 
 // Short keys must match exactly: "main" must not eat "manda".
 function score(windowKey, candidate) {
+  // Lengths too far apart can't be within the threshold: skip the costly part.
+  const longest = Math.max(windowKey.length, candidate.key.length);
+  if (Math.abs(windowKey.length - candidate.key.length) > longest * 0.25) return null;
   const gap = distance(windowKey, candidate.key) / Math.max(windowKey.length, candidate.key.length);
   if (candidate.learned) return gap <= 0.2 ? gap - 1 : null; // learned pairs first
   if (candidate.key.length < 6) return gap === 0 ? 0 : null;
@@ -138,9 +173,9 @@ function score(windowKey, candidate) {
 const FUNCTION_WORDS = new Set(['o', 'a', 'os', 'as', 'do', 'da', 'dos', 'das', 'de', 'no', 'na', 'nos', 'nas', 'em', 'e', 'um', 'uma', 'pra', 'pro', 'que', 'com', 'por', 'para', 'ao']);
 const isFunctionWord = (word) => FUNCTION_WORDS.has(word.toLowerCase().replace(/[^\p{L}]/gu, ''));
 
-export function correctTranscript(text, terms, learned = []) {
+export function correctTranscript(text, terms, learned = [], prebuilt = null) {
   const tokens = numbersToDigits(text).split(/\s+/).filter(Boolean);
-  const candidates = candidatesOf(terms, learned);
+  const built = prebuilt ?? buildCandidates(terms, learned);
   const out = [];
   const fixes = [];
   for (let index = 0; index < tokens.length; ) {
@@ -150,7 +185,7 @@ export function correctTranscript(text, terms, learned = []) {
       if (isFunctionWord(words[0]) || isFunctionWord(words.at(-1))) continue;
       const windowKey = phoneticKey(words.join(' '));
       if (windowKey.length < 3) continue;
-      for (const candidate of candidates) {
+      for (const candidate of nearCandidates(windowKey, built)) {
         const value = score(windowKey, candidate);
         if (value === null) continue;
         if (!best || value < best.value || (value === best.value && length > best.length))
@@ -253,4 +288,13 @@ export function closestPhrase(text, meant) {
     }
   }
   return best && best.gap <= 0.6 ? best.phrase.replace(/[?!.,;:…]+$/, '') : null;
+}
+
+// "Vizor" as Whisper writes it at the start of an utterance (spike: Pfizer,
+// Fizer, Bizer, Aisor, Visor, Vizer).
+const WAKE_KEYS = ['visor', 'vaisor', 'fiser', 'pfiser', 'biser', 'aisor', 'viser', 'aisur'];
+export function soundsLikeWakeWord(word) {
+  const key = phoneticKey(word);
+  if (key.length < 4 || key.length > 7) return false;
+  return WAKE_KEYS.some((target) => distance(key, target) <= 1);
 }

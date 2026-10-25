@@ -8,6 +8,9 @@ import path from 'node:path';
 const SAMPLE_RATE = 16000;
 const WINDOW = 512; // silero VAD's window; the spotter takes the same chunks
 const TARGET_PEAK = 0.5;
+// "Vizor, o que temos pra hoje" in one breath: the spotter fires ~0.6 s after
+// the word, so the VAD starts from this much audio before the wake.
+const PREROLL_WINDOWS = Math.ceil((1.5 * SAMPLE_RATE) / WINDOW);
 const MAX_GAIN = 8;
 
 // The laptop's DMIC peaks low (spike: -28 dB on speech). A slow automatic
@@ -62,6 +65,7 @@ export function createVoiceEngine({ sherpa, paths, threads = 4, keywordsThreshol
   let listening = false;
   let speaking = false;
   let carry = new Float32Array(0);
+  let preroll = [];
   const gainState = {};
 
   function spot(window) {
@@ -71,6 +75,10 @@ export function createVoiceEngine({ sherpa, paths, threads = 4, keywordsThreshol
       if (spotter.getResult(spotStream).keyword) {
         spotter.reset(spotStream);
         engine.emit('wake');
+        if (!listening) {
+          listening = true;
+          for (const earlier of preroll) track(earlier);
+        }
       }
     }
   }
@@ -97,6 +105,8 @@ export function createVoiceEngine({ sherpa, paths, threads = 4, keywordsThreshol
       const window = joined.slice(offset, offset + WINDOW);
       spot(window);
       if (listening) track(window);
+      preroll.push(window);
+      if (preroll.length > PREROLL_WINDOWS) preroll.shift();
     }
     carry = joined.slice(offset);
   };

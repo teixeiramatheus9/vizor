@@ -1,4 +1,4 @@
-import { numbersToDigits } from './vocabulary.js';
+import { numbersToDigits, soundsLikeWakeWord } from './vocabulary.js';
 
 // Spoken Vizor commands (#161), recognized locally — never by the LLM. A
 // pattern must match the WHOLE utterance: "para de usar var nesse arquivo" is
@@ -29,13 +29,27 @@ const ALWAYS = [
   [/^abre o arquivo (.+)$/, (match, raw) => ({ type: 'workspace', action: 'open-file', file: rawTail(raw, match[1]) })],
   [/^(para|cala( a boca)?|silencio|chega|pode parar)$/, () => ({ type: 'stop' })],
   [/^(vou ditar|modo ditado)$/, () => ({ type: 'dictate' })],
-  [/^nao,? (e|eh|era|quis dizer) (.+)$/, (match, raw) => ({ type: 'correct', meant: rawTail(raw, match[2]) })],
+];
+
+// "não, é pty-host" — only right after an utterance, and only a name: "não é
+// pra usar var aqui" is a prompt.
+const WHEN_CORRECTING = [
+  [/^nao,? (e|eh|era|quis dizer) (\S+( \S+){0,3})$/, (match, raw) => ({ type: 'correct', meant: rawTail(raw, match[2]) })],
+];
+
+const CHOICES = { primeira: 1, primeiro: 1, segunda: 2, segundo: 2, terceira: 3, terceiro: 3, quarta: 4, quarto: 4, quinta: 5, quinto: 5 };
+const WHEN_CHOOSING = [
+  [/^((a|o|na|no|pela|pelo) )?(\w+)$/, (match) => {
+    const index = CHOICES[match[3]] ?? Number(match[3]);
+    return Number.isInteger(index) && index > 0 ? { type: 'choose', index } : null;
+  }],
 ];
 
 const WHEN_ASKING = [
   [/^libera (nesta|nessa|essa|pra essa) sessao$/, () => ({ type: 'guard', choice: 'liberar-sessao' })],
   [/^(libera|liberado|pode seguir|pode ir)$/, () => ({ type: 'guard', choice: 'liberar' })],
-  [/^(barra|bloqueia|nao pode|nao)$/, () => ({ type: 'guard', choice: 'barrar' })],
+  // A bare "não" may be for the chat: only explicit words answer the trava.
+  [/^(barra|bloqueia|nao pode|barrado)$/, () => ({ type: 'guard', choice: 'barrar' })],
 ];
 
 const WHEN_CONFIRMING = [
@@ -73,13 +87,23 @@ function firstMatch(rules, text, raw) {
   return null;
 }
 
-export function routeUtterance(utterance, { target = 'manager', pendingAsk = false, hasLastReply = false, pendingConfirm = false } = {}) {
+export function routeUtterance(
+  utterance,
+  { target = 'manager', pendingAsk = false, hasLastReply = false, pendingConfirm = false, canCorrect = false, pendingChoice = false } = {},
+) {
   let raw = numbersToDigits(String(utterance ?? '').trim());
-  const forced = WAKE.test(raw);
-  if (forced) raw = raw.replace(WAKE, '').trim();
+  // The wake word comes along in the transcript, spelled as Whisper heard it
+  // — maybe after a short word the pre-roll caught ("no Pfizer, …").
+  const [first = '', second = ''] = raw.split(/[\s,.!:]+/);
+  const wakeWord = soundsLikeWakeWord(first) ? first : first.length <= 3 && soundsLikeWakeWord(second) ? second : null;
+  const forced = WAKE.test(raw) || Boolean(wakeWord);
+  if (wakeWord) raw = raw.slice(raw.indexOf(wakeWord) + wakeWord.length).replace(/^[\s,.!:]+/, '').trim();
+  else if (forced) raw = raw.replace(WAKE, '').trim();
   const text = norm(raw);
   const intent =
+    (pendingChoice && firstMatch(WHEN_CHOOSING, text, raw)) ||
     (pendingAsk && firstMatch(WHEN_ASKING, text, raw)) ||
+    (canCorrect && firstMatch(WHEN_CORRECTING, text, raw)) ||
     (pendingConfirm && firstMatch(WHEN_CONFIRMING, text, raw)) ||
     (hasLastReply && firstMatch(WHEN_REPLY, text, raw)) ||
     firstMatch(ALWAYS, text, raw);

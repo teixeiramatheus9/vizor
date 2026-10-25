@@ -52,7 +52,7 @@ describe('listener', () => {
     worker.reply({ type: 'wake' });
     listener.speakingStarted();
     expect(listens(worker).at(-1)).toBe(false);
-    listener.speakingEnded();
+    listener.speakingEnded({ followUp: true });
     expect(listens(worker).at(-1)).toBe(true);
   });
 
@@ -79,6 +79,33 @@ describe('listener', () => {
     worker.reply({ type: 'transcript', id: request.id, text: 'troca pelo argon 2' });
     await vi.advanceTimersByTimeAsync(2000);
     expect(events.find(([name]) => name === 'utterance')?.[1]).toEqual({ text: 'troca pelo argon 2' });
+  });
+
+  it('C1: two parts whose transcripts come back out of order make one utterance in spoken order', async () => {
+    const { worker, events } = setup();
+    worker.reply({ type: 'wake' });
+    worker.reply({ type: 'speech-start' });
+    worker.reply({ type: 'speech-end', samples: new Float32Array(10) });
+    await vi.advanceTimersByTimeAsync(200);
+    worker.reply({ type: 'speech-start' });
+    worker.reply({ type: 'speech-end', samples: new Float32Array(10) });
+    const [first, second] = worker.sent.filter((message) => message.type === 'transcribe');
+    worker.reply({ type: 'transcript', id: second.id, text: 'pelo argon2' });
+    worker.reply({ type: 'transcript', id: first.id, text: 'troca o bcrypt' });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(events.find(([name]) => name === 'utterance')?.[1]).toEqual({ text: 'troca o bcrypt pelo argon2' });
+  });
+
+  it('I5: a worker error cancels the turn instead of leaving it stuck', async () => {
+    const { worker, listener } = setup();
+    const errors = [];
+    listener.on('error', (error) => errors.push(error));
+    worker.reply({ type: 'wake' });
+    worker.reply({ type: 'speech-start' });
+    worker.reply({ type: 'speech-end', samples: new Float32Array(10) });
+    worker.reply({ type: 'error', error: 'whisper crashed' });
+    expect(listener.state).toBe('sleeping');
+    expect(errors).toEqual(['whisper crashed']);
   });
 
   it('reports state changes for the bubble', async () => {

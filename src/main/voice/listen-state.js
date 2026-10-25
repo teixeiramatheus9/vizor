@@ -5,26 +5,29 @@ import { EventEmitter } from 'node:events';
 // and events out: 'ack' (say "ok"), 'echo' (show the text), 'utterance' (act
 // on it), 'cancelled', 'sleep', 'barge' (the user cut the Vizor's speech).
 //
+// Each part of speech (VAD start → end) gets a slot; its transcript fills
+// the slot whenever Whisper returns (0.5–0.9 s later, maybe after the user
+// already went on), and the utterance is the slots joined in spoken order.
 // Timings count from the VAD's speech-end event, which already waited 0.3 s
-// of silence. "ok" never waits for the transcript (Whisper takes 0.5–0.9 s):
-// a phrase hanging on a connective only waits longer when its text arrived
-// in time; otherwise the grace window is what lets the user go on.
-// partial(text) carries only what was said since the last pause.
+// of silence. "ok" never waits for the transcript; a phrase hanging on a
+// connective only waits longer when its text arrived in time — otherwise the
+// grace window is what lets the user go on.
 export const DEFAULT_TIMINGS = { completeMs: 400, trailingMs: 1700, graceMs: 1500 };
 const IDLE_MS = 8000;
+const LOST_TRANSCRIPT_MS = 8000; // grace over and a part still has no text
 const TRAILING = new Set(['e', 'tipo', 'então', 'porque', 'aí', 'que', 'mas', 'ou', 'com', 'pra', 'de']);
 const STOP = new Set(['para', 'cala', 'silêncio', 'cala a boca', 'chega']);
+const CANCEL = new Set(['não espera', 'espera', 'espera aí', 'não espera aí']);
 const FINISH = /[,\s]*\b(manda|pronto)[.!]?$/i;
 
 const words = (text) => text.toLowerCase().replace(/[.,!?;:…]/g, ' ').split(/\s+/).filter(Boolean);
-const join = (...parts) => parts.filter(Boolean).join(' ');
 
 export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } = {}) {
   const machine = new EventEmitter();
   const t = { ...DEFAULT_TIMINGS, ...timings };
   let state = 'sleeping';
-  let held = ''; // earlier parts, kept when the user went on in the grace window
-  let text = null; // the transcript of the part since the last pause
+  let parts = []; // [{ id, text: string|null }] in spoken order
+  let partSerial = 0;
   let speechEndAt = 0;
   let ackAt = Infinity;
   let acked = false;
@@ -36,21 +39,21 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
   let ignoreUntil = -Infinity; // its own "ok" coming back through the mic
 
   const emit = (name, payload) => machine.emit(name, payload);
+  const filled = () => parts.every((part) => part.text !== null);
+  const joined = () =>
+    parts
+      .map((part) => part.text)
+      .filter(Boolean)
+      .join(' ');
 
-  function reset(next = 'sleeping') {
+  function reset(next = 'sleeping', { keepDictation = false } = {}) {
     state = next;
-    held = '';
-    text = null;
+    parts = [];
     ackAt = Infinity;
     acked = false;
     graceUntil = Infinity;
     userSpeaking = false;
-    dictating = false;
-    idleSince = now();
-  }
-
-  function listen() {
-    state = 'listening';
+    if (!keepDictation) dictating = false;
     idleSince = now();
   }
 
@@ -61,15 +64,16 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
       reset('listening');
       return;
     }
-    if (state === 'sleeping') listen();
+    if (state === 'sleeping') {
+      state = 'listening';
+      idleSince = now();
+    }
   };
 
   machine.speechStart = () => {
     if (!['listening', 'closing', 'grace'].includes(state)) return;
     if (now() < ignoreUntil) return;
     if (state !== 'listening') {
-      held = join(held, text);
-      text = null;
       ackAt = Infinity;
       acked = false;
       graceUntil = Infinity;
@@ -78,49 +82,53 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
     userSpeaking = true;
   };
 
+  // Returns the new part's id: its transcript comes back with it.
   machine.speechEnd = () => {
-    if (state !== 'listening' || !userSpeaking) return;
+    if (state !== 'listening' || !userSpeaking) return null;
     userSpeaking = false;
     state = 'closing';
     speechEndAt = now();
-    text = null;
+    const id = `p${++partSerial}`;
+    parts.push({ id, text: null });
     acked = false;
     ackAt = dictating ? Infinity : speechEndAt + t.completeMs;
+    return id;
   };
 
-  machine.partial = (raw) => {
-    if (state !== 'closing' && state !== 'grace') return;
+  machine.partial = (raw, id) => {
+    if (!['listening', 'closing', 'grace'].includes(state)) return;
+    const part = id ? parts.find((candidate) => candidate.id === id) : [...parts].reverse().find((candidate) => candidate.text === null);
+    if (!part) return;
     let value = String(raw ?? '').trim();
-    const said = words(value);
-    if (said[0] === 'espera' || (said[0] === 'não' && said[1] === 'espera')) {
+    const said = words(value).join(' ');
+    const isLast = part === parts.at(-1);
+    if (CANCEL.has(said) && (parts.length > 1 || state === 'grace')) {
       emit('cancelled');
       reset();
       return;
     }
-    if (!held && STOP.has(said.join(' '))) {
+    if (parts.length === 1 && STOP.has(said)) {
       emit('cancelled', { stopSpeaking: true });
       reset();
       return;
     }
-    if (dictating) {
-      if (!FINISH.test(value)) {
-        text = value;
-        return;
+    if (dictating && isLast) {
+      if (FINISH.test(value)) {
+        value = value.replace(FINISH, '').trim();
+        dictating = false;
+        if (state === 'closing') ackAt = speechEndAt + t.completeMs;
       }
-      value = value.replace(FINISH, '').trim();
-      dictating = false;
-      ackAt = speechEndAt + t.completeMs;
-    } else if (!acked && TRAILING.has(said.at(-1))) {
+    } else if (!acked && isLast && state === 'closing' && TRAILING.has(words(value).at(-1))) {
       ackAt = speechEndAt + t.trailingMs;
     }
-    text = value;
-    if (acked) emit('echo', { text: join(held, text) });
+    part.text = value;
+    if (acked && filled()) emit('echo', { text: joined() });
     machine.tick();
   };
 
   machine.tick = () => {
     const time = now();
-    if (state === 'listening' && !userSpeaking && !held && time - idleSince >= IDLE_MS) {
+    if (state === 'listening' && !userSpeaking && parts.length === 0 && time - idleSince >= IDLE_MS) {
       emit('sleep');
       reset();
       return;
@@ -130,12 +138,17 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
       state = 'grace';
       graceUntil = ackAt + t.graceMs;
       emit('ack');
-      if (text !== null) emit('echo', { text: join(held, text) });
+      if (filled()) emit('echo', { text: joined() });
     }
-    if (state === 'grace' && time >= graceUntil && text !== null) {
-      const utterance = join(held, text);
-      reset();
-      emit('utterance', { text: utterance });
+    if (state === 'grace' && time >= graceUntil) {
+      if (filled()) {
+        const utterance = joined();
+        reset();
+        emit('utterance', { text: utterance });
+      } else if (time >= graceUntil + LOST_TRANSCRIPT_MS) {
+        emit('cancelled');
+        reset();
+      }
     }
   };
 
@@ -148,13 +161,18 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
   };
 
   // While the Vizor speaks, the transcriber is off (it would hear itself);
-  // only the wake word cuts in. Afterwards it listens for a follow-up.
+  // only the wake word cuts in. A user mid-sentence is never wiped: the
+  // arbiter holds everything but the "ok" until the utterance is out.
   machine.speakingStarted = () => {
     if (blocked) return;
-    reset('paused-speaking');
+    if (state === 'closing' || state === 'grace' || (state === 'listening' && userSpeaking)) return;
+    reset('paused-speaking', { keepDictation: true });
   };
-  machine.speakingEnded = () => {
-    if (state === 'paused-speaking') reset('listening');
+
+  // followUp: the line answered the user, so a reply needs no wake word.
+  machine.speakingEnded = ({ followUp = false } = {}) => {
+    if (state !== 'paused-speaking') return;
+    reset(followUp || dictating ? 'listening' : 'sleeping', { keepDictation: true });
   };
 
   machine.mute = (on) => {

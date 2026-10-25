@@ -12,8 +12,6 @@ export function createListener({ worker, now = Date.now, tickMs = 100, timings }
   const machine = createListenState({ now, timings });
   let lastState = machine.state;
   let tracking = false;
-  let pendingId = null;
-  let counter = 0;
 
   function sync() {
     const state = machine.state;
@@ -28,14 +26,8 @@ export function createListener({ worker, now = Date.now, tickMs = 100, timings }
     }
   }
 
-  // The ok comes before the transcript on purpose; only an ended turn drops
-  // the transcript still on its way.
-  const ENDS_TURN = new Set(['utterance', 'cancelled', 'sleep', 'barge']);
   for (const name of ['ack', 'echo', 'utterance', 'cancelled', 'sleep', 'barge']) {
-    machine.on(name, (payload) => {
-      if (ENDS_TURN.has(name)) pendingId = null;
-      listener.emit(name, payload);
-    });
+    machine.on(name, (payload) => listener.emit(name, payload));
   }
 
   worker.on('message', (message) => {
@@ -47,17 +39,18 @@ export function createListener({ worker, now = Date.now, tickMs = 100, timings }
         machine.speechStart();
         break;
       case 'speech-end': {
-        machine.speechEnd();
-        pendingId = `t${++counter}`;
-        worker.postMessage({ type: 'transcribe', id: pendingId, samples: message.samples });
+        // Each part is transcribed on its own; its text fills its slot, in
+        // spoken order, whenever it comes back. A part of an ended turn has
+        // no slot anymore and is ignored by the machine.
+        const id = machine.speechEnd();
+        if (id) worker.postMessage({ type: 'transcribe', id, samples: message.samples });
         break;
       }
       case 'transcript':
-        // Only the latest part's text counts: an older one belongs to a
-        // part the machine already moved past.
-        if (message.id === pendingId) machine.partial(message.text);
+        machine.partial(message.text, message.id);
         break;
       case 'error':
+        machine.cancel();
         listener.emit('error', message.error);
         break;
       default:
@@ -73,6 +66,7 @@ export function createListener({ worker, now = Date.now, tickMs = 100, timings }
   timer.unref?.();
 
   listener.feed = (samples) => worker.postMessage({ type: 'chunk', samples });
+  listener.setVocabulary = (terms, learned) => worker.postMessage({ type: 'vocabulary', terms, learned });
   for (const name of ['speakingStarted', 'speakingEnded', 'mute', 'meeting', 'dictation', 'cancel', 'wake', 'ignoreSpeech']) {
     listener[name] = (...args) => {
       machine[name](...args);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createSpeechArbiter } from '../src/main/voice/arbiter.js';
+import { createSpeechArbiter, withoutWakeWord } from '../src/main/voice/arbiter.js';
 
 function setup() {
   let time = 0;
@@ -109,5 +109,40 @@ describe('speech arbiter', () => {
     await finish();
     await finish();
     expect(events).toEqual(['speaking', 'quiet']);
+  });
+});
+
+describe('speech arbiter — final review fixes', () => {
+  it('C2: while the user is mid-utterance only the "ok" plays', async () => {
+    const spoken = [];
+    const arbiter = createSpeechArbiter({ speak: (text) => (spoken.push(text), Promise.resolve()), stop: () => {} });
+    arbiter.userSpeaking(true);
+    arbiter.say({ text: 'mexendo no a.js', priority: 3 });
+    arbiter.say({ text: 'ok', priority: 1, kind: 'ack' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spoken).toEqual(['ok']);
+    arbiter.userSpeaking(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spoken).toEqual(['ok', 'mexendo no a.js']);
+  });
+
+  it('I2: going quiet says whether the last line answered the user', async () => {
+    const quiet = [];
+    const arbiter = createSpeechArbiter({ speak: () => Promise.resolve(), stop: () => {} });
+    arbiter.on('quiet', (info) => quiet.push(info.followUp));
+    arbiter.say({ text: 'resposta', priority: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    arbiter.say({ text: 'o chat X terminou', priority: 4 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    arbiter.say({ text: 'ok', priority: 1, kind: 'ack' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(quiet).toEqual([true, false, false]);
+  });
+
+  it('C4: the wake word never reaches the voice', () => {
+    expect(withoutWakeWord('Um Claude no vizor quer dar push')).toBe('Um Claude no projeto quer dar push');
+    expect(withoutWakeWord('Tarefa concluída no Vizor.')).toBe('Tarefa concluída no projeto.');
+    expect(withoutWakeWord('Abri a 22, Váizor: login')).toBe('Abri a 22, projeto: login');
+    expect(withoutWakeWord('o visor do carro')).toBe('o projeto do carro');
   });
 });

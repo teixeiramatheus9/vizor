@@ -28,7 +28,7 @@ import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
 import { createSpeechArbiter } from './voice/arbiter.js';
 import { createVoiceSession } from './voice/session.js';
-import { correctTranscript, createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
+import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
 import { buildDigest, ghQueries, githubRepoOf, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
@@ -387,6 +387,7 @@ let voiceSession = null;
 let micWindow = null;
 let voiceState = 'off';
 let voiceDownload = null; // { percent } | { error } while the models come down
+let voiceRestarts = 0;
 let meetingTimer = null;
 
 const rulesStore = createRulesStore({
@@ -1073,6 +1074,8 @@ function applyShortcuts() {
       if (!voiceListener) return;
       const muting = voiceState !== 'muted';
       voiceListener.mute(muting);
+      // Muted means the microphone is off, OS indicator included.
+      micWindow?.webContents.send('mic:control', muting ? 'stop' : 'start');
       voiceArbiter?.say({ text: muting ? 'Microfone mudo.' : 'Microfone de volta.', priority: 1 });
     },
   };
@@ -1338,7 +1341,9 @@ async function generateVoiceForStop(session) {
     return;
   }
   let voice;
-  if (isEconomyMode()) {
+  // Mid-conversation, another chat finishing is a short fixed line: no
+  // Haiku tokens for an alert that only interrupts (#161).
+  if (isEconomyMode() || voiceArbiter?.inConversation()) {
     voice = fallbackMessage(displayNameOf(session));
   } else {
     voice = await generateManagerMessage({
@@ -3318,12 +3323,29 @@ function voiceRoot() {
   return voiceProject().root ?? workspaceProjects()[0] ?? null;
 }
 
+let vocabularySentFor = null; // `${root}:${scannedAt}:${learned}` last handed to the worker
+
+// The voice worker corrects transcripts with the focused project's names.
+function syncVoiceVocabulary({ force = false } = {}) {
+  const root = voiceRoot();
+  if (!voiceListener || !root) return;
+  refreshVocabulary(root);
+  const data = vocabularyStore.load(root);
+  const signature = `${root}:${data.scannedAt}:${data.learned.length}`;
+  if (!force && signature === vocabularySentFor) return;
+  vocabularySentFor = signature;
+  voiceListener.setVocabulary(data.terms, data.learned);
+}
+
 function refreshVocabulary(root) {
   if (!root || voiceScanning.has(root)) return;
   if (Date.now() - vocabularyStore.load(root).scannedAt < VOCABULARY_MAX_AGE_MS) return;
   voiceScanning.add(root);
   scanVocabulary({ root, run: runText })
-    .then(({ terms }) => vocabularyStore.save(root, { terms, scannedAt: Date.now() }))
+    .then(({ terms }) => {
+      vocabularyStore.save(root, { terms, scannedAt: Date.now() });
+      syncVoiceVocabulary();
+    })
     .catch((error) => log(`vocabulary scan failed: ${error}`))
     .finally(() => voiceScanning.delete(root));
 }
@@ -3362,7 +3384,8 @@ async function voiceResolveTask(number) {
   const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
   const conversations = [];
   for (const folder of folders) {
-    for (const conversation of await listConversations(claudeProjectDir(folder))) conversations.push({ ...conversation, cwd: folder });
+    for (const conversation of await listConversations(claudeProjectDir(folder), { limit: 200 }))
+      conversations.push({ ...conversation, cwd: folder });
   }
   const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees });
   if (found.sessionId) {
@@ -3482,11 +3505,11 @@ function createVoiceSessionForApp() {
   return createVoiceSession({
     say: (item) => voiceArbiter?.say(item),
     flushSpeech: () => voiceArbiter?.flush(),
+    // Corrected in the voice worker already (heavy on a big repo); here
+    // only a project switch is noticed so the worker gets its names.
     correct: (text) => {
-      const root = voiceRoot();
-      refreshVocabulary(root);
-      const { terms, learned } = root ? vocabularyStore.load(root) : { terms: [], learned: [] };
-      return correctTranscript(text, terms, learned);
+      syncVoiceVocabulary();
+      return { text };
     },
     ghDigest: voiceGhDigest,
     showLines: (lines) => {
@@ -3514,6 +3537,7 @@ function createVoiceSessionForApp() {
     learn: (pair) => {
       const root = voiceRoot();
       if (root) vocabularyStore.learn(root, pair);
+      syncVoiceVocabulary({ force: true });
     },
     findChat: voiceFindChat,
     dictation: (on) => voiceListener?.dictation(on),
@@ -3604,6 +3628,7 @@ ipcMain.handle('voice:vocabulary', () => {
 ipcMain.handle('voice:unlearn', (_event, heard) => {
   const root = voiceRoot();
   if (root && typeof heard === 'string') vocabularyStore.unlearn(root, heard);
+  syncVoiceVocabulary({ force: true });
   return true;
 });
 ipcMain.handle('voice:rescan', () => {
@@ -3639,6 +3664,22 @@ function startVoice() {
     workerData: { paths: voiceModelPaths(voiceSherpaDir, model) },
   });
   worker.on('error', (error) => log(`voice worker failed: ${error}`));
+  // A dead engine must not leave the voice "listening" and deaf: restart it,
+  // a few times, waiting longer each time.
+  worker.on('exit', (code) => {
+    if (!voiceListener || appQuitting) return;
+    log(`voice worker exited (${code})`);
+    stopVoice();
+    voiceRestarts += 1;
+    if (voiceRestarts > 3) {
+      voiceState = 'erro';
+      sendState();
+      return;
+    }
+    setTimeout(() => {
+      if (managerConfig.voiceEnabled) startVoice();
+    }, 2000 * voiceRestarts);
+  });
   worker.on('message', (message) => {
     if (message?.type === 'error') log(`voice: ${message.error}`);
     if (message?.type === 'ready') log('voice: engine ready');
@@ -3647,37 +3688,48 @@ function startVoice() {
   voiceArbiter = createSpeechArbiter({
     speak: (text, item) =>
       new Promise((resolve) => {
-        // The short "ok" does not pause listening; a real line does.
-        if (item.kind !== 'ack') voiceListener?.speakingStarted();
+        // The short "ok" does not pause listening, but its own echo must not
+        // count as the user talking: ignored until it played, plus a margin.
+        if (item.kind === 'ack') voiceListener?.ignoreSpeech(30000);
+        else voiceListener?.speakingStarted();
         const volume = Math.round((managerConfig.voiceVolume * managerConfig.soundVolume) / 100);
-        tts.speak(text, { voice: managerConfig.voice, volume, onDone: resolve });
+        tts.speak(text, {
+          voice: managerConfig.voice,
+          volume,
+          onDone: () => {
+            if (item.kind === 'ack') voiceListener?.ignoreSpeech(300);
+            resolve();
+          },
+        });
       }),
     stop: () => tts.stopSpeaking(),
   });
-  voiceArbiter.on('quiet', () => voiceListener?.speakingEnded());
+  voiceArbiter.on('quiet', ({ followUp } = {}) => voiceListener?.speakingEnded({ followUp }));
   voiceListener.on('state', (state) => {
     voiceState = state;
-    voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing');
+    // Held through the grace window too: a line starting there would pause
+    // listening and lose the utterance (only the "ok" passes).
+    voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing' || state === 'grace');
     sendState();
   });
   voiceListener.on('echo', ({ text }) => {
     sendToRenderer('tooltip', { projectName: 'você disse', text, kind: 'hint', sessionId: null });
     showTooltip();
   });
-  voiceListener.on('ack', () => {
-    voiceArbiter?.say({ text: 'ok', priority: 1, kind: 'ack' });
-    voiceListener?.ignoreSpeech(700);
-  });
+  voiceListener.on('ack', () => voiceArbiter?.say({ text: 'ok', priority: 1, kind: 'ack' }));
+  voiceListener.on('error', (error) => log(`voice engine: ${error}`));
   voiceListener.on('barge', () => voiceArbiter?.flush());
   voiceListener.on('cancelled', (payload) => {
     if (payload?.stopSpeaking) voiceArbiter?.flush();
   });
   voiceListener.on('utterance', ({ text }) => {
+    voiceRestarts = 0; // the engine works again
     voiceArbiter?.noteUserTurn();
     onVoiceUtterance(text);
   });
   voiceSession = createVoiceSessionForApp();
-  refreshVocabulary(voiceRoot());
+  vocabularySentFor = null;
+  syncVoiceVocabulary();
   voiceState = 'sleeping';
   createMicWindow();
   meetingTimer = setInterval(checkMeeting, 3000);

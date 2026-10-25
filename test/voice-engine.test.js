@@ -55,6 +55,7 @@ describe('voice engine', () => {
     engine.feed(chunk(SPEECH));
     engine.feed(chunk(0));
     expect(events).toEqual([]);
+    for (let i = 0; i < 60; i++) engine.feed(chunk(0)); // the speech is now older than the pre-roll
     engine.feed(chunk(WAKE));
     expect(events).toEqual([['wake', null]]);
   });
@@ -76,6 +77,14 @@ describe('voice engine', () => {
     engine.feed(chunk(SPEECH));
     engine.feed(chunk(0));
     expect(events).toEqual([['wake', null]]);
+  });
+
+  it('I3: words said right after the wake word, in one breath, are not lost', () => {
+    const { engine, events } = setup();
+    engine.feed(chunk(SPEECH));
+    engine.feed(chunk(SPEECH));
+    engine.feed(chunk(WAKE));
+    expect(events).toEqual([['wake', null], ['speech-start', null], ['speech-end', 1024]]);
   });
 
   it('transcribes with the recognizer and trims the text', () => {

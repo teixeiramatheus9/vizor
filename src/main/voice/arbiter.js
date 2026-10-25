@@ -7,6 +7,13 @@ import { EventEmitter } from 'node:events';
 // line was said (or stopped).
 const CUTTABLE = 4;
 
+// The spotter hears "Vizor" in the Vizor's own speech (tts respells it
+// "Váizor", one of the wake spellings) and would wake itself: spoken lines
+// never carry the name, nor its sound-alikes.
+export function withoutWakeWord(text) {
+  return String(text ?? '').replace(/\bv[aá]?i?[sz]or\b/gi, 'projeto');
+}
+
 export function createSpeechArbiter({ now = Date.now, speak, stop, conversationWindowMs = 120000 }) {
   const arbiter = new EventEmitter();
   let queue = [];
@@ -15,21 +22,27 @@ export function createSpeechArbiter({ now = Date.now, speak, stop, conversationW
   let lastUserTurn = -Infinity;
   let serial = 0;
 
+  // While the user is mid-utterance only the "ok" may play: anything else
+  // would pause listening and lose what they are saying.
   function next() {
-    if (current || userTalking || queue.length === 0) return;
+    if (current || queue.length === 0) return;
     queue.sort((a, b) => a.priority - b.priority || a.serial - b.serial);
-    const item = queue.shift();
+    const index = userTalking ? queue.findIndex((candidate) => candidate.kind === 'ack') : 0;
+    if (index === -1) return;
+    const [item] = queue.splice(index, 1);
     const wasQuiet = !arbiter.speaking;
     current = item;
     arbiter.speaking = true;
     if (wasQuiet) arbiter.emit('speaking');
-    Promise.resolve(speak(item.text, item))
+    Promise.resolve(speak(withoutWakeWord(item.text), item))
       .catch(() => {})
       .then(() => {
         current = null;
         if (queue.length === 0 || userTalking) {
           arbiter.speaking = false;
-          arbiter.emit('quiet');
+          // followUp: the last line answered the user, who may reply without
+          // the wake word; an alert or narration is not an invitation.
+          arbiter.emit('quiet', { followUp: item.priority === 1 && item.kind !== 'ack' });
         }
         next();
       });

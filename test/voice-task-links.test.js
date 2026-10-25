@@ -67,3 +67,10 @@ describe('task links store', () => {
     expect(Object.keys(files)).toEqual(['/v/tasks.json']);
   });
 });
+
+describe('resolveTask — final review fixes', () => {
+  it('I8: a dotted version is not a task number', () => {
+    expect(resolveTask({ number: 22, links: [], conversations: [], worktrees: [{ path: '/r-wt/int', branch: 'feat/0.22.0' }] })).toEqual({ none: true });
+    expect(resolveTask({ number: 22, links: [], conversations: [], worktrees: [{ path: '/r-wt/x', branch: 'fix/22_login' }] })).toEqual({ none: true, cwd: '/r-wt/x' });
+  });
+});

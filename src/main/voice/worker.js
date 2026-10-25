@@ -4,12 +4,16 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { createRequire } from 'node:module';
 import { createVoiceEngine } from './engine.js';
+import { buildCandidates, correctTranscript } from './vocabulary.js';
 
 const post = (message) => parentPort.postMessage(message);
 
 try {
   const sherpa = createRequire(import.meta.url)('sherpa-onnx-node');
   const engine = createVoiceEngine({ sherpa, paths: workerData.paths, threads: workerData.threads ?? 4 });
+  // The project's names, for correcting each part right after Whisper: the
+  // comparison is heavy on a big repo and must stay off the main thread.
+  let vocabulary = null;
   engine.on('wake', () => post({ type: 'wake' }));
   engine.on('speech-start', () => post({ type: 'speech-start' }));
   engine.on('speech-end', ({ samples }) => post({ type: 'speech-end', samples }));
@@ -17,7 +21,12 @@ try {
     try {
       if (message.type === 'chunk') engine.feed(Float32Array.from(message.samples));
       else if (message.type === 'listen') engine.listen(message.on);
-      else if (message.type === 'transcribe') post({ type: 'transcript', id: message.id, text: engine.transcribe(message.samples) });
+      else if (message.type === 'vocabulary') vocabulary = buildCandidates(message.terms ?? [], message.learned ?? []);
+      else if (message.type === 'transcribe') {
+        const heard = engine.transcribe(message.samples);
+        const text = vocabulary ? correctTranscript(heard, [], [], vocabulary).text : heard;
+        post({ type: 'transcript', id: message.id, text, heard });
+      }
       else if (message.type === 'close') parentPort.close();
     } catch (error) {
       post({ type: 'error', error: String(error?.message ?? error) });

@@ -63,7 +63,7 @@ describe('routeUtterance — Vizor commands', () => {
   });
 
   it('a correction of what it heard', () => {
-    expect(route('não, é pty-host')).toEqual({ type: 'correct', meant: 'pty-host' });
+    expect(route('não, é pty-host', { ...manager, canCorrect: true })).toEqual({ type: 'correct', meant: 'pty-host' });
   });
 });
 
@@ -80,5 +80,45 @@ describe('routeUtterance — prompts vs commands (review focus)', () => {
 
   it('"Vizor, …" from a chat is for the gerente even when it is not a command', () => {
     expect(route('Vizor, quantos chats estão rodando?', chat)).toEqual({ type: 'ask-manager', text: 'quantos chats estão rodando?' });
+  });
+});
+
+describe('routeUtterance — final review fixes', () => {
+  it('I1: a correction only right after an utterance, and short', () => {
+    expect(route('não, é pty-host', { ...chat, canCorrect: true })).toEqual({ type: 'correct', meant: 'pty-host' });
+    expect(route('não é pra usar var aqui', chat)).toEqual({ type: 'prompt', text: 'não é pra usar var aqui' });
+    expect(route('não, é pra trocar tudo pelo argon2 e rodar os testes', { ...chat, canCorrect: true })).toEqual({
+      type: 'prompt',
+      text: 'não, é pra trocar tudo pelo argon2 e rodar os testes',
+    });
+  });
+
+  it('I1: a bare "não" goes to the chat even with a trava card open', () => {
+    expect(route('não', { ...chat, pendingAsk: true })).toEqual({ type: 'prompt', text: 'não' });
+    expect(route('barra', { ...chat, pendingAsk: true })).toEqual({ type: 'guard', choice: 'barrar' });
+  });
+
+  it('I8: picking one of the offered conversations', () => {
+    const choosing = { ...manager, pendingChoice: true };
+    expect(route('a segunda', choosing)).toEqual({ type: 'choose', index: 2 });
+    expect(route('o primeiro', choosing)).toEqual({ type: 'choose', index: 1 });
+    expect(route('a segunda')).toEqual({ type: 'ask-manager', text: 'a segunda' });
+  });
+});
+
+describe('routeUtterance — the wake word as Whisper writes it', () => {
+  it('drops a first word that sounds like "Vizor" (spike: Pfizer, Fizer, Bizer, Aisor, Visor)', () => {
+    for (const heard of ['Pfizer retoma a task 22', 'Fizer, retoma a task 22', 'Bizer retoma a task 22', 'Aisor, retoma a task 22', 'Visor retoma a task 22', 'Vizer, retoma a task 22'])
+      expect(route(heard), heard).toEqual({ type: 'resume-task', number: 22 });
+  });
+
+  it('the pre-roll may catch a short word before it (real transcript: "no Pfizer, o que temos para hoje")', () => {
+    expect(route('no Pfizer, o que temos para hoje.')).toEqual({ type: 'status' });
+    expect(route('é Visor retoma a task 22')).toEqual({ type: 'resume-task', number: 22 });
+  });
+
+  it('keeps an ordinary first word', () => {
+    expect(route('vizinho barulhento', chat)).toEqual({ type: 'prompt', text: 'vizinho barulhento' });
+    expect(route('fiz o deploy', chat)).toEqual({ type: 'prompt', text: 'fiz o deploy' });
   });
 });

@@ -111,3 +111,17 @@ describe('vocabulary store', () => {
     expect(Object.keys(files).some((name) => name.endsWith('.tmp'))).toBe(false);
   });
 });
+
+describe('correction cost (review I10)', () => {
+  it('a long dictation over a big repo stays cheap with prebuilt candidates', async () => {
+    const { buildCandidates } = await import('../src/main/voice/vocabulary.js');
+    const terms = Array.from({ length: 6000 }, (_, n) => ({ text: `modulo-${n}-servico.js`, kind: 'file', spoken: [] }));
+    terms.push({ text: 'pty-host.js', kind: 'file', spoken: [] });
+    const candidates = buildCandidates(terms, []);
+    const phrase = `${'então a gente precisa ajustar isso aqui com calma '.repeat(5)} abre o pt.host.js`;
+    const started = performance.now();
+    const result = correctTranscript(phrase, terms, [], candidates);
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(result.text.endsWith('abre o pty-host.js')).toBe(true);
+  });
+});

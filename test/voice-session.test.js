@@ -75,13 +75,26 @@ describe('voice session — edges', () => {
     expect(calls.filter(([name]) => name === 'deliver').map(([, , text]) => text)).toEqual(['agora roda os testes', 'agora roda os testes']);
   });
 
-  it('two candidate chats are listed, not guessed', async () => {
+  it('two candidate chats are listed, not guessed, and "a segunda" opens the second (I8)', async () => {
     const { session, calls, texts } = setup({
-      resolveTask: async () => ({ candidates: [{ sessionId: 'a', title: 'Login' }, { sessionId: 'b', title: 'Senha' }] }),
+      resolveTask: async () => ({ candidates: [{ sessionId: 'a', title: 'Login', cwd: '/r' }, { sessionId: 'b', title: 'Senha', cwd: '/r' }] }),
     });
     await session.onUtterance('retoma a task 22');
-    expect(texts().at(-1)).toBe('Achei 2 conversas da 22: Login e Senha. Diga "fala com o chat" e o nome.');
+    expect(texts().at(-1)).toBe('Achei 2 conversas da 22: a primeira, Login; a segunda, Senha. Qual?');
     expect(calls.some(([name]) => name === 'open')).toBe(false);
+    expect(calls).toContainEqual(['show', ['1. Login', '2. Senha']]);
+    await session.onUtterance('a segunda');
+    expect(calls).toContainEqual(['open', { sessionId: 'b', cwd: '/r' }]);
+    expect(calls).toContainEqual(['link', 22, 'b']);
+    expect(session.target()).toEqual({ kind: 'chat', sessionId: 'b' });
+  });
+
+  it('I9: a new chat that failed to open does not take the voice', async () => {
+    const { session, texts } = setup({ resolveTask: async () => ({ none: true, cwd: '/r' }), openNew: async () => ({ sessionId: null }) });
+    await session.onUtterance('retoma a task 22');
+    await session.onUtterance('sim');
+    expect(session.target()).toEqual({ kind: 'manager' });
+    expect(texts().at(-1)).toBe('Não consegui abrir o chat novo.');
   });
 
   it('no chat for the task: offers a new one, opened on "sim"', async () => {
