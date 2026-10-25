@@ -228,6 +228,20 @@ function branchName(ref) {
   return ref.replace(/^\+/, '').replace(/^refs\/heads\//, '');
 }
 
+// git's global options that take a value (git --git-dir .git push … is still
+// a push).
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix']);
+
+// A .git directory stands for the checkout around it; any other git dir (a
+// bare repo) is where git runs.
+function checkoutOf(gitDir) {
+  if (gitDir === null) return null;
+  if (gitDir === '.git') return '';
+  const match = /^(.*)[\\/]\.git[\\/]?$/.exec(gitDir);
+  if (!match) return gitDir;
+  return match[1] === '' ? '/' : match[1];
+}
+
 // target: the branch named (null = the current one); targets: every branch a
 // multi-refspec push names; unknown: the branch cannot be read from the line
 // ($var, --all, gh pr merge) — a guard that is unsure asks.
@@ -237,12 +251,28 @@ export function parseGitAction(segment) {
     return { action: 'pr-merge', target: null, targets: [], force: false, unknown: true, dir: '' };
   if (tokens[0] !== 'git') return null;
   let index = 1;
-  let dir = ''; // git -C: where it runs, relative to the shell's directory
-  // Global options before the subcommand (-C dir, -c key=value).
+  let cDir = ''; // git -C: relative to the shell's directory
+  let workTree;
+  let gitDir;
+  // Global options before the subcommand; the value-taking ones come as
+  // "--opt value" or "--opt=value", and must not be read as the subcommand.
   while (index < tokens.length && tokens[index].startsWith('-')) {
-    if (tokens[index] === '-C') dir = joinDir(dir, tokens[index + 1] ?? null);
-    index += tokens[index] === '-C' || tokens[index] === '-c' ? 2 : 1;
+    const token = tokens[index];
+    const equals = token.startsWith('--') ? token.indexOf('=') : -1;
+    const name = equals === -1 ? token : token.slice(0, equals);
+    if (!GIT_VALUE_OPTIONS.has(name)) {
+      index += 1;
+      continue;
+    }
+    const value = equals === -1 ? (tokens[index + 1] ?? null) : token.slice(equals + 1);
+    index += equals === -1 ? 2 : 1;
+    if (name === '-C') cDir = joinDir(cDir, value);
+    else if (name === '--work-tree') workTree = value;
+    else if (name === '--git-dir') gitDir = value;
   }
+  // Where it runs: the work tree, else the checkout around the git dir.
+  const place = workTree !== undefined ? workTree : gitDir !== undefined ? checkoutOf(gitDir) : '';
+  const dir = joinDir(cDir, place);
   const sub = tokens[index];
   const args = tokens.slice(index + 1);
   const positional = args.filter((arg) => !arg.startsWith('-'));

@@ -229,6 +229,32 @@ describe('the repo a git command runs in (#165)', () => {
     expect(asked).toEqual([]);
   });
 
+  it('global options with a value do not hide the subcommand (#165)', () => {
+    for (const command of [
+      'git --git-dir .git push origin main',
+      'git --git-dir=.git push origin main',
+      'git --work-tree . push origin main',
+      'git --work-tree=. push origin main',
+      'git --namespace ns push origin main',
+      'git --config-env=core.x=ENV push origin main',
+      'git --super-prefix sub/ push origin main',
+      'git -c a=b --git-dir .git --work-tree . push origin main',
+    ]) {
+      expect(parseGitAction(command), command).toMatchObject({ action: 'push', target: 'main' });
+      expect(hit(bash(command)), command).toBe('main');
+    }
+  });
+
+  it('--work-tree and --git-dir say where the command runs, like -C (#165)', () => {
+    expect(parseGitAction('git --work-tree ../outro push')).toMatchObject({ dir: '../outro' });
+    expect(parseGitAction('git --work-tree=../outro push')).toMatchObject({ dir: '../outro' });
+    expect(parseGitAction('git --git-dir ../outro/.git push')).toMatchObject({ dir: '../outro' });
+    expect(parseGitAction('git --git-dir=/srv/repo.git push')).toMatchObject({ dir: '/srv/repo.git' });
+    expect(parseGitAction('git -C .. --work-tree outro push')).toMatchObject({ dir: '../outro' });
+    expect(at('git --work-tree ../outro commit -m x')).toBe('owner');
+    expect(at('git --git-dir=../outro/.git push')).toBe('owner');
+  });
+
   it('parseGitAction keeps the -C directory', () => {
     expect(parseGitAction('git -C ../x push')).toMatchObject({ action: 'push', dir: '../x' });
     expect(parseGitAction('git push')).toMatchObject({ dir: '' });
