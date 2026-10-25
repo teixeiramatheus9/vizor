@@ -82,6 +82,25 @@ async function download(url, destination, fetchFn) {
   fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
 }
 
+// Streamed to disk with progress: the voice models are hundreds of MB, too
+// big to hold in memory and too slow to download in silence (#161).
+export async function downloadFile(url, destination, onProgress = () => {}, fetchFn = fetch) {
+  const response = await fetchFn(url, { redirect: 'follow' });
+  if (!response.ok) throw new Error(`download failed (${response.status}): ${url}`);
+  const total = Number(response.headers.get('content-length')) || null;
+  const out = fs.createWriteStream(destination);
+  let received = 0;
+  try {
+    for await (const chunk of response.body) {
+      received += chunk.length;
+      if (!out.write(chunk)) await new Promise((resolve) => out.once('drain', resolve));
+      onProgress({ received, total });
+    }
+  } finally {
+    await new Promise((resolve) => out.end(resolve));
+  }
+}
+
 // Git Bash puts MSYS GNU tar first on PATH, and that tar mangles Windows
 // `-C C:\...` paths; the OS-bundled bsdtar handles them, so win32 pins it.
 export function tarBinary(platform = process.platform, env = process.env, existsFn = fs.existsSync) {
@@ -95,7 +114,7 @@ export function tarBinary(platform = process.platform, env = process.env, exists
 // bzip2 is decompressed in pure JS and streamed into `tar -xf -`, so the
 // system needs no bzip2 binary (tar -xjf shells out to it and many machines
 // don't have it — that broke voice installs with "tar exited with 2").
-function extractTarBz2(archive, directory, spawnFn) {
+export function extractTarBz2(archive, directory, spawnFn = spawn) {
   return new Promise((resolve, reject) => {
     const tar = spawnFn(tarBinary(), ['-xf', '-', '-C', directory], {
       stdio: ['pipe', 'ignore', 'ignore'],
