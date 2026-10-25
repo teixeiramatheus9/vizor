@@ -30,6 +30,9 @@ import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
 import { createSpeechArbiter } from './voice/arbiter.js';
 import { createVoiceSession } from './voice/session.js';
+import { createNarrator } from './voice/narration.js';
+import { buildOrchestra, nextFocus } from './maestro/orchestra.js';
+import { createPendingOrder } from './maestro/pending-order.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
 import { buildDigest, ghQueries, githubRepoOf, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
@@ -527,6 +530,7 @@ function sendState() {
     update: updateStatus,
     hint: lastHint,
     voiceDownloading: tts.downloadingVoice(),
+    maestroEnabled: maestroOn(),
     // The bubble speaks the alert lines: it must hear about a voice change.
     voiceLang: speechLang(managerConfig.voice),
     // ...and plays the chimes: on the output pinned in the tray menu.
@@ -557,12 +561,57 @@ function sendState() {
   pushWorkspaceState();
 }
 
+// --- Maestro (#159): the stage in the workspace ------------------------------
+// The orchestra is rebuilt on every workspace push; the focus is not saved.
+let maestroOrchestra = [];
+let maestroFocusId = null;
+const maestroNarrators = new Map(); // sessionId → narrator, for the consequences strip
+const maestroOrder = createPendingOrder();
+maestroOrder.on('show', (order) => workspaceWindow?.send('maestro:order', order));
+maestroOrder.on('clear', () => workspaceWindow?.send('maestro:order', null));
+
+const maestroOn = () => Boolean(managerConfig.maestroEnabled);
+
+// The balloon shows what is said, spoken or not (the voice may be off).
+function maestroSay(source, text) {
+  if (!maestroOn() || !text) return;
+  workspaceWindow?.send('maestro:say', { source: source ?? 'manager', text: String(text) });
+}
+
+// The consequences strip has its own narrator: it runs with the voice off too.
+function maestroNarrate(event) {
+  if (!maestroOn() || !event?.session_id) return;
+  if (!maestroOrchestra.some((musician) => musician.sessionId === event.session_id)) return;
+  let narrator = maestroNarrators.get(event.session_id);
+  if (!narrator) maestroNarrators.set(event.session_id, (narrator = createNarrator()));
+  const line = narrator.narrate(event);
+  if (line) workspaceWindow?.send('maestro:narration', { sessionId: event.session_id, text: line.text });
+}
+
+function maestroFocus(sessionId) {
+  maestroFocusId = sessionId;
+  workspaceWindow?.focusSession(sessionId);
+  pushWorkspaceState();
+}
+
+function maestroInterrupt(ptyId) {
+  if (!ptyHost?.list().some((terminal) => terminal.id === ptyId && terminal.alive)) return false;
+  ptyHost.write(ptyId, '\x1b'); // Esc: Claude Code stops the turn, the session lives on
+  return true;
+}
+
+ipcMain.on('maestro:set', (_event, on) => applyConfig({ maestroEnabled: Boolean(on) }));
+ipcMain.on('maestro:focus', (_event, sessionId) => {
+  if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
+});
+
 // What the Vizor says follows the chosen voice's language (#161).
 function spokenLang() {
   return speechLang(managerConfig.voice);
 }
 
 function speakAsManager(text) {
+  if (!voiceArbiter) maestroSay('manager', text);
   if (!managerConfig.ttsEnabled) return;
   // In voice mode one arbiter decides who speaks when (#161).
   if (voiceArbiter) {
@@ -1379,6 +1428,7 @@ async function generateVoiceForStop(session) {
   // pending ask found here is shown too instead of being discarded.
   registry.setQuestion(session.id, snapshot.pendingQuestion);
   registry.setLastMessage(session.id, digestMessage(snapshot.lastAssistantMessage));
+  if (maestroOrchestra.some((musician) => musician.sessionId === session.id)) maestroSay(session.id, snapshot.lastAssistantMessage);
   // The chat bound to the voice answers in its own words, not the gerente's
   // alert — and no tokens go to the alert (#161).
   const bound = voiceSession?.target();
@@ -1544,12 +1594,17 @@ function pushWorkspaceStateNow() {
     sessions: linkedSessions(listWithDisplayNames()),
     taskOf: (sessionId) => editTracker.currentTask(sessionId),
   });
+  maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
+  maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
+  for (const sessionId of maestroNarrators.keys())
+    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroNarrators.delete(sessionId);
   workspaceWindow.send('workspace:state', {
     tree,
     terminals: ptyHost?.list() ?? [],
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
+    maestro: { on: maestroOn(), orchestra: maestroOrchestra, focusedId: maestroFocusId },
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2263,7 +2318,10 @@ function onHookEvent(event, reply) {
     pendingNewChats.delete(event.term.VIZOR_PTY_ID);
     newChat({ sessionId: event.session_id });
   }
-  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') voiceSession?.onToolEvent(event);
+  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
+    voiceSession?.onToolEvent(event);
+    maestroNarrate(event);
+  }
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
   for (const [ptyId, sessionId] of resumedChats) if (sessionId === event?.session_id) resumedChats.delete(ptyId);
@@ -2464,6 +2522,7 @@ function applyConfig(partial) {
   if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
   if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
   if (partial && 'voiceMic' in partial) allowed.voiceMic = normalizeMic(partial.voiceMic);
+  if (typeof partial?.maestroEnabled === 'boolean') allowed.maestroEnabled = partial.maestroEnabled;
   if (partial && 'audioOutput' in partial) allowed.audioOutput = normalizeOutput(partial.audioOutput);
   const micChanged = 'voiceMic' in allowed && JSON.stringify(allowed.voiceMic) !== JSON.stringify(managerConfig.voiceMic ?? null);
   const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
@@ -2480,6 +2539,10 @@ function applyConfig(partial) {
   managerConfig = { ...managerConfig, ...allowed };
   if ('audioOutput' in allowed) tts.setAudioOutput(managerConfig.audioOutput);
   if ('audioOutput' in allowed || 'voiceMic' in allowed) refreshTrayMenu();
+  if ('maestroEnabled' in allowed) {
+    if (!allowed.maestroEnabled) maestroOrder.cancel();
+    pushWorkspaceState();
+  }
   if ('audioOutput' in allowed && managerConfig.audioOutput && !chromiumSinkId(chromiumOutputs, managerConfig.audioOutput))
     log(`audio output: no Chromium match for "${managerConfig.audioOutput.label}" (${chromiumOutputs.map((device) => device.label).join(' | ')}) — chimes stay on the default`);
   // Muted by voice, the mic stays off: it only learns which one to open next.
@@ -3619,6 +3682,13 @@ function createVoiceSessionForApp() {
     projectRoot: () => voiceRoot(),
     settings: () => ({ narration: managerConfig.voiceNarration !== false, summary: managerConfig.voiceSummary ?? 'always' }),
     lang: spokenLang,
+    maestro: maestroOn,
+    setMaestro: (on) => applyConfig({ maestroEnabled: on }),
+    orchestra: () => maestroOrchestra,
+    focus: maestroFocus,
+    interrupt: maestroInterrupt,
+    pendingOrder: maestroOrder,
+    onError: (error) => log(`maestro order failed: ${error?.stack ?? error}`),
   });
 }
 
@@ -3770,6 +3840,11 @@ function startVoice() {
     lang: spokenLang,
     speak: (text, item) =>
       new Promise((resolve) => {
+        // The balloon: the gerente's and the voice's own lines. A músico's
+        // answer shows as its real message on Stop, its narration in the
+        // consequences strip; the "ok" and "só um momento" are not news.
+        const fromMusician = maestroOrchestra.some((musician) => musician.sessionId === item.source);
+        if (!fromMusician && !item.replaceKey && item.kind !== 'ack' && item.kind !== 'filler') maestroSay('manager', text);
         // The short "ok" does not pause listening, but its own echo must not
         // count as the user talking: ignored until it played, plus a margin.
         if (item.kind === 'ack') voiceListener?.ignoreSpeech(30000);

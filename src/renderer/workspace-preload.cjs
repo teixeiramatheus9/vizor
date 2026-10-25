@@ -30,4 +30,10 @@ contextBridge.exposeInMainWorld('vizor', {
   onFocusSession: (callback) => ipcRenderer.on('workspace:focus', (_event, payload) => callback(payload)),
   reportSelection: (sessionId) => ipcRenderer.send('workspace:selected', sessionId ?? null),
   onEditsChanged: (callback) => ipcRenderer.on('edits:changed', (_event, payload) => callback(payload)),
+  // The Maestro (#159).
+  onMaestroSay: (callback) => ipcRenderer.on('maestro:say', (_event, payload) => callback(payload)),
+  onMaestroNarration: (callback) => ipcRenderer.on('maestro:narration', (_event, payload) => callback(payload)),
+  onMaestroOrder: (callback) => ipcRenderer.on('maestro:order', (_event, payload) => callback(payload)),
+  setMaestro: (on) => ipcRenderer.send('maestro:set', Boolean(on)),
+  focusMusician: (sessionId) => ipcRenderer.send('maestro:focus', sessionId),
 });
