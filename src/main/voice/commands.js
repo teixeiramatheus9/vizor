@@ -31,6 +31,10 @@ const STATUS = [
 
 const ALWAYS = [
   [{ test: (text) => STATUS.some((pattern) => pattern.test(text)) }, () => ({ type: 'status' })],
+  // The músicos act on the GitHub (#159): a new chat starts the issue, or
+  // reviews the PR.
+  [/^(puxa|puxe|puxar|pega|pegue|pegar) a (issue|task|tarefa) (numero )?(\d+)$/, (match) => ({ type: 'pick-issue', number: Number(match[4]) })],
+  [/^(revisa|revise|revisar|manda revisar|pede (a )?revisao d[ae]) (a )?(pr|pull request) (numero )?(\d+)$/, (match) => ({ type: 'review-pr', number: Number(match[6]) })],
   [/^(retoma|retomar|volta (pra|para)|abre|abrir|continua|continuar) (a |o )?(task|tarefa|issue|pr|demanda) (numero )?(\d+)$/, (match) => ({ type: 'resume-task', number: Number(match[6]) })],
   [/^(fala|falar|conversa) com o chat (da |do |de )?(.+)$/, (match, raw) => ({ type: 'talk-to-chat', query: rawTail(raw, match[3]) })],
   [/^(volta (pro|para o) gerente|fala com o gerente|gerente)$/, () => ({ type: 'talk-to-manager' })],

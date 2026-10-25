@@ -203,3 +203,14 @@ describe('routeUtterance — Maestro, live test', () => {
     expect(routeUtterance('desativar modo maestro')).toEqual({ type: 'maestro', on: false });
   });
 });
+
+describe('routeUtterance — the músicos act on the GitHub', () => {
+  it('pick up an issue, get a PR reviewed', () => {
+    expect(routeUtterance('Vizor, puxa a issue 142')).toEqual({ type: 'pick-issue', number: 142 });
+    expect(routeUtterance('pega a issue cento e quarenta e dois')).toEqual({ type: 'pick-issue', number: 142 });
+    expect(routeUtterance('revisa a PR 166')).toEqual({ type: 'review-pr', number: 166 });
+    expect(routeUtterance('manda revisar a pr 166')).toEqual({ type: 'review-pr', number: 166 });
+    expect(routeUtterance('pede revisão da PR 166')).toEqual({ type: 'review-pr', number: 166 });
+    expect(routeUtterance('puxa uma das issues que a gente tem')).toMatchObject({ type: 'ask-manager' });
+  });
+});

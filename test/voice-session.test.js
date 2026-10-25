@@ -496,3 +496,65 @@ describe('voice session — Maestro, review fixes', async () => {
     expect(on.texts().at(-1)).toBe('Deu erro nessa ordem; olha o log.');
   });
 });
+
+describe('voice session — the gerente reads, the músicos act', () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('"sim" to "Quer que eu puxe a issue 142?" opens a músico that plans before touching code', async () => {
+    const { session, calls, texts } = setup({
+      askManager: async () => 'A 142 tá sem dono. Quer que eu puxe a issue 142?',
+      resolveTask: async () => ({ none: true, cwd: '/r' }),
+    });
+    await session.onUtterance('puxa uma das issues que a gente tem');
+    await session.onUtterance('sim');
+    await tick();
+    const opened = calls.find(([name]) => name === 'new');
+    expect(opened[1].cwd).toBe('/r');
+    expect(opened[1].prompt).toContain('issue #142');
+    expect(opened[1].prompt).toContain('gh issue view 142');
+    expect(opened[1].prompt).toContain('espere meu ok antes de mexer');
+    expect(calls).toContainEqual(['link', 142, 'snew']);
+    expect(texts().at(-1)).toBe('Puxei a 142: o músico vai ler a issue e propor um plano.');
+  });
+
+  it('picking an issue that already has a chat opens that chat instead', async () => {
+    const { session, calls } = setup();
+    await session.onUtterance('puxa a issue 22');
+    await tick();
+    expect(calls).toContainEqual(['open', { sessionId: 's22', cwd: '/r' }]);
+    expect(calls.some(([name]) => name === 'new')).toBe(false);
+  });
+
+  it('"Quer que eu peça revisão da PR 166?" → a reviewer músico that reports and changes nothing', async () => {
+    const { session, calls, texts } = setup({ askManager: async () => 'A 166 tá parada. Quer que eu peça revisão da PR 166?' });
+    await session.onUtterance('o que ficou parado?');
+    await session.onUtterance('sim');
+    await tick();
+    const opened = calls.find(([name]) => name === 'new');
+    expect(opened[1].prompt).toContain('PR #166');
+    expect(opened[1].prompt).toContain('gh pr diff 166');
+    expect(opened[1].prompt).toContain('não mude código nem publique comentários sem eu pedir');
+    expect(calls).toContainEqual(['link', 166, 'snew']);
+    expect(texts().at(-1)).toBe('Um músico vai revisar a PR 166.');
+    expect(session.target()).toEqual({ kind: 'manager' });
+  });
+
+  it('English proposals work the same, and the order is held in the Maestro', async () => {
+    const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const { session, calls } = setup({
+      lang: () => 'en',
+      maestro: () => true,
+      orchestra: () => [],
+      pendingOrder,
+      askManager: async () => 'Want me to get PR 166 reviewed?',
+    });
+    await session.onUtterance('alguma PR parada?');
+    await session.onUtterance('sim');
+    expect(pendingOrder.pending().label).toBe('revisar a PR 166');
+    timer();
+    await tick();
+    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('PR #166');
+  });
+});

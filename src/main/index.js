@@ -34,7 +34,7 @@ import { createNarrator } from './voice/narration.js';
 import { buildOrchestra, nextFocus } from './maestro/orchestra.js';
 import { createPendingOrder } from './maestro/pending-order.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
-import { buildDigest, ghQueries, githubRepoOf, resolveProject } from './voice/gh-digest.js';
+import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
 import { runClaude } from './claude-cli.js';
@@ -3499,10 +3499,12 @@ async function voiceGhDigest() {
       }),
     );
     lastGhDigest = buildDigest(results, spokenLang());
+    lastGhContext = managerContext(results);
     lastGhDigestAt = Date.now();
   } catch (error) {
     log(`gh digest failed: ${error}`);
     lastGhDigest = buildDigest({ error: String(error) }, spokenLang());
+    lastGhContext = managerContext({ error: String(error) });
   }
   return lastGhDigest;
 }
@@ -3582,14 +3584,15 @@ async function voiceDeliverPrompt(sessionId, text) {
 
 const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
 let lastGhDigestAt = 0;
+let lastGhContext = null;
 
 // The gerente has no tools of its own: it gets the project's GitHub state
 // with the question (live test: "não tenho acesso ao GitHub").
 async function voiceAskManager(text) {
   if (!lastGhDigest || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
-  const github = lastGhDigest
-    ? `\n\n(Estado do GitHub do projeto agora — use pra responder: ${lastGhDigest.speech}${lastGhDigest.lines.length ? ` Detalhes: ${lastGhDigest.lines.slice(0, 20).join('; ')}` : ''})`
-    : '';
+  // Every open PR and issue, read by the Vizor with gh (#159: the gerente
+  // reads, the músicos act).
+  const github = lastGhContext ? `\n\n(GitHub do projeto agora — use pra responder:\n${lastGhContext})` : '';
   const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}`, lang: spokenLang() });
   tokenBudget.add(tokensUsed);
   return reply;

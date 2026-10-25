@@ -8,8 +8,19 @@ import { findMusicians } from '../maestro/orchestra.js';
 // chat), what each utterance does, and what comes back spoken. Every side
 // effect is an injected dep, so the whole scene is tested with fakes.
 const SAY_MAX = 160;
-// The gerente's offer to resume a task, in either language it speaks.
-const PROPOSAL = /(?:quer que eu retome a|want me to (?:resume|pick up)) (?:task |tarefa |issue )?#?(\d+)/i;
+// The gerente's offers, in either language it speaks (it reads, the músicos
+// act): resume a task's chat, pick up an issue, get a PR reviewed.
+const PROPOSALS = [
+  [/(?:quer que eu puxe a issue|want me to pick up issue) #?(\d+)/i, 'pick-issue'],
+  [/(?:quer que eu peça revisão da pr|want me to get pr) #?(\d+)/i, 'review-pr'],
+  [/(?:quer que eu retome a|want me to resume) (?:task |tarefa |issue )?#?(\d+)/i, 'resume-task'],
+];
+// What the new músico is told: plan first (the Maestro lights the plan up),
+// and a reviewer reports without changing anything.
+const PICK_PROMPT = (number) =>
+  `Vamos trabalhar na issue #${number}. Leia com \`gh issue view ${number}\`, me diga o plano (quais arquivos e funções vai tocar) e espere meu ok antes de mexer.`;
+const REVIEW_PROMPT = (number) =>
+  `Revise a PR #${number}: leia com \`gh pr view ${number}\` e \`gh pr diff ${number}\`, aponte os problemas por gravidade com arquivo e linha, e não mude código nem publique comentários sem eu pedir.`;
 // What the voice says back follows the voice's language; the commands the
 // user speaks stay Portuguese either way.
 const LINES = {
@@ -46,6 +57,8 @@ const LINES = {
     focused: (number) => `Foco na ${number}.`,
     maestroOn: 'Modo Maestro ativado.',
     maestroOff: 'Modo Maestro desativado.',
+    picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
+    reviewing: (number) => `Um músico vai revisar a PR ${number}.`,
     cancelled: 'Cancelado.',
     alreadyRan: 'Já foi.',
     orderFailed: 'Deu erro nessa ordem; olha o log.',
@@ -54,6 +67,8 @@ const LINES = {
       prompt: (number, text) => (number === null ? `mandar pro chat: ${text}` : `mandar pra ${number}: ${text}`),
       resume: (number) => `retomar a ${number}`,
       newChat: (number) => `abrir um chat novo pra ${number}`,
+      pick: (number) => `puxar a issue ${number}`,
+      review: (number) => `revisar a PR ${number}`,
       guard: { liberar: 'liberar', 'liberar-sessao': 'liberar nesta sessão', barrar: 'barrar' },
     },
   },
@@ -90,6 +105,8 @@ const LINES = {
     focused: (number) => `Focus on ${number}.`,
     maestroOn: 'Maestro mode on.',
     maestroOff: 'Maestro mode off.',
+    picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
+    reviewing: (number) => `A músico will review PR ${number}.`,
     cancelled: 'Cancelled.',
     alreadyRan: 'It already went.',
     orderFailed: 'That order failed; check the log.',
@@ -236,6 +253,24 @@ export function createVoiceSession(deps) {
     }
   }
 
+  async function pickIssue(number) {
+    const found = await deps.resolveTask(number);
+    if (found.sessionId) return openFound(number, found);
+    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: PICK_PROMPT(number) });
+    if (!opened?.sessionId) return say(lines().newChatFailed);
+    deps.linkTask(number, opened.sessionId);
+    bind(opened.sessionId, number);
+    return say(lines().picked(number));
+  }
+
+  // The reviewer works on its own: the voice stays with whoever it was with.
+  async function reviewPr(number) {
+    const opened = await deps.openNew({ cwd: deps.projectRoot(), prompt: REVIEW_PROMPT(number) });
+    if (!opened?.sessionId) return say(lines().newChatFailed);
+    deps.linkTask(number, opened.sessionId);
+    return say(lines().reviewing(number));
+  }
+
   async function openNewChat(pending) {
     const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
     if (!opened?.sessionId) {
@@ -267,6 +302,10 @@ export function createVoiceSession(deps) {
         if (kind === 'focus') return focusMusician(choice);
         return openFound(number, choice);
       }
+      case 'pick-issue':
+        return held(ORDER.pick(intent.number), () => pickIssue(intent.number));
+      case 'review-pr':
+        return held(ORDER.review(intent.number), () => reviewPr(intent.number));
       case 'interrupt':
         return onMusicians('interrupt', intent.number, interruptMusician);
       case 'focus':
@@ -330,8 +369,12 @@ export function createVoiceSession(deps) {
         if (deps.economy()) return say(lines().economy);
         thinking();
         const reply = await deps.askManager(intent.text);
-        const proposal = String(reply ?? '').match(PROPOSAL);
-        if (proposal) pendingConfirm = { kind: 'intent', intent: { type: 'resume-task', number: Number(proposal[1]) } };
+        for (const [pattern, type] of PROPOSALS) {
+          const proposal = String(reply ?? '').match(pattern);
+          if (!proposal) continue;
+          pendingConfirm = { kind: 'intent', intent: { type, number: Number(proposal[1]) } };
+          break;
+        }
         return say(reply);
       }
       default:
