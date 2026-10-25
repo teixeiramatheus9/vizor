@@ -1,9 +1,10 @@
 - Trava mais leve: o git só roda quando o comando é de git e alguma regra precisa saber da branch
-- `cd ../outro && git push` (e `git -C`) agora é julgado no repositório onde o comando roda de verdade
+- `cd ../outro && git push` (e `git -C`, `--work-tree`, `--git-dir`) agora é julgado no repositório onde o comando roda de verdade
+- `git --git-dir .git push` e `git --work-tree . push` não escapam mais das regras de git
 - Fechar o Vizor com uma pergunta da trava aberta devolve a decisão pro terminal em vez de barrar o passo
-- "Liberar nesta sessão" também libera os pedidos iguais que já estavam esperando, e pedidos repetidos não falam de novo
+- Pedidos iguais em paralelo: a resposta dada a um vale pros outros, e o repetido só aparece se o primeiro sumir sem resposta
 - Rascunho que chega depois de a linha ter sido editada não aparece mais pra aprovar
-- Regras com regex que poderia travar o Claude Code são recusadas na compilação
+- Regra com regex que poderia travar o Claude Code fica esperando revisão com o motivo ("regex arriscada: …") em vez de perder a checagem calada; flags como `(\s+-\w+)*` continuam valendo
 - Arquivo de regras de projeto criado pela tela não aparece mais como "de fora"
 - Um `settings.json` do Claude Code ilegível não é mais regravado (antes ficava só com os hooks do Vizor)
 - A trava não remove mais hooks de outras ferramentas com "rule-guard" no nome, e o boot grava o `settings.json` uma vez só
