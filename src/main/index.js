@@ -2127,7 +2127,11 @@ ipcMain.on('workspace:selected', (event, sessionId) => {
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
 function onToolEvent(event) {
+  // Bash/Task/Agent come through for the voice narration only (#161).
+  if (!EDIT_TOOLS.has(event?.tool_name)) return;
   editPipeline
     .push(event)
     .then((edit) => {

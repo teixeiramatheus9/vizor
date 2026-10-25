@@ -85,8 +85,9 @@ describe('install-hooks', () => {
     expect(commands).toEqual(['ferramenta-de-terceiro']);
   });
 
+  // Edits for the workspace, plus Bash/Task/Agent for the voice narration (#161).
   const TOOL_GROUP = {
-    matcher: 'Edit|Write|MultiEdit|NotebookEdit',
+    matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent',
     hooks: [{ type: 'command', command: COMMAND, async: true }],
   };
 
@@ -94,6 +95,11 @@ describe('install-hooks', () => {
     const result = addHooks({}, COMMAND);
     expect(result.hooks.PreToolUse).toEqual([TOOL_GROUP]);
     expect(result.hooks.PostToolUse).toEqual([TOOL_GROUP]);
+  });
+
+  it('an install with the old edit-only matcher is swapped for the new one', () => {
+    const old = { hooks: { PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: COMMAND, async: true }] }] } };
+    expect(ensureHooks(old, COMMAND).hooks.PreToolUse).toEqual([TOOL_GROUP]);
   });
 
   it('tool events are idempotent too', () => {
@@ -175,8 +181,8 @@ describe('foreign tool groups (#103)', () => {
 
 describe('duplicated tool hooks (#103)', () => {
   it('collapses hand-made copies of our tool hook into one', () => {
-    const ours = { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: COMMAND, async: true }] };
-    const mixed = { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: 'lint.sh' }, { type: 'command', command: COMMAND, async: true }] };
+    const ours = { matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent', hooks: [{ type: 'command', command: COMMAND, async: true }] };
+    const mixed = { matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent', hooks: [{ type: 'command', command: 'lint.sh' }, { type: 'command', command: COMMAND, async: true }] };
     const result = ensureHooks({ hooks: { PostToolUse: [ours, { ...ours }, mixed] } }, COMMAND);
     expect(result.hooks.PostToolUse).toEqual([ours, { ...mixed, hooks: [{ type: 'command', command: 'lint.sh' }] }]);
   });

@@ -67,6 +67,11 @@ function slimToolEvent(event) {
   // the app needs (a new file diffs against empty).
   if (response?.type === 'create' || response?.type === 'update')
     rest.tool_response_type = response.type;
+  // The voice narration only needs to know how a command ended ("3 failed").
+  if (rest.tool_name === 'Bash' && response && typeof response === 'object') {
+    const output = `${response.stdout ?? ''}\n${response.stderr ?? ''}`.trim();
+    if (output) rest.tool_output_tail = output.slice(-300);
+  }
   if (rest.tool_input) rest.tool_input = truncateLargeStrings(rest.tool_input);
   return rest;
 }

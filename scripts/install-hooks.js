@@ -6,11 +6,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification'];
 
-// The workspace tracks every file the AI edits. These fire on each tool call,
-// so the matcher keeps them off Read/Bash/Grep, and async keeps Claude Code
-// from waiting even for the hook's spawn.
+// The workspace tracks every file the AI edits, and the voice mode narrates
+// commands and sub-agents (#161). These fire on each tool call, so the
+// matcher keeps them off Read/Grep/Glob, and async keeps Claude Code from
+// waiting even for the hook's spawn.
 export const TOOL_HOOK_EVENTS = ['PreToolUse', 'PostToolUse'];
-export const EDIT_TOOL_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit';
+export const EDIT_TOOL_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent';
 const ALL_EVENTS = [...HOOK_EVENTS, ...TOOL_HOOK_EVENTS];
 
 function isCanonicalToolHook(group, hook, command) {

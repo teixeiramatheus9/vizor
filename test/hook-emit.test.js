@@ -252,6 +252,22 @@ describe('hook-emit', () => {
     expect(got.tool_input).toEqual({ file_path: '/tmp/a.js', content: { truncated: 70000 } });
   });
 
+  it('keeps a short tail of a Bash command\'s output, for the voice narration (#161)', async () => {
+    const { socketFile, received } = await listenOnce('bash.sock');
+    const event = {
+      hook_event_name: 'PostToolUse',
+      session_id: 'abc',
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      tool_response: { stdout: 'x'.repeat(5000) + '\n Tests  3 failed | 10 passed', stderr: '', interrupted: false },
+    };
+    expect(await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile })).toBe(0);
+    const got = await received;
+    expect(got.tool_response).toBeUndefined();
+    expect(got.tool_output_tail.length).toBeLessThanOrEqual(300);
+    expect(got.tool_output_tail).toContain('3 failed');
+  });
+
   it('truncates strings nested in MultiEdit edits', async () => {
     const { socketFile, received } = await listenOnce('multi.sock');
     const event = {
