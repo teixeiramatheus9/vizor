@@ -57,7 +57,9 @@ async function installDmg(dmgFile) {
 // - dmg/unknown: opens the latest release page.
 // - dev (not packaged): disabled.
 export function setupUpdater({ onStatus, log, fetchFn = fetch }) {
-  const status = { mode: 'off', available: null, ready: null, installing: false, failed: false };
+  // checkFailed: the last check could not reach the releases — the settings
+  // button must say so instead of "already on the latest" (#55).
+  const status = { mode: 'off', available: null, ready: null, installing: false, failed: false, checkFailed: false };
   const notify = () => onStatus({ ...status });
 
   if (!app.isPackaged) {
@@ -80,7 +82,13 @@ export function setupUpdater({ onStatus, log, fetchFn = fetch }) {
     });
     autoUpdater.on('error', (error) => log(`updater: ${error}`));
     const check = async () => {
-      await autoUpdater.checkForUpdates().catch((error) => log(`updater check: ${error}`));
+      try {
+        await autoUpdater.checkForUpdates();
+        status.checkFailed = false;
+      } catch (error) {
+        status.checkFailed = true;
+        log(`updater check: ${error}`);
+      }
       return { ...status };
     };
     check();
@@ -108,11 +116,13 @@ export function setupUpdater({ onStatus, log, fetchFn = fetch }) {
     try {
       const release = await fetchLatestRelease();
       const latest = String(release.tag_name ?? '').replace(/^v/, '');
+      status.checkFailed = false;
       if (latest && isNewerVersion(latest, app.getVersion())) {
         status.available = latest;
         notify();
       }
     } catch (error) {
+      status.checkFailed = true;
       log(`update check failed: ${error}`);
     }
     return { ...status };

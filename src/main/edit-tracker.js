@@ -21,6 +21,7 @@ export const EDIT_STATUS = {
 // A file that keeps changing (a log, a watch build) updates its open card
 // instead of piling a new one every poll (#94 review).
 const COMMAND_COALESCE_MS = 30000;
+const LATE_PRE_MS = 2000;
 const DEFAULT_MAX_SNAPSHOT_BYTES = 200 * 1024 * 1024;
 const bytesOf = (text) => (typeof text === 'string' ? text.length * 2 : 0);
 
@@ -79,6 +80,12 @@ export class EditTracker extends EventEmitter {
     if (!sessionId || !filePath) return null;
     if (event.tool_use_id && this.findById(sessionId, event.tool_use_id)) return null;
     const task = this.openTask(sessionId);
+    // Without an id, a Pre landing just after an applied edit of the same file
+    // is that edit's own late Pre (async hooks race) — not a new edit (#102).
+    if (!event.tool_use_id) {
+      const last = task.edits.findLast((edit) => edit.filePath === filePath);
+      if (last?.status === EDIT_STATUS.APPLIED && this.now() - last.endedAt < LATE_PRE_MS) return null;
+    }
     // Claude edits one thing at a time: a new Pre on the same file means the
     // previous one never landed (e.g. permission denied) — unless its Post is
     // still in flight, in which case completeEdit revives it.
@@ -163,21 +170,24 @@ export class EditTracker extends EventEmitter {
   // An edit still in flight (any session) accounts for a change on disk. A
   // landed edit is matched by content instead (contentsAnywhere): a time
   // window would swallow a formatter run right after it.
-  explains(filePath) {
+  // `resolve` maps a path to its real file: a hook may report a path through
+  // a symlink that git reports resolved (#132).
+  explains(filePath, resolve = (file) => file) {
+    const target = resolve(filePath);
     for (const session of this.sessions.values())
       for (const edit of session.tasks.at(-1)?.edits ?? [])
-        if (edit.filePath === filePath && edit.status === EDIT_STATUS.WRITING) return true;
+        if (edit.status === EDIT_STATUS.WRITING && resolve(edit.filePath) === target) return true;
     return false;
   }
 
   // What each session's current task last saw in a file: a change on disk
   // equal to one of these is that edit's own write, not a command's.
-  contentsAnywhere(filePath) {
+  contentsAnywhere(filePath, resolve = (file) => file) {
+    const target = resolve(filePath);
     const contents = new Set();
-    for (const session of this.sessions.values()) {
-      const current = session.tasks.at(-1)?.files.get(filePath)?.current;
-      if (typeof current === 'string') contents.add(current);
-    }
+    for (const session of this.sessions.values())
+      for (const [file, { current }] of session.tasks.at(-1)?.files ?? [])
+        if (typeof current === 'string' && resolve(file) === target) contents.add(current);
     return [...contents];
   }
 
@@ -196,6 +206,7 @@ export class EditTracker extends EventEmitter {
     let total = this.snapshotBytes();
     if (total <= this.maxSnapshotBytes) return;
     const current = new Set([...this.sessions.values()].map((session) => session.tasks.at(-1)));
+    let dropped = false;
     const candidates = [...this.sessions.values()]
       .flatMap((session) => session.tasks)
       .filter((task) => !current.has(task) && !task.snapshotsDropped)
@@ -208,7 +219,10 @@ export class EditTracker extends EventEmitter {
         file.current = null;
       }
       task.snapshotsDropped = true;
+      dropped = true;
     }
+    // Anyone caching views of those contents must let go too (#130).
+    if (dropped) this.emit('evicted');
   }
 
   // The transcript can lag the hook; the reason then arrives after the edit.

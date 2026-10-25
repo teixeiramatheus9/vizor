@@ -181,6 +181,9 @@ export async function readLastAssistantMessage(transcriptPath) {
 // also files under type 'user'.
 function isUserPrompt(entry) {
   if (!isUserEntry(entry)) return false;
+  // Claude Code files its own notes (caveats, command output) as meta user
+  // entries: not something the user said, so never a turn boundary (#133).
+  if (entry.isMeta) return false;
   const content = entry.message?.content;
   if (typeof content === 'string') return true;
   return Array.isArray(content) && content.some((block) => block?.type !== 'tool_result');

@@ -61,6 +61,11 @@ export class SessionRegistry extends EventEmitter {
     if (event.term && typeof event.term === 'object' && Object.keys(event.term).length) {
       session.term = event.term;
     }
+    // Main found the session's VIZOR_PTY_ID doesn't hold (#140): drop only that.
+    if (event.dropPtyId && session.term?.VIZOR_PTY_ID) {
+      const { VIZOR_PTY_ID: _dropped, ...rest } = session.term;
+      session.term = Object.keys(rest).length ? rest : null;
+    }
     if (event.cwd) {
       session.cwd = event.cwd;
       session.projectName = path.basename(event.cwd);

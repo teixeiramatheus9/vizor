@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PTY_BATCH_MS, PTY_BUFFER_CHARS, createPtyHost, ptyEnv } from '../src/main/pty-host.js';
+import { PTY_BATCH_MS, PTY_BUFFER_CHARS, PTY_FLOW_HIGH, PTY_FLOW_LOW, createPtyHost, ptyEnv } from '../src/main/pty-host.js';
 
 function fakeSpawn() {
   const spawned = [];
@@ -27,6 +27,13 @@ function fakeSpawn() {
       },
       kill() {
         this.killed = true;
+      },
+      paused: false,
+      pause() {
+        this.paused = true;
+      },
+      resume() {
+        this.paused = false;
       },
       emitData(data) {
         for (const listener of this.dataListeners) listener(data);
@@ -243,5 +250,25 @@ describe('createPtyHost', () => {
     spawned[0].emitExit(0);
     expect(host.ttyPath('p1')).toBeNull();
     expect(host.ttyPath('nope')).toBeNull();
+  });
+
+  it('pauses a terminal the window cannot keep up with, and resumes once it catches up (#113)', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r' });
+    spawned[0].emitData('x'.repeat(PTY_FLOW_HIGH + 10));
+    vi.advanceTimersByTime(PTY_BATCH_MS);
+    expect(spawned[0].paused).toBe(true);
+    host.ack('p1', PTY_FLOW_HIGH + 10 - PTY_FLOW_LOW + 1);
+    expect(spawned[0].paused).toBe(false);
+  });
+
+  it('ignores acks for unknown terminals and never goes below zero', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r' });
+    host.ack('nope', 5);
+    host.ack('p1', 999);
+    spawned[0].emitData('y'.repeat(10));
+    vi.advanceTimersByTime(PTY_BATCH_MS);
+    expect(spawned[0].paused).toBe(false);
   });
 });

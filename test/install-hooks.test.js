@@ -167,3 +167,12 @@ describe('foreign tool groups (#103)', () => {
     expect(removeAppHooks(settings).hooks.PreToolUse).toEqual([odd]);
   });
 });
+
+describe('duplicated tool hooks (#103)', () => {
+  it('collapses hand-made copies of our tool hook into one', () => {
+    const ours = { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: COMMAND, async: true }] };
+    const mixed = { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: 'lint.sh' }, { type: 'command', command: COMMAND, async: true }] };
+    const result = ensureHooks({ hooks: { PostToolUse: [ours, { ...ours }, mixed] } }, COMMAND);
+    expect(result.hooks.PostToolUse).toEqual([ours, { ...mixed, hooks: [{ type: 'command', command: 'lint.sh' }] }]);
+  });
+});

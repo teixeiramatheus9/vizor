@@ -24,10 +24,14 @@ export function createWorkspaceWindowManager({
   loadBounds,
   saveBounds,
   onShow,
+  onLoad = () => {},
+  onGone = () => {},
   isQuitting,
+  background = () => '#0d1117',
 }) {
   let win = null;
   let loaded = false;
+  let crashed = false;
   let pendingFocus = null; // a session to select once the page is up
   let saveTimer = null;
 
@@ -47,10 +51,13 @@ export function createWorkspaceWindowManager({
       minWidth: 900,
       minHeight: 560,
       title: 'Vizor — workspace',
-      backgroundColor: '#0d1117',
+      backgroundColor: background(),
       show: false,
       autoHideMenuBar: true,
-      webPreferences: { preload: preloadPath, contextIsolation: true },
+      // Terminals keep running behind a closed (hidden) window; throttled
+      // timers there would stall xterm's parsing, and with flow control the
+      // programs in the tabs with it (review of #113).
+      webPreferences: { preload: preloadPath, contextIsolation: true, backgroundThrottling: false },
     });
     // Electron's default menu brings a Quit (Ctrl+Q, File > Quit) that calls
     // app.quit() straight — it would kill the live terminals without the
@@ -67,6 +74,8 @@ export function createWorkspaceWindowManager({
     // have changed while the window was hidden.
     win.webContents.on('did-finish-load', () => {
       loaded = true;
+      crashed = false;
+      onLoad();
       onShow();
       if (pendingFocus) {
         win.webContents.send('workspace:focus', { sessionId: pendingFocus });
@@ -74,6 +83,13 @@ export function createWorkspaceWindowManager({
       }
     });
     win.once('ready-to-show', () => win.show());
+    // A dead page acks nothing: tell main (so terminals don't stay paused)
+    // and reload on the next show.
+    win.webContents.on('render-process-gone', () => {
+      loaded = false;
+      crashed = true;
+      onGone();
+    });
     win.loadFile(htmlPath);
   }
 
@@ -82,6 +98,7 @@ export function createWorkspaceWindowManager({
       create();
       return;
     }
+    if (crashed) win.webContents.reload();
     win.show();
     win.focus();
     onShow();

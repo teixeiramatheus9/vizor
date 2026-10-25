@@ -328,7 +328,8 @@ body[data-inspector-width='compact'] #columns {
 }
 
 body[data-inspector-width='wide'] #columns {
-  grid-template-columns: 240px 1fr 50%;
+  /* Wide, but the terminal never drops below a usable width (#126). */
+  grid-template-columns: 240px minmax(420px, 1fr) min(50%, calc(100% - 660px));
 }
 
 body[data-inspector-width='collapsed'] #columns {
@@ -377,8 +378,13 @@ body[data-inspector-width='collapsed'] #columns {
 }
 
 #timeline [data-follow] {
+  /* Stays in view while the list scrolls: it is the only sign of new edits (#122). */
+  position: sticky;
+  top: 4px;
+  z-index: 1;
   display: block;
   margin: 6px 8px;
+  background: var(--bg-surface);
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -680,4 +686,12 @@ body[data-inspector-width='collapsed'] #rail {
   justify-content: flex-end;
   gap: 6px;
   margin-top: 6px;
+}
+
+/* #126: no pulsing for people who asked the system for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .status-writing .icon,
+  .rail .dot.writing {
+    animation: none;
+  }
 }

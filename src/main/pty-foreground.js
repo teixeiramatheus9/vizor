@@ -19,3 +19,13 @@ export function inForeground({ stat, ttyRdev }) {
   if (parsed.state === 'T' || parsed.state === 't') return false; // stopped or traced
   return parsed.pgrp === parsed.tpgid && parsed.ttyNr === ttyRdev;
 }
+
+// Whether a process runs on a given terminal at all (foreground or not).
+// A terminal app launched from inside a Vizor tab inherits VIZOR_PTY_ID, but
+// its sessions live on another tty — they are not "in the Vizor" (#140).
+// null: no way to tell.
+export function onTerminal({ stat, ttyRdev }) {
+  const parsed = stat ? parseProcStat(stat) : null;
+  if (!parsed) return null;
+  return parsed.ttyNr === ttyRdev;
+}

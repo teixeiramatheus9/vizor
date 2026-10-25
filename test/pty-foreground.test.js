@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { inForeground, parseProcStat } from '../src/main/pty-foreground.js';
+import { inForeground, onTerminal, parseProcStat } from '../src/main/pty-foreground.js';
 
 // /proc/<pid>/stat: "pid (comm) state ppid pgrp session tty_nr tpgid ..."
 const stat = ({ comm = 'claude', state = 'S', pgrp = 100, tty = 34820, tpgid = 100 } = {}) =>
@@ -38,5 +38,19 @@ describe('inForeground', () => {
 
   it('is false without a stat', () => {
     expect(inForeground({ stat: null, ttyRdev: 34820 })).toBe(false);
+  });
+});
+
+describe('onTerminal (#140)', () => {
+  it('is true when the process runs on that terminal, in front or not', () => {
+    expect(onTerminal({ stat: stat({ tpgid: 999 }), ttyRdev: 34820 })).toBe(true);
+  });
+
+  it('is false for a process on another terminal (a terminal app started from the tab)', () => {
+    expect(onTerminal({ stat: stat({ tty: 1234 }), ttyRdev: 34820 })).toBe(false);
+  });
+
+  it('is null when it cannot tell', () => {
+    expect(onTerminal({ stat: null, ttyRdev: 34820 })).toBeNull();
   });
 });

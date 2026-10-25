@@ -124,6 +124,9 @@ export function fileViewFor(task, filePath, worktreePath) {
   const relPath = relativePath(filePath, worktreePath);
   const empty = { relPath, rows: [], anchors: {}, unplaced: [], seal: null };
   if (task.snapshotsDropped) return { ...empty, note: 'dropped' };
+  // Edits that never landed changed nothing on disk: no diff, no banner (#125).
+  if (edits.length && edits.every((edit) => edit.status === 'not-applied') && !task.files.has(filePath))
+    return { ...empty, note: 'not-applied' };
   const file = task.files.get(filePath);
   if (typeof file?.current !== 'string')
     return { ...empty, note: edits.findLast((edit) => edit.note)?.note ?? 'no-diff' };
@@ -133,7 +136,8 @@ export function fileViewFor(task, filePath, worktreePath) {
   }
   const { rows, note } = inlineRows(file.start, file.current);
   if (note) return { ...empty, note };
-  const view = serializeTask({ ...task, edits }, worktreePath);
+  const landed = edits.filter((edit) => edit.status !== 'not-applied');
+  const view = serializeTask({ ...task, edits: landed }, worktreePath);
   return { ...empty, rows, note: null, ...placeBanners(rows, view.edits) };
 }
 

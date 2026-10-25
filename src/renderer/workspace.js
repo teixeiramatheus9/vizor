@@ -22,6 +22,7 @@ import {
   onPickTask,
   onSelect,
   onTask,
+  stillWanted,
 } from './inspector-state.js';
 
 const sidebar = document.getElementById('sidebar');
@@ -255,13 +256,17 @@ async function refreshInspector({ scroll = false } = {}) {
   if (!sessionId) {
     inspectorTask = null;
     inspectorSummaries = [];
+    inspectorComments = [];
     fileView = null;
+    fileSignature = null;
     renderInspector();
     return;
   }
   const before = inspector.selectedId;
-  const { task, summaries, comments } = await window.vizor.getTaskEdits(sessionId, inspector.taskId);
-  if (inspector.sessionId !== sessionId) return; // switched meanwhile
+  const askedFor = inspector.taskId;
+  const { task, summaries, comments } = await window.vizor.getTaskEdits(sessionId, askedFor);
+  // Switched session or task meanwhile: this answer is for a view gone.
+  if (inspector.sessionId !== sessionId || !stillWanted(inspector, askedFor)) return;
   inspectorTask = task;
   inspectorSummaries = summaries;
   inspectorComments = comments ?? [];
@@ -273,9 +278,18 @@ async function refreshInspector({ scroll = false } = {}) {
 }
 
 function renderComposerPanel() {
-  const edit = composer && inspectorTask?.edits.find((item) => item.id === composer.editId);
-  composerEl.hidden = !edit;
-  if (!edit) return;
+  // The composer keeps its own copy of the change: picking another task in
+  // the picker must not hide it or lose the draft (review I-4 of #136).
+  const edit = composer?.edit ?? null;
+  if (!edit) {
+    // Its change left the view (another task, another session): no hidden
+    // composer keeping state behind the scenes (#136).
+    composer = null;
+    composerEl.hidden = true;
+    composerEl.innerHTML = '';
+    return;
+  }
+  composerEl.hidden = false;
   composerEl.innerHTML = renderComposer({ edit, draft: composer.draft, error: composer.error });
   const textarea = composerEl.querySelector('[data-comment-draft]');
   textarea.focus();
@@ -321,6 +335,8 @@ composerEl.addEventListener('keydown', (event) => {
 
 function selectInspectorSession(sessionId) {
   if (inspector.sessionId === sessionId) return;
+  // null: nothing selected — the inspector empties instead of showing the
+  // previous session's changes (#124).
   if (composer) closeComposer();
   inspector = initialInspector(sessionId);
   inspectorTask = null;
@@ -365,6 +381,11 @@ window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;
   terminals = list ?? [];
+  // The inspected session is gone (closed, reaped): stop showing it (#124).
+  if (inspector.sessionId && !findSession(inspector.sessionId)) {
+    if (selectedId === inspector.sessionId) selectedId = null;
+    selectInspectorSession(null);
+  }
   if (pendingFocus && findSession(pendingFocus)) {
     const sessionId = pendingFocus;
     pendingFocus = null;
@@ -381,9 +402,25 @@ window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
   render();
 });
 
+// Flow control (#113): tell main how much each terminal has actually drawn,
+// batched; main pauses a pty that runs too far ahead of the screen.
+const acks = new Map();
+let ackTimer = null;
+function ack(id, chars) {
+  acks.set(id, (acks.get(id) ?? 0) + chars);
+  if (ackTimer) return;
+  ackTimer = setTimeout(() => {
+    ackTimer = null;
+    for (const [terminalId, count] of acks) window.vizor.ackTerminal(terminalId, count);
+    acks.clear();
+  }, 50);
+}
+
 window.vizor.onTerminalData(({ id, data }) => {
   const view = views.get(id);
-  if (view?.ready) view.term.write(data);
+  // Dropped data (no view yet: the replay carries it) is acked too.
+  if (view?.ready) view.term.write(data, () => ack(id, data.length));
+  else ack(id, data.length);
 });
 
 window.vizor.onTerminalExit(() => renderTerminalArea());
@@ -394,7 +431,11 @@ document.addEventListener('click', async (event) => {
   const target = event.target;
   const commentButton = target.closest('[data-comment]');
   if (commentButton) {
-    composer = { editId: commentButton.dataset.comment, draft: '', error: null };
+    // A draft already typed follows to the newly picked change (#135).
+    const draft = composer?.draft ?? '';
+    const editId = commentButton.dataset.comment;
+    const edit = inspectorTask?.edits.find((item) => item.id === editId) ?? null;
+    composer = { editId, edit, draft, error: null };
     renderComposerPanel();
     return;
   }
@@ -503,6 +544,7 @@ document.addEventListener('click', async (event) => {
   if (worktree) {
     selectedWorktree = worktree.dataset.worktree;
     selectedId = null;
+    selectInspectorSession(null);
     render();
     reportSelection();
     return;

@@ -64,9 +64,17 @@ export function onPickTask(state, taskId) {
 
 // Each file fetch gets a token; a response for an older token (another edit
 // or session selected meanwhile) is dropped instead of rendered.
+// Tokens come from one counter for the whole window, so a response for
+// another session's request can never match (#123).
+let lastToken = 0;
 export function nextFileRequest(state) {
-  const token = state.fileRequest + 1;
-  return { state: { ...state, fileRequest: token }, token };
+  lastToken += 1;
+  return { state: { ...state, fileRequest: lastToken }, token: lastToken };
+}
+
+// A task fetch answered after the user picked another task is dropped (#121).
+export function stillWanted(state, askedForTaskId) {
+  return state.taskId === askedForTaskId;
 }
 
 export function acceptsFile(state, token) {

@@ -40,6 +40,7 @@ import {
   buildWorkspaceTree,
   quitPrompt,
   removeProject,
+  removedIds,
   clampTerminalSize,
   matchWorktree,
   shouldAutoAdd,
@@ -53,7 +54,7 @@ import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
 import { createCommentDelivery } from './comment-delivery.js';
-import { inForeground } from './pty-foreground.js';
+import { inForeground, onTerminal } from './pty-foreground.js';
 import {
   answerKeys,
   answerRoute,
@@ -70,7 +71,7 @@ import { loadConfig, saveConfig } from './config-store.js';
 import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
 import { VOICES } from './sherpa-installer.js';
-import { THEMES, PALETTES } from './themes.js';
+import { THEMES, PALETTES, backgroundFor } from './themes.js';
 import { PANEL_SCALE, clampScale, panelSizeForScale } from './panel-size.js';
 import {
   anchorVisible,
@@ -679,6 +680,18 @@ function activateBubble() {
   else workspaceWindow.show();
 }
 ipcMain.on('bubble:activate', () => activateBubble());
+
+// The balloon of a session born in the Vizor opens its workspace tab, like
+// its panel card (spec §9.1, #144); any other balloon opens the panel.
+ipcMain.on('tooltip:click', (_event, sessionId) => {
+  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
+    hideOverlay();
+    workspaceWindow.focusSession(session.id);
+    return;
+  }
+  openPanel();
+});
 ipcMain.on('overlay:close', () => {
   log('overlay close requested');
   hideOverlay();
@@ -1200,7 +1213,12 @@ async function generateVoiceForStop(session) {
   }
   registry.setManagerMessage(session.id, voice);
   if (await allowAnnouncement(session, 'done', voice.message)) {
-    sendToRenderer('tooltip', { projectName: displayNameOf(session), text: voice.message, kind: 'done' });
+    sendToRenderer('tooltip', {
+      projectName: displayNameOf(session),
+      text: voice.message,
+      kind: 'done',
+      sessionId: session.id,
+    });
     showTooltip();
   }
 }
@@ -1237,6 +1255,7 @@ async function enrichNotification(session) {
       text,
       kind,
       optionsCount: firstQuestion?.options?.length ?? 0,
+      sessionId: session.id,
     });
     showTooltip();
   }
@@ -1265,7 +1284,22 @@ workspaceWindow = workspaceAvailable(process.platform)
       onShow: () => {
         refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
       },
+      // A (re)loaded page starts from the replay, and a dead one acks
+      // nothing: either way, what was in flight will never be acked (#113).
+      onLoad: () => ptyHost?.resetFlow(),
+      onGone: () => {
+        log('workspace renderer gone — terminals resumed, reloading on next open');
+        ptyHost?.resetFlow();
+      },
       isQuitting: () => appQuitting,
+      // First frame in the palette's own colour (#108).
+      background: () => {
+        try {
+          return backgroundFor(managerConfig, fs.readFileSync(path.join(rendererDir, 'tokens.css'), 'utf8'));
+        } catch {
+          return '#0d1117';
+        }
+      },
     })
   : null;
 
@@ -1389,6 +1423,8 @@ function ensurePtyHost() {
   ptyHost = createPtyHost({ spawn: pty.spawn, shell: process.env.SHELL || '/bin/bash' });
   ptyHost.on('data', (payload) => {
     if (workspaceWindow?.isReady()) workspaceWindow.send('pty:data', payload);
+    // Nobody to draw it: count it as drawn, or the terminal would pause (#113).
+    else ptyHost.ack(payload.id, payload.data.length);
   });
   ptyHost.on('exit', (payload) => {
     if (workspaceWindow?.isReady()) workspaceWindow.send('pty:exit', payload);
@@ -1425,6 +1461,9 @@ ipcMain.on('pty:write', (event, { id, data } = {}) => {
 ipcMain.on('pty:resize', (event, { id, cols, rows } = {}) => {
   const size = fromWorkspace(event) ? clampTerminalSize(cols, rows) : null;
   if (size) ptyHost?.resize(id, size.cols, size.rows);
+});
+ipcMain.on('pty:ack', (event, { id, chars } = {}) => {
+  if (fromWorkspace(event)) ptyHost?.ack(id, Number(chars));
 });
 ipcMain.on('pty:close', (event, id) => {
   if (fromWorkspace(event)) ptyHost?.close(id);
@@ -1473,6 +1512,8 @@ ipcMain.handle('edits:task', (event, { sessionId, taskId = null } = {}) => {
 // else. The rows are cached per task and file until its contents change —
 // every edit ping would otherwise re-diff the whole file on main.
 const fileViewCache = new Map(); // `${taskId}\0${filePath}` → { start, current, dropped, edits, view }
+// Contents dropped by the memory ceiling must not live on in this cache (#130).
+editTracker.on('evicted', () => fileViewCache.clear());
 
 ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}) => {
   if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof filePath !== 'string')
@@ -1539,6 +1580,20 @@ const commandWatcher = createCommandWatcher({
     })
       .then(({ stdout }) => stdout)
       .catch(() => null),
+  gitHead: (root) =>
+    execFileAsync('git', ['--no-optional-locks', 'rev-parse', 'HEAD'], { cwd: root, timeout: 3000 })
+      .then(({ stdout }) => stdout.trim() || null)
+      .catch(() => null),
+  gitChangedBetween: (root, from, to) =>
+    execFileAsync('git', ['--no-optional-locks', 'diff', '--name-only', '-z', from, to], {
+      cwd: root,
+      timeout: 3000,
+      maxBuffer: 16 * 1024 * 1024,
+    })
+      // Full list: the watcher skips a cycle past its cap — a truncated list
+      // would never trip it and become 200 arbitrary cards (review I-3).
+      .then(({ stdout }) => stdout.split('\0').filter(Boolean))
+      .catch(() => null),
   statFile: (abs) =>
     fs.promises.stat(abs).then(
       (stats) => `${stats.size}:${stats.mtimeMs}`,
@@ -1546,7 +1601,7 @@ const commandWatcher = createCommandWatcher({
     ),
   // A change is explained by an edit still in flight in ANY session; landed
   // edits are matched by content in recordCommandChange.
-  explained: (_owners, abs) => editTracker.explains(abs),
+  explained: (_owners, abs) => editTracker.explains(abs, realPathOf),
   onChange: (change) => recordCommandChange(change).catch((error) => log(`command change failed: ${error}`)),
   // The user's uncommitted work at task start: a later command change is
   // diffed against THIS, never against the index (#94 review).
@@ -1587,10 +1642,21 @@ async function readForCommand(filePath) {
   }
 }
 
-async function recordCommandChange({ root, filePath, owners, untracked }) {
+async function readHeadVersion(root, head, filePath) {
+  const relative = path.relative(root, filePath).split(path.sep).join('/');
+  return execFileAsync('git', ['--no-optional-locks', 'show', `${head}:${relative}`], {
+    cwd: root,
+    timeout: 3000,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+    .then(({ stdout }) => stdout)
+    .catch(() => null); // not at that HEAD, or git failed: fall back to the other baselines
+}
+
+async function recordCommandChange({ root, filePath, owners, untracked, fromHead }) {
   const { content: after, note: readNote } = await readForCommand(filePath);
   // An edit's own write (its Post landed after the poll): not a command's.
-  if (after !== null && editTracker.contentsAnywhere(filePath).includes(after)) return;
+  if (after !== null && editTracker.contentsAnywhere(filePath, realPathOf).includes(after)) return;
   for (const owner of owners) {
     const session = registry.list().find((item) => item.id === owner);
     // Esc ends a turn without a Stop hook: the session is idle, the change is
@@ -1605,6 +1671,10 @@ async function recordCommandChange({ root, filePath, owners, untracked }) {
     if (before === null && baselineSnapshots.get(root)?.has(filePath)) {
       before = baselineSnapshots.get(root).get(filePath);
       baseline = 'task-start';
+    }
+    if (before === null && fromHead) {
+      before = await readHeadVersion(root, fromHead, filePath);
+      baseline = 'head';
     }
     if (before === null && after !== null) {
       if (untracked) {
@@ -1632,6 +1702,27 @@ async function recordCommandChange({ root, filePath, owners, untracked }) {
       uncertainOwner: owners.length > 1,
     });
     logEdit(edit);
+  }
+}
+
+// Hooks may report a path through a symlink that git reports resolved: compare
+// real paths (#132). Cached — called per tracked file on every comparison.
+const realPaths = new Map();
+function realPathOf(file) {
+  if (realPaths.has(file)) return realPaths.get(file);
+  try {
+    const real = fs.realpathSync(file);
+    if (realPaths.size > 5000) realPaths.clear();
+    realPaths.set(file, real);
+    return real;
+  } catch {
+    // Not there yet (a Write still waiting on permission): resolve the
+    // folder, and never cache — the file may appear in a moment (review M-4).
+    try {
+      return path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+    } catch {
+      return file;
+    }
   }
 }
 
@@ -1733,6 +1824,16 @@ ipcMain.handle('comments:copy', (event, { sessionId, commentId } = {}) => {
   return true;
 });
 
+let knownSessionIds = new Set();
+function forgetRemovedSessions() {
+  const current = registry.list().map((session) => session.id);
+  for (const sessionId of removedIds(knownSessionIds, current)) {
+    editTracker.forgetSession(sessionId);
+    commentStore.forgetSession(sessionId);
+  }
+  knownSessionIds = new Set(current);
+}
+
 // A session that stops waiting gets its held comments. A comment held only
 // because a fresh notice hasn't settled is retried a moment later, since no
 // registry change will come to wake it.
@@ -1772,7 +1873,32 @@ function logEdit(edit) {
   log(`edit #${edit.seq} ${path.basename(edit.filePath)} +${edit.added} −${edit.removed} [${where}] ${reason}`);
 }
 
+// A VIZOR_PTY_ID that doesn't hold (no such tab in this run, or the session
+// runs on another terminal — e.g. a terminal app started from a tab) is
+// dropped: the session is treated as an outside one (#140).
+function verifiedTerm(event) {
+  const ptyId = event?.term?.VIZOR_PTY_ID;
+  if (!ptyId) return event;
+  const tty = ptyHost?.ttyPath(ptyId);
+  let holds = Boolean(tty);
+  if (tty) {
+    const pid = readSessionPid(event.session_id);
+    if (pid) {
+      try {
+        holds =
+          onTerminal({ stat: fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), ttyRdev: fs.statSync(tty).rdev }) !== false;
+      } catch {
+        holds = true; // can't tell: keep what the hook saw
+      }
+    }
+  }
+  if (holds) return event;
+  const { VIZOR_PTY_ID: _dropped, ...rest } = event.term;
+  return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
+}
+
 function onHookEvent(event) {
+  event = verifiedTerm(event);
   if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
     onToolEvent(event);
     return;
@@ -2258,7 +2384,11 @@ async function sendPeerMessage(session, text, { priority = null } = {}) {
 async function replyToSession(session, text) {
   // A panel reply is the user reacting to this chat right now — jump the
   // queue instead of waiting for whatever turn is in flight to finish.
-  if ((await sendPeerMessage(session, text, { priority: 'now' })) === 'sent') return 'sent';
+  const peer = await sendPeerMessage(session, text, { priority: 'now' });
+  if (peer === 'sent') return 'sent';
+  // A channel that answered but did not close may have delivered it: typing it
+  // too would send the reply twice (same rule as comments, #138).
+  if (peer === 'failed') return 'failed';
   return typeIntoTerminal(session, text);
 }
 
@@ -2284,7 +2414,8 @@ ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
       ptyHost.write(ptyId, '\r');
       return 'sent';
     }
-    return 'failed';
+    // The paste is already in the terminal, without Enter: say so (#143).
+    return 'pasted';
   }
   return replyToSession(session, reply);
 });
@@ -2505,6 +2636,7 @@ app.whenReady().then(() => {
   registry.on('change', sendState);
   registry.on('change', scheduleCommandRoots);
   registry.on('change', flushHeldComments);
+  registry.on('change', forgetRemovedSessions);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);

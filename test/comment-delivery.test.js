@@ -141,4 +141,12 @@ describe('comment delivery (#95, after review)', () => {
     expect(calls.pty).toEqual([]);
     expect(state()[0][0]).toBe('queued');
   });
+
+  it('a session channel that timed out may have delivered: never type it again (#138)', async () => {
+    const { delivery, calls, add, state } = setup({ session: outside(), peer: 'failed' });
+    add('oi');
+    await delivery.flush('s1', { immediate: true });
+    expect(calls.typing).toEqual([]);
+    expect(state()[0][0]).toBe('failed');
+  });
 });

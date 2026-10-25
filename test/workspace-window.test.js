@@ -3,11 +3,13 @@ import { EventEmitter } from 'node:events';
 import { boundsVisible, createWorkspaceWindowManager } from '../src/main/workspace-window.js';
 
 class FakeWindow extends EventEmitter {
-  constructor() {
+  constructor(options) {
     super();
+    this.options = options;
     this.webContents = new EventEmitter();
     this.webContents.sent = [];
     this.webContents.send = (channel, payload) => this.webContents.sent.push([channel, payload]);
+    this.webContents.reload = () => { this.reloaded += 1; };
     this.visible = false;
     FakeWindow.last = this;
   }
@@ -18,6 +20,7 @@ class FakeWindow extends EventEmitter {
   hide() { this.visible = false; }
   focus() {}
   removeMenu() { this.menuRemoved = true; }
+  reloaded = 0;
   isFocused() { return Boolean(this.focused); }
   getBounds() { return { x: 0, y: 0, width: 1, height: 1 }; }
 }
@@ -99,5 +102,28 @@ describe('pointing the workspace at a session (#96)', () => {
     workspace.show();
     FakeWindow.last.focused = true;
     expect(workspace.isFocused()).toBe(true);
+  });
+});
+
+describe('backlog review fixes', () => {
+  it('keeps running timers while hidden: terminals must not throttle behind a closed window', () => {
+    manager().show();
+    expect(FakeWindow.last.options.webPreferences.backgroundThrottling).toBe(false);
+  });
+
+  it('a crashed page is not ready, reports it, and reloads on the next show', () => {
+    const events = [];
+    const workspace = createWorkspaceWindowManager({
+      BrowserWindow: FakeWindow, preloadPath: 'p', htmlPath: 'h', loadBounds: () => null, saveBounds: () => {},
+      onShow: () => events.push('show'), onLoad: () => events.push('load'), onGone: () => events.push('gone'),
+      isQuitting: () => false,
+    });
+    workspace.show();
+    FakeWindow.last.webContents.emit('did-finish-load');
+    FakeWindow.last.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    expect(workspace.isReady()).toBe(false);
+    workspace.show();
+    expect(FakeWindow.last.reloaded).toBe(1);
+    expect(events).toEqual(['load', 'show', 'gone', 'show']);
   });
 });

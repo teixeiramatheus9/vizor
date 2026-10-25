@@ -36,3 +36,15 @@ export function migrateThemeConfig(config) {
   if (!PALETTES[migrated.palette]) migrated.palette = DEFAULT_PALETTE;
   return migrated;
 }
+
+// The surface colour of a skin/palette, read from the shared tokens.css so a
+// new window's first frame matches the page instead of flashing dark on the
+// light palette (#108). Falls back to the dark default.
+export function backgroundFor({ theme, palette }, css) {
+  const surface = (selector) => {
+    const escaped = selector.replace(/[[\]()]/g, '\\$&');
+    return String(css ?? '').match(new RegExp(`${escaped}\\s*\\{[^}]*--bg-surface:\\s*(#[0-9a-fA-F]{3,8})`))?.[1] ?? null;
+  };
+  if (theme === 'arcade') return surface("body[data-theme='arcade']") ?? '#0d1117';
+  return surface(`body[data-palette='${palette}']`) ?? surface(':root') ?? '#0d1117';
+}

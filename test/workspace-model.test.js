@@ -7,6 +7,7 @@ import {
   taskFileStats,
   clampTerminalSize,
   quitPrompt,
+  removedIds,
   staleRoots,
   shouldAutoAdd,
   workspaceAvailable,
@@ -211,4 +212,11 @@ describe('clampTerminalSize (#115)', () => {
     expect(clampTerminalSize(5000, 9000)).toEqual({ cols: 1000, rows: 1000 });
   });
 });
+});
+
+describe('removedIds (#137)', () => {
+  it('lists the sessions that left the registry', () => {
+    expect(removedIds(new Set(['a', 'b', 'c']), ['b'])).toEqual(['a', 'c']);
+    expect(removedIds(new Set(), ['b'])).toEqual([]);
+  });
 });

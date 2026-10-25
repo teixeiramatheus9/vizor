@@ -6,7 +6,6 @@ export const POLL_MS = 1500;
 // A mass rewrite (lockfile churn, a codegen) is not a diff anyone reads line
 // by line: past this many dirty paths a cycle is skipped.
 export const MAX_DIRTY_PATHS = 200;
-export const EXPLAIN_WINDOW_MS = 5000;
 
 // `git status --porcelain=v1 -z`: "XY path\0"; a rename or copy carries the
 // original path as the next record, which is skipped.

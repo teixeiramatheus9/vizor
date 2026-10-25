@@ -132,3 +132,10 @@ export function clampTerminalSize(cols, rows) {
   if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return null;
   return { cols: Math.min(cols, MAX_TERMINAL_SIZE), rows: Math.min(rows, MAX_TERMINAL_SIZE) };
 }
+
+// Sessions that left the registry since the last look, by whatever path
+// (closed, reaped, pruned) — their edits and comments must go too (#137).
+export function removedIds(previousIds, currentIds) {
+  const current = new Set(currentIds);
+  return [...previousIds].filter((id) => !current.has(id));
+}
