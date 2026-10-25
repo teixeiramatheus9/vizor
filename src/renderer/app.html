@@ -1526,6 +1526,7 @@
           <button class="nav-item" data-section="terminal-voz">terminal &amp; voz</button>
           <button class="nav-item" data-section="resposta">resposta rápida</button>
           <button class="nav-item" data-section="limites">limites</button>
+          <button class="nav-item" data-section="regras">regras</button>
           <button class="nav-item" data-section="sistema">sistema</button>
         </nav>
         <div id="settings-content">
@@ -1676,6 +1677,20 @@
             </label>
             <div id="usage-detail"></div>
             <div id="usage-bar"><div></div></div>
+          </section>
+          <section class="settings-section" data-section="regras">
+            <div class="setting-subtitle"># regras</div>
+            <div class="setting-hint" id="guard-status"></div>
+            <label class="setting-row wide-label">
+              <span>travar os Claudes pelas minhas regras</span>
+              <input id="guard-enabled" type="checkbox" /><span class="switch"></span>
+              <span id="guard-enabled-state">[on]</span>
+            </label>
+            <div class="setting-hint hidden" id="guard-offline"># neste formato (AppImage sem node) a trava só funciona com o Vizor aberto</div>
+            <div class="setting-actions">
+              <span class="prompt">❯</span>
+              <button id="open-rules">[abrir regras]</button>
+            </div>
           </section>
           <section class="settings-section" data-section="sistema">
             <div class="setting-subtitle"># sistema</div>

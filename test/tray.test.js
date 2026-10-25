@@ -21,6 +21,10 @@ describe('trayMenuTemplate', () => {
     expect(ids({ bubbleVisible: false })).toContain('settings');
   });
 
+  it('opens the rules window from the tray', () => {
+    expect(trayMenuTemplate({ bubbleVisible: true }).find((item) => item.id === 'rules')).toEqual({ id: 'rules', label: 'Regras…' });
+  });
+
   it('offers to find a bubble that got lost off screen', () => {
     expect(ids({ bubbleVisible: true })).toContain('find');
   });

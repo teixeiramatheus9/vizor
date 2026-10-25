@@ -788,6 +788,28 @@ autostartCheckbox.addEventListener('change', () => {
   window.manager.setConfig({ autostart: autostartCheckbox.checked });
 });
 
+// Settings › regras (#160): the lock's state in one line, its switch, and the
+// way into the rules window.
+const guardCheckbox = document.getElementById('guard-enabled');
+const guardEnabledState = document.getElementById('guard-enabled-state');
+
+function renderGuardStatus(guard) {
+  if (!guard) return;
+  const off = !guard.enabled || guard.unreadable;
+  document.getElementById('guard-status').textContent = guard.unreadable
+    ? '# trava desligada: o arquivo das regras está ilegível'
+    : `# ${off ? 'trava desligada' : 'trava ligada'} · ${guard.active} ativas · ${guard.pending} esperando revisão`;
+  guardCheckbox.checked = guard.enabled;
+  guardEnabledState.textContent = guard.enabled ? '[on]' : '[off]';
+  document.getElementById('guard-offline').classList.toggle('hidden', !(guard.enabled && guard.installed && !guard.offline));
+}
+
+guardCheckbox.addEventListener('change', () => {
+  guardEnabledState.textContent = guardCheckbox.checked ? '[on]' : '[off]';
+  window.manager.setGuardEnabled(guardCheckbox.checked);
+});
+document.getElementById('open-rules').addEventListener('click', () => window.manager.openRules());
+
 const autoUpdateCheckbox = document.getElementById('auto-update');
 const autoUpdateState = document.getElementById('auto-update-state');
 
@@ -1440,6 +1462,7 @@ window.manager.onState((state) => {
   renderVoiceStatus(state.voiceDownloading);
   renderTrayStatus(state.trayNeedsRelogin);
   renderUsage(state.tokens);
+  renderGuardStatus(state.guard);
   renderBadge(state.sessions);
   lastUnreadCount = state.unread;
 

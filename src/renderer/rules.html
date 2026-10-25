@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <title>Vizor — regras</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="rules.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Regras</h1>
+      <div id="status"></div>
+      <label class="toggle"><input type="checkbox" id="enabled" /> trava ligada</label>
+    </header>
+    <nav id="scopes" aria-label="Onde as regras valem"></nav>
+    <main>
+      <section id="edit">
+        <p class="file" id="file"></p>
+        <div class="shortcuts">
+          <button type="button" data-template="quando ver o termo PALAVRA em algo, pergunte antes">+ palavra-gatilho</button>
+          <button type="button" data-template="nunca rode COMANDO">+ proibir comando</button>
+          <button type="button" data-template="pergunte antes de AÇÃO">+ perguntar antes de</button>
+        </div>
+        <textarea id="editor" spellcheck="false" placeholder="Uma regra por linha, em português. Ex.: nunca dar push na main sem me perguntar"></textarea>
+        <div class="row">
+          <button type="button" id="save">Salvar</button>
+          <button type="button" id="compile">Compilar o que está pendente</button>
+          <span id="message" role="status"></span>
+        </div>
+      </section>
+      <section id="review"></section>
+      <section id="tester">
+        <h3>Testar um comando</h3>
+        <div class="row">
+          <input id="test-command" placeholder="git push origin main" spellcheck="false" />
+          <button type="button" id="test">testar</button>
+        </div>
+        <p id="test-result"></p>
+      </section>
+      <section>
+        <h3>Últimas da trava</h3>
+        <div id="history"></div>
+      </section>
+    </main>
+    <script type="module" src="rules.js"></script>
+  </body>
+</html>

@@ -23,7 +23,8 @@ import { guardCommand } from './guard-runtime.js';
 import { createGuardAsks } from './guard-asks.js';
 import { createRulesStore } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
-import { loadRules } from '../hook/rule-guard.js';
+import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
+import { compileRules } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
@@ -103,6 +104,8 @@ import {
   configDir,
   rulesDir,
   guardDir,
+  globalRulesFile,
+  PROJECT_RULES_FILE,
 } from './paths.js';
 import {
   UPDATE_DONE_PHRASE,
@@ -481,6 +484,7 @@ function sendState() {
   sendToRenderer('state', {
     sessions: listWithDisplayNames(),
     guardAsks: guardAsks.pending(),
+    guard: guardStatus(),
     unread: registry.unreadCount(),
     update: updateStatus,
     hint: lastHint,
@@ -1058,6 +1062,7 @@ function refreshTrayMenu() {
     find: findBubble,
     quit: () => requestQuit().catch((error) => log(`quit failed: ${error}`)),
     workspace: () => workspaceWindow?.show(),
+    rules: () => openRulesWindow(),
   };
   const template = trayMenuTemplate({
     bubbleVisible: bubbleVisible(),
@@ -2842,6 +2847,8 @@ function copyGuardScript() {
 
 function syncGuardHook() {
   try {
+    const compiledFile = path.join(rulesDir, 'compiladas.json');
+    rulesUnreadable = fs.existsSync(compiledFile) && !loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
     const settings = readClaudeSettings();
     let next;
     if (managerConfig.guardEnabled !== false && approvedRuleCount() > 0) {
@@ -2884,22 +2891,241 @@ function removeGuardIfOnlineOnly() {
   }
 }
 
+let rulesUnreadable = false;
+
 function guardStatus() {
-  const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
-  let unreadable = false;
-  try {
-    fs.accessSync(path.join(rulesDir, 'compiladas.json'));
-    unreadable = !rules;
-  } catch {
-    // no rules yet is not unreadable
-  }
+  const snapshot = rulesStore.snapshot();
+  const repos = Object.values(snapshot.repos);
   return {
     enabled: managerConfig.guardEnabled !== false,
     installed: guardInstalled,
     offline: guardOffline,
-    active: approvedRuleCount(),
-    unreadable,
+    active: snapshot.global.approved.length + repos.filter((repo) => repo.compiled).reduce((sum, repo) => sum + repo.approved.length, 0),
+    pending: snapshot.global.pending.length + repos.reduce((sum, repo) => sum + repo.pending.length, 0),
+    unreadable: rulesUnreadable,
   };
+}
+
+// --- Rules window (#160) ----------------------------------------------------
+
+let rulesWindow = null;
+const rulesRootCache = new Map(); // cwd → repo root (main checkout) | null
+const rulesSynced = new Map(); // scope → markdown last handed to the store
+const rulesWatchers = new Map(); // watched dir → FSWatcher
+let rulesWatchTimer = null;
+
+function rulesFileOf(scope) {
+  return scope === 'global' ? globalRulesFile : path.join(scope, PROJECT_RULES_FILE);
+}
+
+function readRulesFile(scope) {
+  try {
+    return fs.readFileSync(rulesFileOf(scope), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// The same root the guard computes: worktrees share their main checkout's rules.
+async function rulesRootOf(cwd) {
+  if (rulesRootCache.has(cwd)) return rulesRootCache.get(cwd);
+  let root = null;
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd, timeout: 2000 });
+    const common = stdout.trim();
+    root = common.endsWith(`${path.sep}.git`) ? path.dirname(common) : common || null;
+  } catch {
+    // not a repo
+  }
+  rulesRootCache.set(cwd, root);
+  return root;
+}
+
+function syncRulesScope(scope) {
+  const markdown = readRulesFile(scope);
+  if (markdown === null && scope !== 'global' && !rulesStore.snapshot().repos[scope]) return;
+  const text = markdown ?? '';
+  if (rulesSynced.get(scope) === text) return;
+  rulesSynced.set(scope, text);
+  if (scope !== 'global' && markdown !== null) rulesStore.markSeenRepo(scope);
+  rulesStore.syncFile(scope, text);
+}
+
+async function ruleScopeKeys() {
+  const keys = new Set(['global']);
+  for (const root of workspaceProjects()) {
+    const repo = await rulesRootOf(root);
+    if (repo) keys.add(repo);
+  }
+  for (const session of registry.list()) {
+    if (!session.cwd) continue;
+    const repo = await rulesRootOf(session.cwd);
+    if (repo && readRulesFile(repo) !== null) keys.add(repo);
+  }
+  for (const repo of Object.keys(rulesStore.snapshot().repos)) keys.add(repo);
+  return [...keys];
+}
+
+function watchRulesDirs(keys) {
+  for (const scope of keys) {
+    const dir = path.dirname(rulesFileOf(scope));
+    if (rulesWatchers.has(dir) || !isDirectory(dir)) continue;
+    try {
+      const watcher = fs.watch(dir, (_type, name) => {
+        if (name && name !== 'regras.md') return;
+        clearTimeout(rulesWatchTimer);
+        rulesWatchTimer = setTimeout(() => {
+          for (const key of keys) syncRulesScope(key);
+          syncGuardHook();
+          notifyRulesChanged();
+        }, 500);
+      });
+      watcher.on('error', () => rulesWatchers.delete(dir));
+      rulesWatchers.set(dir, watcher);
+    } catch (error) {
+      log(`rules watch failed for ${dir}: ${error}`);
+    }
+  }
+}
+
+async function rulesState() {
+  const keys = await ruleScopeKeys();
+  for (const key of keys) syncRulesScope(key);
+  watchRulesDirs(keys);
+  const snapshot = rulesStore.snapshot();
+  const scopes = keys.map((key) => {
+    const view = key === 'global' ? snapshot.global : snapshot.repos[key] ?? { approved: [], drafts: [], pending: [], compiled: true };
+    const markdown = readRulesFile(key);
+    return {
+      scope: key,
+      label: key === 'global' ? 'global' : path.basename(key),
+      file: rulesFileOf(key),
+      markdown: markdown ?? '',
+      approved: view.approved,
+      drafts: view.drafts,
+      pending: view.pending,
+      // A project the user starts from the window is theirs; only a file that
+      // arrived with the repo waits for a first compile.
+      compiled: markdown === null || view.compiled,
+    };
+  });
+  return { status: guardStatus(), scopes, history: rulesStore.recentHistory(50) };
+}
+
+function notifyRulesChanged() {
+  if (rulesWindow && !rulesWindow.isDestroyed()) rulesWindow.webContents.send('rules:changed');
+  sendState();
+}
+
+function openRulesWindow() {
+  if (rulesWindow && !rulesWindow.isDestroyed()) {
+    rulesWindow.show();
+    rulesWindow.focus();
+    return;
+  }
+  rulesWindow = new BrowserWindow({
+    width: 860,
+    height: 780,
+    minWidth: 560,
+    minHeight: 480,
+    title: 'Vizor — regras',
+    backgroundColor: '#0d1117',
+    autoHideMenuBar: true,
+    webPreferences: { preload: path.join(rendererDir, 'rules-preload.cjs'), contextIsolation: true },
+  });
+  rulesWindow.removeMenu();
+  rulesWindow.on('close', (event) => {
+    if (appQuitting) return;
+    event.preventDefault();
+    rulesWindow.hide();
+  });
+  rulesWindow.loadFile(path.join(rendererDir, 'rules.html'));
+}
+
+const fromRules = (event) => Boolean(rulesWindow && !rulesWindow.isDestroyed() && event.sender === rulesWindow.webContents);
+
+function writeRulesFile(scope, markdown) {
+  const file = rulesFileOf(scope);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, markdown);
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+function validScope(scope) {
+  return scope === 'global' || (typeof scope === 'string' && path.isAbsolute(scope) && isDirectory(scope));
+}
+
+ipcMain.on('rules:open', () => openRulesWindow());
+
+ipcMain.handle('rules:state', (event) => (fromRules(event) ? rulesState() : null));
+
+ipcMain.handle('rules:save', async (event, { scope, markdown } = {}) => {
+  if (!fromRules(event) || !validScope(scope) || typeof markdown !== 'string') return rulesState();
+  writeRulesFile(scope, markdown);
+  if (scope !== 'global') rulesStore.markSeenRepo(scope);
+  syncRulesScope(scope);
+  syncGuardHook();
+  notifyRulesChanged();
+  return rulesState();
+});
+
+ipcMain.handle('rules:compile', async (event, { scope } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return { error: 'origem inválida' };
+  syncRulesScope(scope);
+  const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+  const pending = view?.pending ?? [];
+  const drafted = new Set((view?.drafts ?? []).map((draft) => draft.source));
+  const fresh = pending.filter((line) => !drafted.has(line));
+  const lines = fresh.length ? fresh : pending;
+  if (lines.length === 0) return { state: await rulesState(), compiled: 0 };
+  const result = await compileRules({ lines, scope, budget: tokenBudget, budgetDaily: managerConfig.tokenBudgetDaily });
+  if (result.error) return { error: result.error };
+  rulesStore.setDrafts(scope, result.drafts);
+  sendState();
+  return { state: await rulesState(), compiled: result.drafts.length };
+});
+
+ipcMain.handle('rules:approve', async (event, { scope, ruleId, edited = null } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return rulesState();
+  const clean = edited && typeof edited === 'object' ? edited : null;
+  rulesStore.approve(scope, ruleId, clean);
+  syncGuardHook();
+  notifyRulesChanged();
+  return rulesState();
+});
+
+ipcMain.handle('rules:discard', async (event, { scope, ruleId } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return rulesState();
+  rulesStore.discard(scope, ruleId);
+  notifyRulesChanged();
+  return rulesState();
+});
+
+ipcMain.handle('rules:test', (event, { scope, command } = {}) => {
+  if (!fromRules(event) || !validScope(scope) || typeof command !== 'string') return null;
+  const snapshot = rulesStore.snapshot();
+  const rules = [...snapshot.global.approved, ...(scope === 'global' ? [] : (snapshot.repos[scope]?.approved ?? []))];
+  const hit = evaluate({ rules, call: { tool: 'Bash', input: { command } }, git: scope === 'global' ? null : gitContextOf(scope) });
+  return hit ? { kind: hit.rule.kind, source: hit.rule.source, explain: hit.rule.explain } : null;
+});
+
+// Also flipped from the settings window, hence no sender check.
+ipcMain.handle('rules:set-enabled', async (event, enabled) => {
+  managerConfig = { ...managerConfig, guardEnabled: Boolean(enabled) };
+  saveConfig(configFile, managerConfig);
+  syncGuardHook();
+  notifyRulesChanged();
+  return fromRules(event) ? rulesState() : guardStatus();
+});
+
+function bootSyncRules() {
+  for (const scope of ['global', ...Object.keys(rulesStore.snapshot().repos)]) {
+    try {
+      syncRulesScope(scope);
+    } catch (error) {
+      log(`rules sync failed for ${scope}: ${error}`);
+    }
+  }
 }
 
 // crossSessionInbound decides what a session does with the quick reply this app
@@ -3003,6 +3229,7 @@ app.whenReady().then(() => {
   announceUpdateIfJustInstalled();
   renewMacosGrantAfterUpdate();
   ensureHooksInstalled();
+  bootSyncRules();
   syncGuardHook();
   autoSetupBridgeOnWayland();
   hydrateRegistry();
