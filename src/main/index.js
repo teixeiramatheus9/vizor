@@ -1694,6 +1694,10 @@ function freezeWorkspaceTabs() {
   tabsFrozen = true;
 }
 
+// The thaw only brings tab saving back. appQuitting stays set on purpose:
+// cleared, the workspace and rules windows would go back to hiding on close,
+// and a quit that was merely slow (not cancelled) would then be cancelled by
+// them. The rest of before-quit (socket, hooks, tray) isn't undone either.
 const quitFreeze = createQuitFreeze({
   freeze: freezeWorkspaceTabs,
   thaw: () => {
@@ -1701,6 +1705,11 @@ const quitFreeze = createQuitFreeze({
     log('quit did not go through: workspace tab saves resume');
     tabsFrozen = false;
     scheduleTabsSave();
+  },
+  hold: () => {
+    clearTimeout(tabsSaveTimer);
+    tabsSaveTimer = null;
+    tabsFrozen = true;
   },
 });
 

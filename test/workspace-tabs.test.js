@@ -183,6 +183,7 @@ describe('createQuitFreeze (#157)', () => {
     const freeze = createQuitFreeze({
       freeze: () => log.push('freeze'),
       thaw: () => log.push('thaw'),
+      hold: () => log.push('hold'),
       setTimer: (fn, ms) => {
         const id = next++;
         timers.set(id, { fn, ms });
@@ -207,7 +208,7 @@ describe('createQuitFreeze (#157)', () => {
     freeze.willQuit();
     expect(timers.size).toBe(0);
     fire();
-    expect(log).toEqual(['freeze']);
+    expect(log).toEqual(['freeze', 'hold']);
   });
 
   it('thaws the tabs when the quit never reaches will-quit (it was cancelled)', () => {
@@ -216,6 +217,14 @@ describe('createQuitFreeze (#157)', () => {
     expect([...timers.values()][0].ms).toBe(10000);
     fire();
     expect(log).toEqual(['freeze', 'thaw']);
+  });
+
+  it('a will-quit after the thaw freezes again', () => {
+    const { freeze, log, fire } = setup();
+    freeze.beforeQuit();
+    fire(); // a slow quit: the grace period ran out first
+    freeze.willQuit();
+    expect(log).toEqual(['freeze', 'thaw', 'hold']);
   });
 
   it('a second quit attempt restarts the grace period', () => {
