@@ -974,6 +974,7 @@ const TOAST_TITLE = {
   waiting: 'esperando você',
   start: 'início de task',
   hint: 'aviso do gerente',
+  guard: 'posso seguir?',
 };
 
 // [abrir] does what clicking the balloon does — once (it used to also bubble
@@ -987,18 +988,18 @@ document.getElementById('toast-close').addEventListener('click', (event) => {
   hideTooltip();
 });
 
-window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId }) => {
+window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId, speech }) => {
   tooltipSessionId = sessionId ?? null;
   // kind 'hint' is a manager warning: the MAIN process already spoke it
   // (speakAsManager), so the balloon adds no chime and no second voice.
   if (view === 'bubble' && kind !== 'hint') {
-    chime(kind);
+    chime(kind === 'guard' ? 'question' : kind);
     if (ttsEnabled && !muted) {
       const phrase = TTS_PHRASES[kind] ?? TTS_PHRASES.waiting;
-      speakSample(phrase(projectName, optionsCount));
+      speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
     }
   }
-  const alert = kind === 'question' || kind === 'waiting';
+  const alert = kind === 'question' || kind === 'waiting' || kind === 'guard';
   toastMark.textContent = kind === 'hint' ? '⚠' : alert ? '●' : '✓';
   toastMark.classList.toggle('warn', alert || kind === 'hint');
   tooltipProject.textContent = TOAST_TITLE[kind] ?? TOAST_TITLE.done;
@@ -1407,6 +1408,24 @@ function applySound(sound) {
   refreshDropdowns();
 }
 
+// The rule guard's questions (#160) sit above the sessions until answered.
+// guard-card.js is a module, exposed on window by guard-card-global.js.
+function renderGuardAsks(asks) {
+  if (!asks.length || !window.vizorGuardCard) return;
+  const block = document.createElement('div');
+  block.className = 'guard-asks';
+  block.innerHTML = asks.map((ask) => window.vizorGuardCard.renderGuardCard(ask)).join('');
+  sessionsContainer.append(block);
+}
+
+sessionsContainer.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-guard-choice]');
+  if (!button) return;
+  event.stopPropagation();
+  button.closest('.guard-card')?.classList.add('answered');
+  window.manager.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
+});
+
 window.manager.onState((state) => {
   applyTheme(state.theme, state.palette);
   applyCrt(state.crt);
@@ -1425,6 +1444,7 @@ window.manager.onState((state) => {
   lastUnreadCount = state.unread;
 
   sessionsContainer.replaceChildren();
+  renderGuardAsks(state.guardAsks ?? []);
   if (!state.sessions.length) {
     sessionsContainer.append(emptyStateElement());
     return;

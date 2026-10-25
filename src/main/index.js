@@ -22,6 +22,7 @@ import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard
 import { guardCommand } from './guard-runtime.js';
 import { createGuardAsks } from './guard-asks.js';
 import { createRulesStore } from './rules-store.js';
+import { guardSpeech } from '../renderer/guard-card.js';
 import { loadRules } from '../hook/rule-guard.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
@@ -400,7 +401,21 @@ function onGuardMessage(message, reply) {
     return;
   }
   const result = guardAsks.add(message, reply);
-  if (result.answered) recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
+  if (result.answered) {
+    recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
+    return;
+  }
+  const ask = guardAsks.pending().find((candidate) => candidate.id === result.id);
+  if (!ask) return;
+  // The balloon announces; the choices live in the panel and the workspace.
+  sendToRenderer('tooltip', {
+    projectName: path.basename(ask.cwd ?? '') || 'Claude',
+    text: ask.summary,
+    kind: 'guard',
+    sessionId: null,
+    speech: guardSpeech(ask),
+  });
+  showTooltip();
 }
 
 function guardSummary(message) {
