@@ -64,6 +64,8 @@ export function extractFile(source, relPath) {
   function visit(node, parent, className) {
     if (!node || typeof node.type !== 'string') return;
     if (node.type === 'ImportDeclaration') {
+      // import './side-effect.js': still a dependency between modules.
+      if (!node.specifiers?.length) imports.push({ local: null, imported: null, from: node.source.value });
       for (const specifier of node.specifiers ?? []) {
         const imported =
           specifier.type === 'ImportDefaultSpecifier' ? 'default' : specifier.type === 'ImportNamespaceSpecifier' ? '*' : keyName(specifier.imported);
