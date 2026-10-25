@@ -766,3 +766,70 @@ describe('voice session — the conducting gerente, review fixes', async () => {
     expect(calls.some(([name]) => name === 'link')).toBe(false);
   });
 });
+
+describe('voice session — memory (#163)', async () => {
+  const { createRoutines } = await import('../src/main/voice/routines.js');
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const routinesFor = () => {
+    const files = {};
+    const store = createRoutines({ file: '/v/r.json', readFile: (f) => { if (!(f in files)) throw new Error('x'); return files[f]; }, writeFile: (f, c) => (files[f] = c), rename: (a, b) => ((files[b] = files[a]), delete files[a]) });
+    return { save: (name, steps) => store.save('/r', name, steps), get: (name) => store.get('/r', name), list: () => store.list('/r'), remove: (name) => store.remove('/r', name) };
+  };
+
+  it('"onde paramos na 22?" answers with a short summary of where the chat stopped', async () => {
+    const { session, texts } = setup({ summarize: async () => 'Faltava escolher o algoritmo de senha.' });
+    await session.onUtterance('onde paramos na 22?');
+    expect(texts().at(-1)).toBe('Na 22: Faltava escolher o algoritmo de senha.');
+  });
+
+  it('in economy mode, the first sentence of the last answer; no chat, it says so', async () => {
+    const economy = setup({ economy: () => true });
+    await economy.session.onUtterance('onde paramos na 22');
+    expect(economy.texts().at(-1)).toBe('Na 22: Paramos na criptografia de senha.');
+    const none = setup({ resolveTask: async () => ({ none: true }) });
+    await none.session.onUtterance('onde paramos na 40');
+    expect(none.texts().at(-1)).toBe('Não achei conversa da 40.');
+  });
+
+  it('a routine is saved, listed, run step by step and forgotten', async () => {
+    const routines = routinesFor();
+    const { session, texts, calls } = setup({ routines });
+    await session.onUtterance('grava a rotina começar o dia: o que temos pra hoje, depois retoma a task 22');
+    expect(texts().at(-1)).toBe('Gravei a rotina começar o dia: 2 passos.');
+    await session.onUtterance('quais rotinas eu tenho?');
+    expect(texts().at(-1)).toBe('Rotinas: começar o dia.');
+    await session.onUtterance('roda a rotina começar o dia');
+    await tick();
+    expect(texts()).toContain('3 PRs abertas. O CI da 158 quebrou.');
+    expect(calls).toContainEqual(['open', { sessionId: 's22', cwd: '/r' }]);
+    await session.onUtterance('esquece a rotina começar o dia');
+    expect(texts().at(-1)).toBe('Esqueci a rotina começar o dia.');
+    await session.onUtterance('roda a rotina começar o dia');
+    expect(texts().at(-1)).toBe('Não tenho a rotina começar o dia.');
+  });
+
+  it('in the Maestro the routine is held once, and its steps run without their own wait', async () => {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const routines = routinesFor();
+    routines.save('dia', ['retoma a task 22']);
+    const { session, calls } = setup({ routines, maestro: () => true, orchestra: () => [], pendingOrder });
+    await session.onUtterance('roda a rotina dia');
+    expect(pendingOrder.pending().label).toBe('rodar a rotina dia');
+    timer();
+    await tick();
+    await tick();
+    expect(calls).toContainEqual(['open', { sessionId: 's22', cwd: '/r' }]);
+    expect(pendingOrder.pending()).toBeNull();
+  });
+
+  it('a routine never runs another routine', async () => {
+    const routines = routinesFor();
+    routines.save('a', ['roda a rotina a']);
+    const { session, texts } = setup({ routines });
+    await session.onUtterance('roda a rotina a');
+    await tick();
+    expect(texts()).toContain('Uma rotina não roda outra.');
+  });
+});

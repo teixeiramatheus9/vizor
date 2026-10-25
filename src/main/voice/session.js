@@ -62,6 +62,16 @@ const LINES = {
     maestroOn: 'Modo Maestro ativado.',
     maestroOff: 'Modo Maestro desativado.',
     picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
+    // Memory (#163).
+    stoppedAt: (number, where) => `Na ${number}: ${where}`,
+    noTask: (number) => `Não achei conversa da ${number}.`,
+    noTrace: (number) => `A conversa da ${number} não tem resposta ainda.`,
+    routineSaved: (name, count) => `Gravei a rotina ${name}: ${count} ${count === 1 ? 'passo' : 'passos'}.`,
+    routines: (names) => (names.length ? `Rotinas: ${names.join(', ')}.` : 'Nenhuma rotina gravada.'),
+    routineRunning: (name) => `Rodando a rotina ${name}.`,
+    noRoutine: (name) => `Não tenho a rotina ${name}.`,
+    routineForgotten: (name) => `Esqueci a rotina ${name}.`,
+    noNesting: 'Uma rotina não roda outra.',
     // The conducting gerente (#162).
     orderTaken: (musician) => `Combinado: quando ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`} terminar, eu mando.`,
     orderReplaced: (musician) =>
@@ -87,6 +97,7 @@ const LINES = {
       whenDone: (musician, text) => `quando ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`} terminar: ${text}`,
       reviewer: (musician) => `chamar um avaliador pra ${musician.number !== null ? musician.number : musician.name}`,
       review: (number) => `revisar a PR ${number}`,
+      routine: (name) => `rodar a rotina ${name}`,
       guard: { liberar: 'liberar', 'liberar-sessao': 'liberar nesta sessão', barrar: 'barrar' },
     },
   },
@@ -124,6 +135,15 @@ const LINES = {
     maestroOn: 'Maestro mode on.',
     maestroOff: 'Maestro mode off.',
     picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
+    stoppedAt: (number, where) => `On ${number}: ${where}`,
+    noTask: (number) => `I didn't find a chat for ${number}.`,
+    noTrace: (number) => `The chat for ${number} has no answer yet.`,
+    routineSaved: (name, count) => `Saved the routine ${name}: ${count} ${count === 1 ? 'step' : 'steps'}.`,
+    routines: (names) => (names.length ? `Routines: ${names.join(', ')}.` : 'No routine saved.'),
+    routineRunning: (name) => `Running the routine ${name}.`,
+    noRoutine: (name) => `I don't have the routine ${name}.`,
+    routineForgotten: (name) => `Forgot the routine ${name}.`,
+    noNesting: "A routine doesn't run another one.",
     orderTaken: (musician) => `Got it: when ${musician.number ?? musician.name} finishes, I'll send it.`,
     orderReplaced: (musician) => `Replaced the order for ${musician.number ?? musician.name}: when it finishes, I'll send the new one.`,
     reviewerOn: (musician) => `A reviewer will look at ${musician.number ?? musician.name}.`,
@@ -218,8 +238,10 @@ export function createVoiceSession(deps) {
   const ORDER = LINES.pt.order;
   // Off the Maestro the order runs at once and its errors reach the caller,
   // as before; held, nobody awaits it, so a failure is logged and said.
+  // Inside a routine the steps run straight: the routine itself was held once.
+  let inRoutine = false;
   const held = (label, run) => {
-    if (!deps.maestro?.() || !deps.pendingOrder) return run();
+    if (!deps.maestro?.() || !deps.pendingOrder || inRoutine) return run();
     deps.pendingOrder.hold({ label }, () =>
       Promise.resolve()
         .then(run)
@@ -321,6 +343,33 @@ export function createVoiceSession(deps) {
     });
   }
 
+  // "onde paramos na 22?": the task's chat, its last answer in short.
+  async function whereStopped(number) {
+    thinking();
+    const found = await deps.resolveTask(number);
+    const sessionId = found.sessionId ?? found.candidates?.[0]?.sessionId;
+    if (!sessionId) return say(lines().noTask(number));
+    const last = deps.sessionInfo(sessionId)?.lastMessage;
+    if (!last) return say(lines().noTrace(number));
+    const summary = deps.economy() ? null : await deps.summarize(last).catch(() => null);
+    return say(lines().stoppedAt(number, summary || firstSentence(last)));
+  }
+
+  async function runRoutine(name) {
+    if (inRoutine) return say(lines().noNesting);
+    const routine = deps.routines?.get(name);
+    if (!routine) return say(lines().noRoutine(name));
+    return held(ORDER.routine(routine.name), async () => {
+      say(lines().routineRunning(routine.name));
+      inRoutine = true;
+      try {
+        for (const step of routine.steps) await api.onUtterance(step);
+      } finally {
+        inRoutine = false;
+      }
+    });
+  }
+
   async function openNewChat(pending) {
     const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
     if (!opened?.sessionId) {
@@ -358,6 +407,17 @@ export function createVoiceSession(deps) {
         return held(ORDER.pick(intent.number), () => pickIssue(intent.number));
       case 'review-pr':
         return held(ORDER.review(intent.number), () => reviewPr(intent.number));
+      case 'where-stopped':
+        return whereStopped(intent.number);
+      case 'save-routine':
+        deps.routines?.save(intent.name, intent.steps);
+        return say(lines().routineSaved(intent.name, intent.steps.length));
+      case 'run-routine':
+        return runRoutine(intent.name);
+      case 'list-routines':
+        return say(lines().routines((deps.routines?.list() ?? []).map((routine) => routine.name)));
+      case 'forget-routine':
+        return say(deps.routines?.remove(intent.name) ? lines().routineForgotten(intent.name) : lines().noRoutine(intent.name));
       case 'when-done':
         return onMusicians('when-done', intent, (musician) => orderFor(musician, intent.text));
       case 'call-reviewer':
@@ -438,7 +498,7 @@ export function createVoiceSession(deps) {
     }
   }
 
-  return {
+  const api = {
     target: () => ({ ...target }),
 
     async onUtterance(heard) {
@@ -542,4 +602,5 @@ export function createVoiceSession(deps) {
       say(lines().chatClosed(number));
     },
   };
+  return api;
 }

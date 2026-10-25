@@ -30,6 +30,7 @@ import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
 import { createSpeechArbiter } from './voice/arbiter.js';
 import { createVoiceSession } from './voice/session.js';
+import { createRoutines } from './voice/routines.js';
 import { createNarrator } from './voice/narration.js';
 import { buildOrchestra, nextFocus } from './maestro/orchestra.js';
 import { createPendingOrder } from './maestro/pending-order.js';
@@ -3737,6 +3738,18 @@ const vocabularyStore = createVocabularyStore({
   },
   rename: (from, to) => fs.renameSync(from, to),
 });
+// Routines (#163), per project; without one open, a shared list.
+const routinesStore = createRoutines({
+  file: path.join(voiceDir, 'rotinas.json'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const routinesHere = () => voiceRoot() ?? '*';
+
 const taskLinks = createTaskLinks({
   file: path.join(voiceDir, 'tasks.json'),
   readFile: (file) => fs.readFileSync(file, 'utf8'),
@@ -4009,6 +4022,12 @@ function createVoiceSessionForApp() {
     focus: maestroFocus,
     interrupt: maestroInterrupt,
     pendingOrder: maestroOrder,
+    routines: {
+      save: (name, steps) => routinesStore.save(routinesHere(), name, steps),
+      get: (name) => routinesStore.get(routinesHere(), name),
+      list: () => routinesStore.list(routinesHere()),
+      remove: (name) => routinesStore.remove(routinesHere(), name),
+    },
     conductor: maestroConductor,
     // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
     startOrderNow: (sessionId) => {

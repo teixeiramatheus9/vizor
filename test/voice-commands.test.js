@@ -247,3 +247,27 @@ describe('routeUtterance — the conducting gerente', () => {
     expect(routeUtterance('chama um avaliador pro A1')).toEqual({ type: 'call-reviewer', agent: 1 });
   });
 });
+
+describe('routeUtterance — memory (#163)', () => {
+  it('where did we stop on a task', () => {
+    expect(routeUtterance('Vizor, onde paramos na 22?')).toEqual({ type: 'where-stopped', number: 22 });
+    expect(routeUtterance('onde a gente parou na task vinte e dois')).toEqual({ type: 'where-stopped', number: 22 });
+  });
+
+  it('save, run, list and forget a routine', () => {
+    expect(routeUtterance('Vizor, grava a rotina começar o dia: o que temos pra hoje, depois revisa a PR 166')).toEqual({
+      type: 'save-routine',
+      name: 'começar o dia',
+      steps: ['o que temos pra hoje', 'revisa a PR 166'],
+    });
+    expect(routeUtterance('salva uma rotina fim do dia: o que ficou aberto; e depois desative o modo maestro')).toEqual({
+      type: 'save-routine',
+      name: 'fim do dia',
+      steps: ['o que ficou aberto', 'desative o modo maestro'],
+    });
+    expect(routeUtterance('roda a rotina começar o dia')).toEqual({ type: 'run-routine', name: 'começar o dia' });
+    expect(routeUtterance('começa a rotina de começar o dia')).toEqual({ type: 'run-routine', name: 'começar o dia' });
+    expect(routeUtterance('quais rotinas eu tenho?')).toEqual({ type: 'list-routines' });
+    expect(routeUtterance('esquece a rotina fim do dia')).toEqual({ type: 'forget-routine', name: 'fim do dia' });
+  });
+});

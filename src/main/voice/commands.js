@@ -50,6 +50,12 @@ const ALWAYS = [
   }],
   // The Maestro (#159): interrupting takes the whole phrase, never a bare
   // "para"; the mode only turns on when asked for by name.
+  // Memory (#163): where a task stopped, and routines of spoken steps.
+  [/^onde (a gente |nos |voces )?(paramos|parou|parei) na (task |tarefa |issue )?(\d+)$/, (match) => ({ type: 'where-stopped', number: Number(match[4]) })],
+  [/^(grava|grave|gravar|salva|salve|salvar) (a |uma )?rotina .+$/, (match, raw) => saveRoutine(raw)],
+  [/^(roda|rode|rodar|comeca|comecar|executa|execute) (a )?rotina (de |do |da )?(.+)$/, (match, raw) => ({ type: 'run-routine', name: rawTail(raw, match[4]) })],
+  [/^quais (sao )?(as )?rotinas( eu tenho| que eu tenho| temos)?$/, () => ({ type: 'list-routines' })],
+  [/^(esquece|esqueca|apaga|apague|remove) (a )?rotina (.+)$/, (match, raw) => ({ type: 'forget-routine', name: rawTail(raw, match[3]) })],
   // The conducting gerente (#162): an order kept until the músico finishes,
   // and the reviewer. "o A1"/"a1" is a músico without a task, "a 22" a task.
   [/^quando (o (a|agente) ?|a(?=\d)|agente ?)(\d+) (terminar|acabar) (.+)$/, (match, raw) => ({ type: 'when-done', agent: Number(match[3]), text: rawTail(raw, match[5]) })],
@@ -113,6 +119,22 @@ const WHEN_REPLY = [
     return Number.isInteger(index) && index > 0 ? { type: 'navigate', action: 'detail', index } : null;
   }],
 ];
+
+// "grava a rotina <nome>: passo, depois passo; e depois passo". Steps split
+// on ";" and "depois" only: a step may hold a comma ("quando a 22 terminar, …").
+const STEP_BREAK = /\s*;\s*(?:e\s+)?(?:depois\s+)?|,?\s+e\s+depois\s+|,?\s+depois\s+/i;
+function saveRoutine(raw) {
+  const colon = raw.indexOf(':');
+  const named = raw.search(/rotina/i);
+  if (colon === -1 || named === -1 || colon < named) return null;
+  const name = raw.slice(named + 'rotina'.length, colon).trim();
+  const steps = raw
+    .slice(colon + 1)
+    .split(STEP_BREAK)
+    .map((step) => step.trim().replace(/[.!]+$/, ''))
+    .filter(Boolean);
+  return name && steps.length ? { type: 'save-routine', name, steps } : null;
+}
 
 // The original spelling of a matched tail (a file name keeps its case).
 function rawTail(raw, normalizedTail) {
