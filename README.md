@@ -60,6 +60,15 @@ de dev (GitHub, PR, push, deploy…) saem com a pronúncia que dev brasileiro us
 | **Santa** | Kokoro (`pm_santa`) | ~350MB |
 | **Inglês (EUA) 1–10** | Supertonic em inglês americano (mesmo modelo da Clara) | — |
 
+### Modo Maestro
+
+No workspace, o **Maestro** tira o chat da frente: você rege os chats do Claude
+(os músicos) pela voz e vê o código sendo escrito, com o que a IA diz num balão
+por cima. Diga "Vizor, ative o modo Maestro" (ou clique em "♪ Maestro"); "vai
+pra 22" foca um músico e "Vizor, interrompa a task 22" para a tarefa dele.
+Toda ordem que mexe em trabalho aparece como "entendi: …" e espera 3 s, pra
+você dizer "cancela" se ele entendeu errado.
+
 Com uma voz em inglês, o Vizor **fala em inglês** — recados, modo voz, resumos,
 narração — e você continua falando com ele em português. A interface segue em
 pt-BR.
