@@ -1167,3 +1167,6 @@ svg.graph line.folder-link.lit,
 svg.graph line.import.picked {
   opacity: 1;
 }
+svg.graph line.call.picked {
+  opacity: 1;
+}

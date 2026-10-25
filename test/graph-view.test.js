@@ -326,3 +326,26 @@ describe('links between modules, readable at every zoom', async () => {
     expect(svg).toMatch(/class="folder-link lit" data-link="core~util"[^>]*stroke="#ebcb8b"/);
   });
 });
+
+describe('a clicked node shows its links (live test: "tenho que ver o vínculo")', () => {
+  const calls = linkGraph(
+    new Map([
+      ['core/c.js', extractFile('export function c() { helper(); }\nfunction helper() {}\nexport function idle() {}', 'core/c.js')],
+      ['ui/a.js', extractFile("import { c } from '../core/c.js';\nexport function a() { c(); }", 'ui/a.js')],
+    ]),
+  );
+  const layout = layoutGraph(calls, { width: 1000, height: 1000 });
+  const view = { scale: 3, x: 0, y: 0, open: 'core/c.js' };
+
+  it('an opened file also shows who calls it from elsewhere', () => {
+    const svg = renderGraph({ graph: calls, layout, view, impacts: [] });
+    expect(svg).toContain('data-function="ui/a.js#a"');
+  });
+
+  it("a clicked function's calls light up, in and out", () => {
+    const svg = renderGraph({ graph: calls, layout, view: { ...view, selected: 'core/c.js#c' }, impacts: [] });
+    expect(svg.match(/class="call picked"/g)).toHaveLength(2); // a→c, c→helper
+    const idle = renderGraph({ graph: calls, layout, view: { ...view, selected: 'core/c.js#idle' }, impacts: [] });
+    expect(idle).not.toContain('class="call picked"');
+  });
+});

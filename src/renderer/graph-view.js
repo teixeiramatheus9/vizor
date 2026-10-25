@@ -144,7 +144,14 @@ export function openArea(graph, layout, moduleId) {
     spots[fnId] = { x: center.x + distance * Math.cos(index * GOLDEN), y: center.y + distance * Math.sin(index * GOLDEN), r: FN_R, own: true };
   });
   const inner = FN_SPACING * Math.sqrt(own.length + 0.5) + 10;
-  const outside = [...new Set(graph.callEdges.filter((call) => spots[call.from]?.own && !spots[call.to]).map((call) => call.to))].slice(0, Math.floor((2 * Math.PI * (inner + 14)) / 9));
+  // On the rim: what it calls elsewhere and who calls it from elsewhere.
+  const outside = [
+    ...new Set(
+      graph.callEdges.flatMap((call) =>
+        spots[call.from]?.own && !spots[call.to] ? [call.to] : spots[call.to]?.own && !spots[call.from] ? [call.from] : [],
+      ),
+    ),
+  ].slice(0, Math.floor((2 * Math.PI * (inner + 14)) / 9));
   outside.forEach((fnId, index) => {
     const angle = (2 * Math.PI * index) / Math.max(outside.length, 1) - Math.PI / 2;
     spots[fnId] = { x: center.x + (inner + 14) * Math.cos(angle), y: center.y + (inner + 14) * Math.sin(angle), r: 2.6, own: false };
@@ -229,18 +236,21 @@ function functionPaint(light, critical) {
     : `fill="none" stroke="${escapeHtml(color)}" stroke-width="2" stroke-dasharray="3 2"`;
 }
 
-function openModule(graph, layout, impacts, critical, moduleId, scale) {
+function openModule(graph, layout, impacts, critical, moduleId, scale, selected) {
   const area = openArea(graph, layout, moduleId);
   const placed = area.spots;
-  const calls = graph.callEdges.filter((call) => placed[call.from]?.own && placed[call.to]);
+  const calls = graph.callEdges.filter((call) => (placed[call.from]?.own || placed[call.to]?.own) && placed[call.from] && placed[call.to]);
   const edges = calls
     .map((call) => {
       const a = placed[call.from];
       const b = placed[call.to];
       const light = lightOf(impacts, 'functions', call.from) ?? lightOf(impacts, 'functions', call.to);
       const danger = light && (critical.functions.has(call.from) || critical.functions.has(call.to));
-      const stroke = danger ? DANGER : light ? light.color : 'var(--graph-call, #81a1c1)';
-      return `<line class="call${light ? ' lit' : ''}${danger ? ' danger' : ''}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${escapeHtml(stroke)}" stroke-width="${(light ? 2.5 : 1) / scale}"/>`;
+      // A clicked function: its calls, in and out, in the accent.
+      const picked = !light && selected && (call.from === selected || call.to === selected);
+      const stroke = danger ? DANGER : light ? light.color : picked ? 'var(--accent)' : 'var(--graph-call, #81a1c1)';
+      const kind = light ? ` lit${danger ? ' danger' : ''}` : picked ? ' picked' : '';
+      return `<line class="call${kind}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${escapeHtml(stroke)}" stroke-width="${(light || picked ? 2.5 : 1) / scale}"/>`;
     })
     .join('');
   const nodes = Object.entries(placed)
@@ -268,7 +278,7 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
   if (graph.unavailable) return `<div class="graph-unavailable">grafo indisponível: ${escapeHtml(graph.unavailable)}</div>`;
   const { scale, x, y, open, selected = null } = view;
   const critical = criticalOf(graph);
-  const opened = open && layout.modules[open] ? openModule(graph, layout, impacts, critical, open, scale) : { backdrop: '', svg: '', placed: {}, moved: {} };
+  const opened = open && layout.modules[open] ? openModule(graph, layout, impacts, critical, open, scale, selected) : { backdrop: '', svg: '', placed: {}, moved: {} };
   // Where each file is drawn: in its place, or on the rim of an opened one.
   const at = (id) => opened.moved[id] ?? layout.modules[id];
   const font = LABEL / scale;
