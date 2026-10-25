@@ -21,8 +21,48 @@ const norm = (text) =>
 const WORK_VERB =
   /\b(puxa|puxar|puxe|pega|pegar|pegue|comeca|comecar|comece|desenvolve|desenvolver|desenvolva|implementa|implementar|implemente|trabalhar|trabalha|trabalhe|faz|fazer|faca|analisa|analisar|analise|resolve|resolver|resolva)\b/;
 const NOT_WORK = /\b(revis\w*|fecha\w*|atribu\w*|assign\w*)\b/;
-// "isue"/"issu": how the transcriber writes it (live test).
-export const ISSUE_NUMBER = /\b(issues?|isues?|issu|task|tarefa)\s+(numero\s+)?(\d+)\b/;
+// "isue", "eixo", "eixe": how the transcriber writes "issue" (live test).
+const ISSUE_WORD = /^(issues?|isues?|issu|eixos?|eixe|ixus?|task|tarefa)$/;
+const PICK_VERB = /^(puxa|puxe|puxar|pega|pegue|pegar)$/;
+const SPOKEN_DIGIT = { zero: 0, um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4, cinco: 5, seis: 6, meia: 6, sete: 7, oito: 8, nove: 9 };
+const FILLER = new Set(['e', 'a', 'o', 'numero', 'de', 'da', 'do', '#']);
+
+// A number as it was transcribed: "169", "1 6 9", "um meia 9", "160 e 9".
+function spokenNumber(tokens) {
+  const parts = [];
+  for (const token of tokens) {
+    if (/^\d+$/.test(token)) parts.push(token);
+    else if (token in SPOKEN_DIGIT) parts.push(String(SPOKEN_DIGIT[token]));
+    else if (token === 'e' && parts.length) parts.push('e');
+    else if (!parts.length && FILLER.has(token)) continue;
+    else break;
+  }
+  let value = '';
+  for (let index = 0; index < parts.length; index++) {
+    if (parts[index] !== 'e') value += parts[index];
+    // "160 e 9" is 169; any other "e" ends the number ("22 e depois").
+    else if (value.endsWith('0') && parts[index + 1]?.length === 1) value = value.slice(0, -1) + parts[++index];
+    else break;
+  }
+  return value ? Number(value) : null;
+}
+
+// A phrase that asks for work ("bora começar aquela do menu"): worth a look
+// by the interpreter when no command matched it (live test).
+export function soundsLikeWork(text) {
+  const plain = norm(text);
+  return WORK_VERB.test(plain) && !NOT_WORK.test(plain);
+}
+
+// The issue a phrase talks about: after an issue word, or right after
+// "puxa/pega" ("pega a 169"). Null when there is none.
+export function issueNumberIn(text) {
+  const tokens = norm(text).split(' ');
+  const named = tokens.findIndex((token) => ISSUE_WORD.test(token));
+  if (named !== -1) return spokenNumber(tokens.slice(named + 1));
+  const verb = tokens.findIndex((token) => PICK_VERB.test(token));
+  return verb !== -1 ? spokenNumber(tokens.slice(verb + 1)) : null;
+}
 const HANDOVER = /\b(da|de|passa|passe|manda|mande|entrega|entregue)\b.*\b(ela|essa|isso|esta)\b.*\b(musico|chat|agente)\b/;
 
 const NOT_A_NAME = new Set(['e', 'me', 'pra', 'para', 'que', 'com', 'mas', 'depois', 'ai', 'entao', 've', 'olha']);
@@ -85,7 +125,7 @@ const ALWAYS = [
   // Starting work on an issue, said any way (live test: "vamos pegar issue
   // #162 e analisar…", "pegue a issue 162 e vamos começar a desenvolvê-la"):
   // a work verb and "issue/task N", never a review, a close or an assign.
-  [{ test: (text) => WORK_VERB.test(text) && ISSUE_NUMBER.test(text) && !NOT_WORK.test(text) }, (match) => ({ type: 'pick-issue', number: Number(match[0].match(ISSUE_NUMBER)[3]) })],
+  [{ test: (text) => WORK_VERB.test(text) && issueNumberIn(text) !== null && !NOT_WORK.test(text) }, (match) => ({ type: 'pick-issue', number: issueNumberIn(match[0]) })],
   // "dê ela para um músico": the issue last talked about (the session knows it).
   [{ test: (text) => HANDOVER.test(text) && !NOT_WORK.test(text) }, () => ({ type: 'pick-issue', number: null })],
 ];

@@ -1,4 +1,4 @@
-import { ISSUE_NUMBER, routeUtterance } from './commands.js';
+import { issueNumberIn, routeUtterance, soundsLikeWork } from './commands.js';
 import { analyzeReply, createReplyCursor, needsSummary, spokenReply } from './replies.js';
 import { createNarrator } from './narration.js';
 import { closestPhrase } from './vocabulary.js';
@@ -63,6 +63,7 @@ const LINES = {
     maestroOff: 'Modo Maestro desativado.',
     picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
     whichIssue: 'Qual issue? Diga, por exemplo: puxa a issue 162.',
+    understood: (label) => `Entendi: ${label}.`,
     // Memory (#163).
     stoppedAt: (number, where) => `Na ${number}: ${where}`,
     noTask: (number) => `Não achei conversa da ${number}.`,
@@ -140,6 +141,7 @@ const LINES = {
     maestroOff: 'Maestro mode off.',
     picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
     whichIssue: 'Which issue? Say, for example: puxa a issue 162.',
+    understood: (label) => `Got it: ${label}.`,
     stoppedAt: (number, where) => `On ${number}: ${where}`,
     noTask: (number) => `I didn't find a chat for ${number}.`,
     noTrace: (number) => `The chat for ${number} has no answer yet.`,
@@ -190,9 +192,8 @@ export function createVoiceSession(deps) {
   const MAX_CANDIDATES = 5;
   let lastIssue = null; // the issue last talked about, by you or the gerente ("dê ela para um músico")
   const noteIssue = (text) => {
-    const plain = String(text ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/#/g, ' ');
-    const found = plain.match(ISSUE_NUMBER) ?? plain.match(/\b(a|da|na)\s+(\d{2,})\b/);
-    if (found) lastIssue = Number(found[3] ?? found[2]);
+    const number = issueNumberIn(text) ?? Number(String(text ?? '').match(/#(\d+)/)?.[1] ?? NaN);
+    if (Number.isInteger(number)) lastIssue = number;
   };
 
   // A voice reads emoji out loud ("rosto suando"): they never reach it.
@@ -260,6 +261,8 @@ export function createVoiceSession(deps) {
   let routineRun = null; // { name, stopped }
   const held = (label, run) => {
     if (!deps.maestro?.() || !deps.pendingOrder || directStep) return run();
+    // Said out loud too: a wrong number is heard at once, and "cancela" is right there.
+    say(lines().understood(label), 1, { kind: 'filler' });
     deps.pendingOrder.hold({ label }, () =>
       Promise.resolve()
         .then(run)
@@ -514,6 +517,12 @@ export function createVoiceSession(deps) {
       case 'ask-manager': {
         if (deps.economy()) return say(lines().economy);
         thinking();
+        // A garbled order ("pega eixo e um meia 9"): the interpreter, with the
+        // open issues in hand, may still tell what was meant (live test).
+        if (deps.interpret && soundsLikeWork(intent.text)) {
+          const meant = await deps.interpret(intent.text).catch(() => null);
+          if (meant?.type === 'pick-issue' && Number.isInteger(meant.number)) return act(meant, raw);
+        }
         const reply = await deps.askManager(intent.text);
         noteIssue(reply);
         for (const [pattern, type] of PROPOSALS) {

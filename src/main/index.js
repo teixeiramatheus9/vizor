@@ -3925,6 +3925,31 @@ async function voiceAskManager(text) {
   return reply;
 }
 
+// A spoken work order no command matched, often garbled ("pega eixo e um
+// meia 9"): Haiku reads it against the open issues and says which one was
+// meant. Only a number that is really open counts (live test).
+async function voiceInterpret(text) {
+  if (isEconomyMode()) return null;
+  if (!lastGhContext || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
+  const open = new Set([...String(lastGhContext ?? '').matchAll(/^issue #(\d+)/gm)].map((match) => Number(match[1])));
+  if (!open.size) return null;
+  const result = await runClaude({
+    prompt: [
+      'Você interpreta um pedido falado em pt-BR, transcrito com erros (números e a palavra "issue" saem errados: "eixo e um meia 9" é "issue 169").',
+      'Issues abertas do projeto:',
+      String(lastGhContext).split('\n').filter((line) => line.startsWith('issue #')).join('\n'),
+      `Pedido: "${text}"`,
+      'Se o pedido é começar, pegar ou desenvolver UMA dessas issues, responda só {"action":"pick-issue","number":N}. Senão, responda só {"action":"none"}.',
+    ].join('\n'),
+    timeoutMs: 15000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  const number = Number(String(result?.text ?? '').match(/"number"\s*:\s*(\d+)/)?.[1]);
+  const picked = /"action"\s*:\s*"pick-issue"/.test(result?.text ?? '') && open.has(number);
+  log(`voice interpret: "${text}" → ${picked ? `issue ${number}` : 'nothing'}`);
+  return picked ? { type: 'pick-issue', number } : null;
+}
+
 async function voiceSummarize(plain) {
   if (isEconomyMode()) return null;
   const result = await runClaude({
@@ -4028,6 +4053,7 @@ function createVoiceSessionForApp() {
       list: () => routinesStore.list(routinesHere()),
       remove: (name) => routinesStore.remove(routinesHere(), name),
     },
+    interpret: voiceInterpret,
     conductor: maestroConductor,
     // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
     startOrderNow: (sessionId) => {

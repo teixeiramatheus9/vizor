@@ -913,3 +913,36 @@ describe('voice session — "dê ela para um músico" (live test)', () => {
     expect(texts().at(-1)).toBe('Qual issue? Diga, por exemplo: puxa a issue 162.');
   });
 });
+
+describe('voice session — understanding a garbled order (live test)', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('the Vizor says what it understood when it holds an order', async () => {
+    const pendingOrder = createPendingOrder({ setTimer: () => null, clearTimer: () => {} });
+    const { session, said } = setup({ maestro: () => true, orchestra: () => [], pendingOrder });
+    await session.onUtterance('pega a issue 169 pra desenvolver');
+    expect(said.at(-1)).toMatchObject({ text: 'Entendi: puxar a issue 169.', kind: 'filler' });
+  });
+
+  it('a work order nothing matched goes to the interpreter; a valid answer is acted on', async () => {
+    const asked = [];
+    const { session, calls } = setup({
+      resolveTask: async () => ({ none: true, cwd: '/r' }),
+      interpret: async (text) => (asked.push(text), { type: 'pick-issue', number: 169 }),
+      askManager: async () => {
+        throw new Error('the gerente must not be asked');
+      },
+    });
+    await session.onUtterance('bora começar aquela do menu do ícone');
+    await tick();
+    expect(asked).toEqual(['bora começar aquela do menu do ícone']);
+    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('issue #169');
+  });
+
+  it('nothing understood: the gerente answers as before', async () => {
+    const { session, texts } = setup({ interpret: async () => null, askManager: async () => 'Tem 2 chats rodando.' });
+    await session.onUtterance('bora começar aquela coisa');
+    expect(texts().at(-1)).toBe('Tem 2 chats rodando.');
+  });
+});

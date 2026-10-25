@@ -325,3 +325,25 @@ describe('routeUtterance — "issue" as the transcriber writes it (live test)', 
     expect(routeUtterance('puxa a issu 169')).toEqual({ type: 'pick-issue', number: 169 });
   });
 });
+
+describe('the issue number, however it was transcribed (live test)', async () => {
+  const { issueNumberIn } = await import('../src/main/voice/commands.js');
+  it('the phrases from the log', () => {
+    expect(routeUtterance('Advisor, pega eixo e um meia 9 para a gente desenvolver.')).toEqual({ type: 'pick-issue', number: 169 });
+    expect(routeUtterance('Vamos pegar a isue 1, 6, 9.')).toEqual({ type: 'pick-issue', number: 169 });
+    expect(routeUtterance('Weiser, pega eixe 169.')).toEqual({ type: 'pick-issue', number: 169 });
+    expect(routeUtterance('pega a 169 pra desenvolver')).toEqual({ type: 'pick-issue', number: 169 });
+  });
+
+  it('issueNumberIn reads digits, spoken digits, "meia" and "160 e nove"', () => {
+    expect(issueNumberIn('issue 160 e nove')).toBe(169);
+    expect(issueNumberIn('eixo um meia nove')).toBe(169);
+    expect(issueNumberIn('a task 22 e depois abre a pr')).toBe(22);
+    expect(issueNumberIn('issue 162 e analisar')).toBe(162);
+    expect(issueNumberIn('nada aqui')).toBeNull();
+  });
+
+  it('a number alone is not an issue without "puxa/pega" right before it', () => {
+    expect(routeUtterance('vamos fazer o deploy em 2 minutos')).not.toMatchObject({ type: 'pick-issue' });
+  });
+});
