@@ -50,6 +50,10 @@ const ALWAYS = [
   }],
   // The Maestro (#159): interrupting takes the whole phrase, never a bare
   // "para"; the mode only turns on when asked for by name.
+  // A músico without a task is A1, A2… ("o A1", "o agente 1", "a2"); "a 2"
+  // with a space stays the article before a task number.
+  [/^(interrompa|interrompe|interromper) (o (a|agente) ?|a(?=\d)|agente ?)(\d+)$/, (match) => ({ type: 'interrupt', agent: Number(match[4]) })],
+  [/^(vai (pro|pra|para o|para) |foca no |foca na )(o (a|agente) ?|a(?=\d)|agente ?)(\d+)$/, (match) => ({ type: 'focus', agent: Number(match[5]) })],
   [/^(interrompa|interrompe|interromper) a (task|tarefa|issue) (numero )?(\d+)$/, (match) => ({ type: 'interrupt', number: Number(match[4]) })],
   [/^(vai (pra|para) (a )?|foca na )(task |tarefa |issue )?(\d+)$/, (match) => ({ type: 'focus', number: Number(match[5]) })],
   [/^(ative|ativa|ativar) (o )?modo maestro$/, () => ({ type: 'maestro', on: true })],

@@ -558,3 +558,61 @@ describe('voice session — the gerente reads, the músicos act', () => {
     expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('PR #166');
   });
 });
+
+describe('voice session — músicos named A1, A2…', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const agent = (sessionId, k) => ({ sessionId, number: null, agent: k, name: `A${k}`, ptyId: `p-${sessionId}`, label: `chat ${sessionId}`, status: 'working', color: '#fff', files: [] });
+
+  function scene(overrides = {}) {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const interrupted = [];
+    const focused = [];
+    const base = setup({
+      maestro: () => true,
+      orchestra: () => [agent('x', 1), agent('y', 2)],
+      interrupt: (ptyId) => (interrupted.push(ptyId), true),
+      focus: (sessionId) => focused.push(sessionId),
+      pendingOrder,
+      ...overrides,
+    });
+    return { ...base, pendingOrder, interrupted, focused, fire: () => timer?.() };
+  }
+
+  it('"interrompa o A2": held as "interromper o A2", then Esc to it', async () => {
+    const { session, pendingOrder, interrupted, fire, texts } = scene();
+    await session.onUtterance('interrompa o A2');
+    expect(pendingOrder.pending().label).toBe('interromper o A2');
+    fire();
+    await tick();
+    expect(interrupted).toEqual(['p-y']);
+    expect(texts().at(-1)).toBe('Interrompi o A2.');
+  });
+
+  it('"vai pro A1" focuses it; an unknown agent says so', async () => {
+    const { session, focused, texts } = scene();
+    await session.onUtterance('vai pro A1');
+    expect(focused).toEqual(['x']);
+    expect(texts().at(-1)).toBe('Foco no A1.');
+    await session.onUtterance('interrompa o A9');
+    expect(texts().at(-1)).toBe('Não achei o A9.');
+    const english = scene({ lang: () => 'en' });
+    await english.session.onUtterance('interrompa o A9');
+    expect(english.texts().at(-1)).toBe('No A9.');
+  });
+
+  it('"task 2" never lands on A2', async () => {
+    const { session, interrupted, texts } = scene();
+    await session.onUtterance('interrompa a task 2');
+    expect(texts().at(-1)).toBe('Não achei músico na 2.');
+    expect(interrupted).toEqual([]);
+  });
+
+  it('a prompt to a bound A1 is labelled by its name', async () => {
+    const { session, pendingOrder } = scene({ findChat: () => 'x' });
+    await session.onUtterance('fala com o chat x');
+    await session.onUtterance('roda os testes');
+    expect(pendingOrder.pending().label).toBe('mandar pro A1: roda os testes');
+  });
+});

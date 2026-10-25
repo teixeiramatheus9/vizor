@@ -2,7 +2,7 @@ import { routeUtterance } from './commands.js';
 import { analyzeReply, createReplyCursor, needsSummary, spokenReply } from './replies.js';
 import { createNarrator } from './narration.js';
 import { closestPhrase } from './vocabulary.js';
-import { findMusicians } from '../maestro/orchestra.js';
+import { findAgent, findMusicians } from '../maestro/orchestra.js';
 
 // The voice conversation (#161): who the voice talks to (the gerente or one
 // chat), what each utterance does, and what comes back spoken. Every side
@@ -50,11 +50,12 @@ const LINES = {
     thinking: ['Tô dando uma olhada aqui.', 'Só um momento.', 'Conferindo.', 'Deixa eu ver.'],
     // The Maestro (#159).
     musicianOrdinals: ['o primeiro', 'o segundo', 'o terceiro', 'o quarto', 'o quinto'],
-    noMusician: (number) => `Não achei músico na ${number}.`,
+    // A músico is its task ("a 22") or its name ("o A1").
+    noMusician: ({ number, agent }) => (agent ? `Não achei o A${agent}.` : `Não achei músico na ${number}.`),
     musicians: (count, number, list) => `Tem ${count} músicos na ${number}: ${list}. Qual?`,
-    interrupted: (number) => `Interrompi a ${number}.`,
-    interruptFailed: (number) => `Não consegui interromper a ${number}.`,
-    focused: (number) => `Foco na ${number}.`,
+    interrupted: (musician) => `Interrompi ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`}.`,
+    interruptFailed: (musician) => `Não consegui interromper ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`}.`,
+    focused: (musician) => `Foco ${musician.number !== null ? `na ${musician.number}` : `no ${musician.name}`}.`,
     maestroOn: 'Modo Maestro ativado.',
     maestroOff: 'Modo Maestro desativado.',
     picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
@@ -63,8 +64,9 @@ const LINES = {
     alreadyRan: 'Já foi.',
     orderFailed: 'Deu erro nessa ordem; olha o log.',
     order: {
-      interrupt: (number) => `interromper a ${number}`,
-      prompt: (number, text) => (number === null ? `mandar pro chat: ${text}` : `mandar pra ${number}: ${text}`),
+      interrupt: (musician) => (musician.number !== null ? `interromper a ${musician.number}` : `interromper o ${musician.name}`),
+      prompt: (musician, text) =>
+        !musician ? `mandar pro chat: ${text}` : musician.number !== null ? `mandar pra ${musician.number}: ${text}` : `mandar pro ${musician.name}: ${text}`,
       resume: (number) => `retomar a ${number}`,
       newChat: (number) => `abrir um chat novo pra ${number}`,
       pick: (number) => `puxar a issue ${number}`,
@@ -98,11 +100,11 @@ const LINES = {
     chatClosed: (number) => `The ${number ? `chat for ${number}` : 'bound chat'} closed; back to the manager.`,
     thinking: ['Let me take a look.', 'One moment.', 'Checking.', 'Let me see.'],
     musicianOrdinals: ['the first', 'the second', 'the third', 'the fourth', 'the fifth'],
-    noMusician: (number) => `No músico on ${number}.`,
+    noMusician: ({ number, agent }) => (agent ? `No A${agent}.` : `No músico on ${number}.`),
     musicians: (count, number, list) => `There are ${count} músicos on ${number}: ${list}. Which one?`,
-    interrupted: (number) => `Stopped ${number}.`,
-    interruptFailed: (number) => `I couldn't stop ${number}.`,
-    focused: (number) => `Focus on ${number}.`,
+    interrupted: (musician) => `Stopped ${musician.number ?? musician.name}.`,
+    interruptFailed: (musician) => `I couldn't stop ${musician.number ?? musician.name}.`,
+    focused: (musician) => `Focus on ${musician.number ?? musician.name}.`,
     maestroOn: 'Maestro mode on.',
     maestroOff: 'Maestro mode off.',
     picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
@@ -207,29 +209,33 @@ export function createVoiceSession(deps) {
     );
     return undefined;
   };
-  const numberOfSession = (sessionId) => (deps.orchestra?.() ?? []).find((musician) => musician.sessionId === sessionId)?.number ?? null;
+  const musicianOfSession = (sessionId) => (deps.orchestra?.() ?? []).find((musician) => musician.sessionId === sessionId) ?? null;
 
   function interruptMusician(musician) {
-    return held(ORDER.interrupt(musician.number), () =>
-      say(deps.interrupt(musician.ptyId) ? lines().interrupted(musician.number) : lines().interruptFailed(musician.number)),
+    return held(ORDER.interrupt(musician), () =>
+      say(deps.interrupt(musician.ptyId) ? lines().interrupted(musician) : lines().interruptFailed(musician)),
     );
   }
 
   function focusMusician(musician) {
     deps.focus(musician.sessionId);
-    say(lines().focused(musician.number));
+    say(lines().focused(musician));
   }
 
   // "interrompa a task 22" / "vai pra 22": none says so, two asks which.
   // A task linked to chats is found only among them (one outside the Vizor is
   // no músico); a number nobody links is a place in the orchestra.
-  function onMusicians(kind, number, run) {
+  // address: { number } (a task) or { agent } (A1, A2…).
+  function onMusicians(kind, address, run) {
     const orchestra = deps.orchestra?.() ?? [];
-    const linked = deps.linkedSessions?.(number) ?? [];
-    const found = linked.length
-      ? orchestra.filter((musician) => linked.includes(musician.sessionId))
-      : findMusicians(orchestra, number);
-    if (!found.length) return say(lines().noMusician(number));
+    const { number, agent } = address;
+    const linked = agent ? [] : deps.linkedSessions?.(number) ?? [];
+    const found = agent
+      ? findAgent(orchestra, agent)
+      : linked.length
+        ? orchestra.filter((musician) => linked.includes(musician.sessionId))
+        : findMusicians(orchestra, number);
+    if (!found.length) return say(lines().noMusician(address));
     if (found.length === 1) return run(found[0]);
     const candidates = found.slice(0, MAX_CANDIDATES);
     pendingChoice = { kind, number, candidates };
@@ -307,9 +313,9 @@ export function createVoiceSession(deps) {
       case 'review-pr':
         return held(ORDER.review(intent.number), () => reviewPr(intent.number));
       case 'interrupt':
-        return onMusicians('interrupt', intent.number, interruptMusician);
+        return onMusicians('interrupt', intent, interruptMusician);
       case 'focus':
-        return onMusicians('focus', intent.number, focusMusician);
+        return onMusicians('focus', intent, focusMusician);
       case 'maestro':
         deps.setMaestro?.(intent.on);
         return say(intent.on ? lines().maestroOn : lines().maestroOff);
@@ -355,7 +361,7 @@ export function createVoiceSession(deps) {
         const sessionId = target.sessionId;
         const text = intent.text;
         const preview = text.length > 80 ? `${text.slice(0, 80).replace(/\s+\S*$/, '')}…` : text;
-        return held(ORDER.prompt(numberOfSession(sessionId), preview), async () => {
+        return held(ORDER.prompt(musicianOfSession(sessionId), preview), async () => {
           const outcome = await deps.deliverPrompt(sessionId, text);
           if (outcome === 'hold') {
             queuedPrompt = text;

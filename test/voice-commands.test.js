@@ -214,3 +214,19 @@ describe('routeUtterance — the músicos act on the GitHub', () => {
     expect(routeUtterance('puxa uma das issues que a gente tem')).toMatchObject({ type: 'ask-manager' });
   });
 });
+
+describe('routeUtterance — músicos without a task are A1, A2…', () => {
+  it('interrupt and focus by agent name', () => {
+    expect(routeUtterance('Vizor, interrompa o A1')).toEqual({ type: 'interrupt', agent: 1 });
+    expect(routeUtterance('interrompe o a 2')).toEqual({ type: 'interrupt', agent: 2 });
+    expect(routeUtterance('interrompa o agente 3')).toEqual({ type: 'interrupt', agent: 3 });
+    expect(routeUtterance('vai pro A2')).toEqual({ type: 'focus', agent: 2 });
+    expect(routeUtterance('foca no a2')).toEqual({ type: 'focus', agent: 2 });
+    expect(routeUtterance('vai pra a2')).toEqual({ type: 'focus', agent: 2 });
+  });
+
+  it('"vai pra a 2" with a space is the task 2 (Portuguese article), as before', () => {
+    expect(routeUtterance('vai pra a 2')).toEqual({ type: 'focus', number: 2 });
+    expect(routeUtterance('interrompa a task 2')).toEqual({ type: 'interrupt', number: 2 });
+  });
+});

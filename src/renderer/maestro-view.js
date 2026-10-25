@@ -26,8 +26,8 @@ export function renderOrchestra(orchestra, focusedId) {
     (musician) =>
       `<button class="musician" data-musician="${escapeHtml(musician.sessionId)}"${
         musician.sessionId === focusedId ? ' aria-current="true"' : ''
-      }><span class="musician-dot" style="background:${escapeHtml(musician.color)}"></span><span class="musician-text"><b>#${escapeHtml(
-        musician.number,
+      }><span class="musician-dot" style="background:${escapeHtml(musician.color)}"></span><span class="musician-text"><b>${escapeHtml(
+        musician.name,
       )}</b> ${escapeHtml(musician.label)}<span class="musician-status">${escapeHtml(STATUS_LABEL[musician.status] ?? musician.status)}</span></span></button>`,
   );
   const empty = orchestra.length ? '' : '<div class="orchestra-empty">nenhum chat do Claude aberto no workspace</div>';
@@ -39,7 +39,7 @@ export function renderOrchestra(orchestra, focusedId) {
 export function renderBalloon(say, musicianOf, { full = false } = {}) {
   if (!say?.text) return '';
   const musician = say.source === 'manager' ? null : musicianOf(say.source);
-  const who = musician ? `#${musician.number}:` : 'gerente:';
+  const who = musician ? `${musician.name}:` : 'gerente:';
   const text = balloonText(say.text);
   const shown = full ? text.full : text.short;
   const more = text.cut && !full ? ' <button class="balloon-more" data-balloon-more>ver tudo</button>' : '';

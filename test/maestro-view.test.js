@@ -8,7 +8,7 @@ import {
   renderOrder,
 } from '../src/renderer/maestro-view.js';
 
-const musician = (sessionId, number, extra = {}) => ({ sessionId, number, ptyId: `p-${sessionId}`, label: `chat ${sessionId}`, status: 'working', color: '#ebcb8b', files: [], ...extra });
+const musician = (sessionId, number, extra = {}) => ({ sessionId, number, agent: null, name: `#${number}`, ptyId: `p-${sessionId}`, label: `chat ${sessionId}`, status: 'working', color: '#ebcb8b', files: [], ...extra });
 
 describe('the Maestro stage markup', () => {
   it('balloonText cuts at 280 and keeps the full text', () => {
@@ -85,5 +85,14 @@ describe('the balloon opened in full ("ver tudo")', () => {
     expect(html).toContain('fim');
     expect(html).not.toContain('data-balloon-more');
     expect(html).not.toContain('<b>');
+  });
+});
+
+describe('músicos without a task show as A1, A2…', () => {
+  it('in the orchestra and in the balloon', () => {
+    const a1 = musician('x', null, { agent: 1, name: 'A1' });
+    expect(renderOrchestra([a1], 'x')).toContain('<b>A1</b>');
+    expect(renderOrchestra([a1], 'x')).not.toContain('#null');
+    expect(renderBalloon({ source: 'x', text: 'oi' }, () => a1)).toContain('A1:');
   });
 });

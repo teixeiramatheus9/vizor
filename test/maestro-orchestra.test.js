@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildOrchestra, findMusicians, MUSICIAN_COLORS, nextFocus } from '../src/main/maestro/orchestra.js';
+import { buildOrchestra, findAgent, findMusicians, MUSICIAN_COLORS, nextFocus } from '../src/main/maestro/orchestra.js';
 
 const session = (id, ptyId = `p-${id}`, extra = {}) => ({ id, name: `chat ${id}`, status: 'working', ptyId, files: [], ...extra });
 const tree = (sessions, unplacedSessions = []) => ({
@@ -14,11 +14,22 @@ describe('the Maestro orchestra', () => {
     expect(orchestra[0]).toMatchObject({ sessionId: 'a', ptyId: 'p-a', label: 'chat a', status: 'working', files: [] });
   });
 
-  it('a músico is addressed by its issue, else by its place', () => {
+  it('a músico is named by its task, else A1, A2… (never by its place)', () => {
     const roots = [];
     const orchestra = buildOrchestra(tree([session('a'), session('b')], [session('c')]), (id, root) => (roots.push([id, root]), id === 'a' ? 22 : null));
-    expect(orchestra.map((musician) => musician.number)).toEqual([22, 2, 3]);
+    expect(orchestra.map((musician) => [musician.name, musician.number, musician.agent])).toEqual([
+      ['#22', 22, null],
+      ['A1', null, 1],
+      ['A2', null, 2],
+    ]);
     expect(roots).toEqual([['a', '/r'], ['b', '/r'], ['c', null]]);
+  });
+
+  it('findAgent finds A2 only', () => {
+    const orchestra = buildOrchestra(tree([session('a'), session('b')]), () => null);
+    expect(findAgent(orchestra, 2).map((musician) => musician.sessionId)).toEqual(['b']);
+    expect(findAgent(orchestra, 3)).toEqual([]);
+    expect(findMusicians(orchestra, 2)).toEqual([]);
   });
 
   it('colors follow the order and wrap', () => {
