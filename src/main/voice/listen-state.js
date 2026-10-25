@@ -33,6 +33,7 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
   let userSpeaking = false;
   let dictating = false;
   let blocked = null; // 'muted' | 'meeting'
+  let ignoreUntil = -Infinity; // its own "ok" coming back through the mic
 
   const emit = (name, payload) => machine.emit(name, payload);
 
@@ -65,6 +66,7 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
 
   machine.speechStart = () => {
     if (!['listening', 'closing', 'grace'].includes(state)) return;
+    if (now() < ignoreUntil) return;
     if (state !== 'listening') {
       held = join(held, text);
       text = null;
@@ -135,6 +137,10 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
       reset();
       emit('utterance', { text: utterance });
     }
+  };
+
+  machine.ignoreSpeech = (ms) => {
+    ignoreUntil = now() + ms;
   };
 
   machine.dictation = (on) => {

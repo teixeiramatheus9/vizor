@@ -26,6 +26,7 @@ import { createRulesStore } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
 import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
+import { createSpeechArbiter } from './voice/arbiter.js';
 import { missingVoiceModels, voiceModelPaths } from './voice/models.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, validateEditedRule } from './rules-compiler.js';
@@ -370,6 +371,14 @@ const registry = new SessionRegistry({
 });
 let managerConfig = loadConfig(configFile);
 
+// Voice mode state (#161), declared up here: speakAsManager and sendState
+// read it, and they run long before the voice section below.
+const voiceSherpaDir = path.join(configDir, 'sherpa');
+let voiceListener = null;
+let voiceArbiter = null;
+let micWindow = null;
+let voiceState = 'off';
+
 const rulesStore = createRulesStore({
   dir: rulesDir,
   readFile: (file) => fs.readFileSync(file, 'utf8'),
@@ -522,6 +531,11 @@ function sendState() {
 
 function speakAsManager(text) {
   if (!managerConfig.ttsEnabled) return;
+  // In voice mode one arbiter decides who speaks when (#161).
+  if (voiceArbiter) {
+    voiceArbiter.say({ text, priority: 4, source: 'manager' });
+    return;
+  }
   const volume = Math.round((managerConfig.voiceVolume * managerConfig.soundVolume) / 100);
   tts.speak(text, { voice: managerConfig.voice, volume });
 }
@@ -2271,6 +2285,10 @@ ipcMain.on('tts:speak', (_event, payload) => {
   const text = String(payload?.text ?? payload ?? '').slice(0, 300);
   if (!text) return;
   const volume = Number.isFinite(payload?.volume) ? payload.volume : 100;
+  if (voiceArbiter) {
+    voiceArbiter.say({ text, priority: 4, source: 'alert' });
+    return;
+  }
   tts.stopSpeaking();
   try {
     tts.speak(text, { voice: managerConfig.voice, volume });
@@ -3198,10 +3216,6 @@ function bootSyncRules() {
 // --- Voice (#161) -------------------------------------------------------------
 // Linux only in v1. The engine runs in a worker thread; a hidden window owns
 // the microphone; nothing is recorded.
-const voiceSherpaDir = path.join(configDir, 'sherpa');
-let voiceListener = null;
-let micWindow = null;
-let voiceState = 'off';
 
 function voiceAvailable() {
   return process.platform === 'linux';
@@ -3240,17 +3254,41 @@ function startVoice() {
     if (message?.type === 'ready') log('voice: engine ready');
   });
   voiceListener = createListener({ worker });
+  voiceArbiter = createSpeechArbiter({
+    speak: (text, item) =>
+      new Promise((resolve) => {
+        // The short "ok" does not pause listening; a real line does.
+        if (item.kind !== 'ack') voiceListener?.speakingStarted();
+        const volume = Math.round((managerConfig.voiceVolume * managerConfig.soundVolume) / 100);
+        tts.speak(text, { voice: managerConfig.voice, volume, onDone: resolve });
+      }),
+    stop: () => tts.stopSpeaking(),
+  });
+  voiceArbiter.on('quiet', () => voiceListener?.speakingEnded());
   voiceListener.on('state', (state) => {
     voiceState = state;
+    voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing');
     sendState();
   });
-  voiceListener.on('ack', () => log('voice: ack'));
-  voiceListener.on('utterance', ({ text }) => onVoiceUtterance(text));
+  voiceListener.on('ack', () => {
+    voiceArbiter?.say({ text: 'ok', priority: 1, kind: 'ack' });
+    voiceListener?.ignoreSpeech(700);
+  });
+  voiceListener.on('barge', () => voiceArbiter?.flush());
+  voiceListener.on('cancelled', (payload) => {
+    if (payload?.stopSpeaking) voiceArbiter?.flush();
+  });
+  voiceListener.on('utterance', ({ text }) => {
+    voiceArbiter?.noteUserTurn();
+    onVoiceUtterance(text);
+  });
   voiceState = 'sleeping';
   createMicWindow();
 }
 
 function stopVoice() {
+  voiceArbiter?.flush();
+  voiceArbiter = null;
   voiceListener?.close();
   voiceListener = null;
   if (micWindow && !micWindow.isDestroyed()) micWindow.destroy();

@@ -73,7 +73,7 @@ export function createListener({ worker, now = Date.now, tickMs = 100, timings }
   timer.unref?.();
 
   listener.feed = (samples) => worker.postMessage({ type: 'chunk', samples });
-  for (const name of ['speakingStarted', 'speakingEnded', 'mute', 'meeting', 'dictation', 'cancel', 'wake']) {
+  for (const name of ['speakingStarted', 'speakingEnded', 'mute', 'meeting', 'dictation', 'cancel', 'wake', 'ignoreSpeech']) {
     listener[name] = (...args) => {
       machine[name](...args);
       sync();

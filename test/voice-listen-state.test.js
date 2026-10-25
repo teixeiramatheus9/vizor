@@ -129,6 +129,21 @@ describe('listen state', () => {
     expect(names()).toEqual(['sleep']);
   });
 
+  it('ignores its own "ok" echoing back into the mic during the grace window', () => {
+    const { machine, events, advance } = setup();
+    machine.wake();
+    machine.speechStart();
+    machine.speechEnd();
+    machine.partial('abre o pty-host');
+    advance(400);
+    machine.ignoreSpeech(700);
+    advance(100);
+    machine.speechStart();
+    machine.speechEnd();
+    advance(1400);
+    expect(events.at(-1)).toEqual(['utterance', { text: 'abre o pty-host' }]);
+  });
+
   it('"para" while listening cancels and asks to stop speaking', () => {
     const { machine, events, advance } = setup();
     machine.wake();

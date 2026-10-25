@@ -117,6 +117,27 @@ describe('speak', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('tells when the line was said, failed or was cut (#161)', () => {
+    const played = recorder();
+    let done = 0;
+    speak('oi', { voice: 'faber', spawnFn: played.spawnFn, installed: true, onDone: () => done++ });
+    played.children[0].emit('exit', 0, null);
+    expect(done).toBe(0);
+    played.children[1].emit('exit', 0, null);
+    expect(done).toBe(1);
+
+    const cut = recorder();
+    speak('oi', { voice: 'faber', spawnFn: cut.spawnFn, installed: true, onDone: () => done++ });
+    stopSpeaking();
+    cut.children[0].emit('exit', null, 'SIGKILL');
+    expect(done).toBe(2);
+
+    const system = recorder();
+    speak('oi', { voice: 'santa', spawnFn: system.spawnFn, installed: false, ensureFn: () => {}, onDone: () => done++ });
+    system.children[0].emit('exit', 0, null);
+    expect(done).toBe(3);
+  });
+
   it('exposes the sid only for santa', () => {
     const { calls, spawnFn } = recorder();
     speakNeural('olá', 'santa', spawnFn);
