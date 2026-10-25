@@ -109,3 +109,37 @@ describe('validateEditedRule (review I7)', () => {
     expect(validateEditedRule(draft, { kind: 'agent', explain: 'só instrução', match: [] })).toMatchObject({ kind: 'agent', match: [] });
   });
 });
+
+describe('regexes the guard could hang on (#165)', () => {
+  const RISKY = ['(a+)+$', '(a*)*b', '(\\w+\\s?)*$', '(?:x+){2,}', '(.*a){12}', '((ab)+c)+', '([a-z]+)*@'];
+  const SAFE = [
+    '\\bkubectl\\b.*\\bdelete\\b',
+    '^git\\s+push\\s+.*--force',
+    '(ab)+',
+    '(?:push|merge)\\s+origin',
+    '^mcp__.*__execute_sql$',
+    '(a+)?b',
+    '[(+*]+x',
+    '\\(a+\\)+',
+    'a{2,3}',
+  ];
+
+  it('nested quantifiers and overlong patterns are refused; ordinary ones pass', async () => {
+    const { isRiskyRegex } = await import('../src/main/rules-compiler.js');
+    for (const pattern of RISKY) expect([pattern, isRiskyRegex(pattern)]).toEqual([pattern, true]);
+    for (const pattern of SAFE) expect([pattern, isRiskyRegex(pattern)]).toEqual([pattern, false]);
+    expect(isRiskyRegex('a'.repeat(501))).toBe(true);
+  });
+
+  it('a compiled check with one never reaches the guard, and an edit with one is refused', async () => {
+    const { validateEditedRule } = await import('../src/main/rules-compiler.js');
+    const [rule] = parseCompilerOutput(
+      JSON.stringify([{ kind: 'forbid', irreversible: false, explain: 'x', match: [{ type: 'command', pattern: '(a+)+$' }] }]),
+      LINES.slice(0, 1),
+      'global',
+    );
+    expect(rule.kind).toBe('agent');
+    const draft = { id: 'x1', source: 'linha', kind: 'forbid', irreversible: true, explain: 'e', match: [] };
+    expect(validateEditedRule(draft, { kind: 'forbid', explain: 'x', match: [{ type: 'tool', pattern: '(\\w+_?)*$' }] })).toBeNull();
+  });
+});

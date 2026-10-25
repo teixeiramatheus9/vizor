@@ -44,10 +44,75 @@ export function buildCompilerPrompt({ lines, scope }) {
   ].join('\n');
 }
 
+// The guard runs approved regexes synchronously on every guarded call, and
+// JavaScript has no match timeout: a catastrophic pattern would hang the hook
+// (and Claude Code with it) until its 600 s timeout. The classic culprit is a
+// repeated group that itself repeats — (a+)+, (\w+\s?)*, (.*x){12} — so those
+// are refused here, before anyone can approve them, along with patterns too
+// long to read (#165). A refused check leaves the line as an agent rule.
+const MAX_PATTERN_CHARS = 500;
+
+// Length of a quantifier starting at `index` and whether it repeats (more
+// than once); 0 = no quantifier there.
+function quantifierAt(pattern, index) {
+  const char = pattern[index];
+  let length = 0;
+  let repeats = false;
+  if (char === '*' || char === '+') [length, repeats] = [1, true];
+  else if (char === '?') [length, repeats] = [1, false];
+  else if (char === '{') {
+    const braces = /^\{(\d+)(,(\d*))?\}/.exec(pattern.slice(index));
+    if (!braces) return { length: 0, repeats: false };
+    const [whole, min, comma, max] = braces;
+    length = whole.length;
+    repeats = comma ? max === '' || Number(max) > 1 : Number(min) > 1;
+  }
+  if (length && pattern[index + length] === '?') length += 1; // lazy
+  return { length, repeats };
+}
+
+export function isRiskyRegex(pattern) {
+  const text = String(pattern);
+  if (text.length > MAX_PATTERN_CHARS) return true;
+  const groups = [{ repeatsInside: false }];
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    let atomEnd = index;
+    if (char === '\\') atomEnd = index + 1;
+    else if (char === '[') {
+      atomEnd = index + 1;
+      if (text[atomEnd] === '^') atomEnd++;
+      if (text[atomEnd] === ']') atomEnd++;
+      while (atomEnd < text.length && text[atomEnd] !== ']') atomEnd += text[atomEnd] === '\\' ? 2 : 1;
+    } else if (char === '(') {
+      groups.push({ repeatsInside: false });
+      // (?: (?= (?! (?<= (?<! (?<name> — the ? there is no quantifier.
+      if (text[index + 1] === '?') {
+        index += 2;
+        if (text[index] === '<' && text[index + 1] !== '=' && text[index + 1] !== '!') index = text.indexOf('>', index);
+        else if (text[index] === '<') index += 1;
+      }
+      continue;
+    } else if (char === ')') {
+      const group = groups.length > 1 ? groups.pop() : { repeatsInside: false };
+      const quantifier = quantifierAt(text, index + 1);
+      if (quantifier.repeats && group.repeatsInside) return true;
+      const parent = groups[groups.length - 1];
+      parent.repeatsInside ||= group.repeatsInside || quantifier.repeats;
+      index += quantifier.length;
+      continue;
+    } else if (char === '|' || char === '^' || char === '$') continue;
+    const quantifier = quantifierAt(text, atomEnd + 1);
+    if (quantifier.repeats) groups[groups.length - 1].repeatsInside = true;
+    index = atomEnd + quantifier.length;
+  }
+  return false;
+}
+
 function validRegex(pattern) {
   try {
     new RegExp(String(pattern), 'i');
-    return typeof pattern === 'string' && pattern.length > 0;
+    return typeof pattern === 'string' && pattern.length > 0 && !isRiskyRegex(pattern);
   } catch {
     return false;
   }
