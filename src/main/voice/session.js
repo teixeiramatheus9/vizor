@@ -2,6 +2,7 @@ import { routeUtterance } from './commands.js';
 import { analyzeReply, createReplyCursor, needsSummary, spokenReply } from './replies.js';
 import { createNarrator } from './narration.js';
 import { closestPhrase } from './vocabulary.js';
+import { findMusicians } from '../maestro/orchestra.js';
 
 // The voice conversation (#161): who the voice talks to (the gerente or one
 // chat), what each utterance does, and what comes back spoken. Every side
@@ -36,6 +37,23 @@ const LINES = {
     done: 'Terminei.',
     chatClosed: (number) => `O chat ${number ? `da ${number}` : 'ligado'} fechou; voltei pro gerente.`,
     thinking: ['Tô dando uma olhada aqui.', 'Só um momento.', 'Conferindo.', 'Deixa eu ver.'],
+    // The Maestro (#159).
+    musicianOrdinals: ['o primeiro', 'o segundo', 'o terceiro', 'o quarto', 'o quinto'],
+    noMusician: (number) => `Não achei músico na ${number}.`,
+    musicians: (count, number, list) => `Tem ${count} músicos na ${number}: ${list}. Qual?`,
+    interrupted: (number) => `Interrompi a ${number}.`,
+    interruptFailed: (number) => `Não consegui interromper a ${number}.`,
+    focused: (number) => `Foco na ${number}.`,
+    maestroOn: 'Modo Maestro ativado.',
+    maestroOff: 'Modo Maestro desativado.',
+    cancelled: 'Cancelado.',
+    order: {
+      interrupt: (number) => `interromper a ${number}`,
+      prompt: (number, text) => `mandar pra ${number ?? 'o chat'}: ${text}`,
+      resume: (number) => `retomar a ${number}`,
+      newChat: (number) => `abrir um chat novo pra ${number}`,
+      guard: { liberar: 'liberar', 'liberar-sessao': 'liberar nesta sessão', barrar: 'barrar' },
+    },
   },
   en: {
     guard: { liberar: 'Allowed.', 'liberar-sessao': 'Allowed for this session.', barrar: 'Blocked.' },
@@ -62,6 +80,15 @@ const LINES = {
     done: 'Done.',
     chatClosed: (number) => `The ${number ? `chat for ${number}` : 'bound chat'} closed; back to the manager.`,
     thinking: ['Let me take a look.', 'One moment.', 'Checking.', 'Let me see.'],
+    musicianOrdinals: ['the first', 'the second', 'the third', 'the fourth', 'the fifth'],
+    noMusician: (number) => `No músico on ${number}.`,
+    musicians: (count, number, list) => `There are ${count} músicos on ${number}: ${list}. Which one?`,
+    interrupted: (number) => `Stopped ${number}.`,
+    interruptFailed: (number) => `I couldn't stop ${number}.`,
+    focused: (number) => `Focus on ${number}.`,
+    maestroOn: 'Maestro mode on.',
+    maestroOff: 'Maestro mode off.',
+    cancelled: 'Cancelled.',
   },
 };
 
@@ -84,7 +111,7 @@ export function createVoiceSession(deps) {
   let pendingAsk = false;
   let lastHeard = null;
   let lastHeardAt = -Infinity;
-  let pendingChoice = null; // { number, candidates } after "achei 2 conversas"
+  let pendingChoice = null; // { kind, number, candidates } after "achei 2 conversas" or "tem 2 músicos"
   let queuedPrompt = null;
   const now = deps.now ?? Date.now;
   const CORRECTION_WINDOW_MS = 15000;
@@ -131,7 +158,7 @@ export function createVoiceSession(deps) {
     }
     if (found.candidates) {
       const candidates = found.candidates.slice(0, MAX_CANDIDATES);
-      pendingChoice = { number, candidates };
+      pendingChoice = { kind: 'resume', number, candidates };
       deps.showLines(candidates.map((item, index) => `${index + 1}. ${item.title}`));
       const list = candidates.map((item, index) => `${lines().ordinals[index]}, ${item.title}`).join('; ');
       say(lines().candidates(candidates.length, number, list));
@@ -141,6 +168,40 @@ export function createVoiceSession(deps) {
     say(lines().noChat(number));
   }
 
+  // The Maestro: an order that changes work is shown as understood and held a
+  // few seconds; off the Maestro it runs at once. The labels are on screen,
+  // so they stay pt-BR whatever the voice speaks.
+  const ORDER = LINES.pt.order;
+  const held = (label, run) => {
+    const go = () => Promise.resolve().then(run).catch((error) => deps.onError?.(error));
+    if (deps.maestro?.() && deps.pendingOrder) deps.pendingOrder.hold({ label }, go);
+    else return go();
+    return undefined;
+  };
+  const numberOfSession = (sessionId) => (deps.orchestra?.() ?? []).find((musician) => musician.sessionId === sessionId)?.number ?? null;
+
+  function interruptMusician(musician) {
+    return held(ORDER.interrupt(musician.number), () =>
+      say(deps.interrupt(musician.ptyId) ? lines().interrupted(musician.number) : lines().interruptFailed(musician.number)),
+    );
+  }
+
+  function focusMusician(musician) {
+    deps.focus(musician.sessionId);
+    say(lines().focused(musician.number));
+  }
+
+  // "interrompa a task 22" / "vai pra 22": none says so, two asks which.
+  function onMusicians(kind, number, run) {
+    const found = findMusicians(deps.orchestra?.() ?? [], number);
+    if (!found.length) return say(lines().noMusician(number));
+    if (found.length === 1) return run(found[0]);
+    const candidates = found.slice(0, MAX_CANDIDATES);
+    pendingChoice = { kind, number, candidates };
+    const list = candidates.map((item, index) => `${lines().musicianOrdinals[index]}, ${item.label}`).join('; ');
+    return say(lines().musicians(candidates.length, number, list));
+  }
+
   async function confirm(yes) {
     const pending = pendingConfirm;
     pendingConfirm = null;
@@ -148,21 +209,24 @@ export function createVoiceSession(deps) {
       say(lines().okay);
       return;
     }
-    if (pending.kind === 'new-chat') {
-      const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
-      if (!opened?.sessionId) {
-        say(lines().newChatFailed);
-        return;
-      }
-      deps.linkTask(pending.number, opened.sessionId);
-      bind(opened.sessionId, pending.number);
-      say(lines().newChat(pending.number));
-    } else if (pending.kind === 'learn') {
+    if (pending.kind === 'new-chat') return held(ORDER.newChat(pending.number), () => openNewChat(pending));
+    if (pending.kind === 'learn') {
       deps.learn({ heard: pending.heard, meant: pending.meant });
       say(lines().saved);
     } else if (pending.kind === 'intent') {
       await act(pending.intent, '');
     }
+  }
+
+  async function openNewChat(pending) {
+    const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
+    if (!opened?.sessionId) {
+      say(lines().newChatFailed);
+      return;
+    }
+    deps.linkTask(pending.number, opened.sessionId);
+    bind(opened.sessionId, pending.number);
+    say(lines().newChat(pending.number));
   }
 
   async function act(intent, raw) {
@@ -175,14 +239,27 @@ export function createVoiceSession(deps) {
         return;
       }
       case 'resume-task':
-        return resumeTask(intent.number);
+        return held(ORDER.resume(intent.number), () => resumeTask(intent.number));
       case 'choose': {
         const choice = pendingChoice?.candidates[intent.index - 1];
         if (!choice) return say(lines().noOption);
-        const { number } = pendingChoice;
+        const { kind, number } = pendingChoice;
         pendingChoice = null;
+        if (kind === 'interrupt') return interruptMusician(choice);
+        if (kind === 'focus') return focusMusician(choice);
         return openFound(number, choice);
       }
+      case 'interrupt':
+        return onMusicians('interrupt', intent.number, interruptMusician);
+      case 'focus':
+        return onMusicians('focus', intent.number, focusMusician);
+      case 'maestro':
+        deps.setMaestro?.(intent.on);
+        return say(intent.on ? lines().maestroOn : lines().maestroOff);
+      case 'order':
+        if (intent.action === 'now') return deps.pendingOrder?.runNow();
+        deps.pendingOrder?.cancel();
+        return say(lines().cancelled);
       case 'talk-to-chat': {
         const sessionId = deps.findChat(intent.query);
         if (!sessionId) return say(lines().noSuchChat);
@@ -203,8 +280,9 @@ export function createVoiceSession(deps) {
         return deps.flushSpeech();
       case 'guard':
         pendingAsk = false;
-        if (deps.answerGuard(intent.choice)) say(lines().guard[intent.choice]);
-        return;
+        return held(ORDER.guard[intent.choice], () => {
+          if (deps.answerGuard(intent.choice)) say(lines().guard[intent.choice]);
+        });
       case 'dictate':
         deps.dictation(true);
         return say(lines().dictate);
@@ -217,13 +295,18 @@ export function createVoiceSession(deps) {
         return say(lines().learnAsk(heard, intent.meant));
       }
       case 'prompt': {
-        const outcome = await deps.deliverPrompt(target.sessionId, intent.text);
-        if (outcome === 'hold') {
-          queuedPrompt = intent.text;
-          return say(lines().hold);
-        }
-        if (outcome !== 'sent') say(lines().sendFailed);
-        return;
+        const sessionId = target.sessionId;
+        const text = intent.text;
+        const preview = text.length > 80 ? `${text.slice(0, 80).replace(/\s+\S*$/, '')}…` : text;
+        return held(ORDER.prompt(numberOfSession(sessionId), preview), async () => {
+          const outcome = await deps.deliverPrompt(sessionId, text);
+          if (outcome === 'hold') {
+            queuedPrompt = text;
+            return say(lines().hold);
+          }
+          if (outcome !== 'sent') say(lines().sendFailed);
+          return undefined;
+        });
       }
       case 'ask-manager': {
         if (deps.economy()) return say(lines().economy);
@@ -249,6 +332,7 @@ export function createVoiceSession(deps) {
         hasLastReply: Boolean(cursor),
         pendingConfirm: Boolean(pendingConfirm),
         pendingChoice: Boolean(pendingChoice),
+        pendingOrder: Boolean(deps.pendingOrder?.pending()),
         canCorrect: Boolean(lastHeard) && now() - lastHeardAt < CORRECTION_WINDOW_MS,
       });
       // Only the wake word ("Vizor" … and a pause): nothing to do yet.
@@ -258,6 +342,8 @@ export function createVoiceSession(deps) {
       }
       if (intent.type !== 'confirm' && intent.type !== 'correct') pendingConfirm = null;
       if (intent.type !== 'choose' && intent.type !== 'resume-task') pendingChoice = null;
+      // Anything said while an order waits replaces it: never both.
+      if (intent.type !== 'order' && deps.pendingOrder?.pending()) deps.pendingOrder.cancel();
       await act(intent, heard);
       if (intent.type !== 'correct' && intent.type !== 'confirm') {
         lastHeard = heard;

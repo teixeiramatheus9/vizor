@@ -296,3 +296,127 @@ describe('voice session — a short line while the AI thinks (live test: the ans
     expect(economy.said.map((item) => item.kind ?? null)).toEqual([null]);
   });
 });
+
+describe('voice session — Maestro', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const musician = (sessionId, number, ptyId = `p-${sessionId}`) => ({ sessionId, number, ptyId, label: `chat ${sessionId}`, status: 'working', color: '#fff', files: [] });
+
+  // A real pending order on a fake timer: fire() lets the 3 s run out.
+  function maestro(overrides = {}) {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const interrupted = [];
+    const focused = [];
+    const modes = [];
+    const scene = setup({
+      maestro: () => true,
+      setMaestro: (on) => modes.push(on),
+      orchestra: () => [musician('s22', 22), musician('s2', 2)],
+      interrupt: (ptyId) => (interrupted.push(ptyId), true),
+      focus: (sessionId) => focused.push(sessionId),
+      pendingOrder,
+      ...overrides,
+    });
+    return { ...scene, pendingOrder, interrupted, focused, modes, fire: () => timer?.() };
+  }
+
+  it('interrompa a task 22: held, then Esc to that músico only', async () => {
+    const { session, interrupted, pendingOrder, fire, texts } = maestro();
+    await session.onUtterance('Vizor, interrompa a task 22');
+    expect(interrupted).toEqual([]);
+    expect(pendingOrder.pending().label).toBe('interromper a 22');
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(interrupted).toEqual(['p-s22']);
+    expect(texts().at(-1)).toBe('Interrompi a 22.');
+  });
+
+  it('in English the voice says it in English', async () => {
+    const { session, fire, texts } = maestro({ lang: () => 'en' });
+    await session.onUtterance('interrompa a task 22');
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(texts().at(-1)).toBe('Stopped 22.');
+  });
+
+  it('interrupt a task with no músico, or one outside the Vizor: says so, writes nothing', async () => {
+    const { session, interrupted, pendingOrder, texts } = maestro();
+    await session.onUtterance('interrompa a task 40');
+    expect(texts().at(-1)).toBe('Não achei músico na 40.');
+    expect(pendingOrder.pending()).toBeNull();
+    expect(interrupted).toEqual([]);
+    const english = maestro({ lang: () => 'en' });
+    await english.session.onUtterance('interrompa a task 40');
+    expect(english.texts().at(-1)).toBe('No músico on 40.');
+  });
+
+  it('two músicos on one number: asks which', async () => {
+    const { session, interrupted, fire, texts } = maestro({ orchestra: () => [musician('a', 22), musician('b', 22)] });
+    await session.onUtterance('interrompa a task 22');
+    expect(texts().at(-1)).toBe('Tem 2 músicos na 22: o primeiro, chat a; o segundo, chat b. Qual?');
+    await session.onUtterance('o segundo');
+    fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(interrupted).toEqual(['p-b']);
+  });
+
+  it('focus is immediate, never held', async () => {
+    const { session, focused, pendingOrder } = maestro();
+    await session.onUtterance('vai pra 2');
+    expect(focused).toEqual(['s2']);
+    expect(pendingOrder.pending()).toBeNull();
+  });
+
+  it('a prompt to the bound músico is held while the Maestro is on, sent at once when it is off', async () => {
+    const on = maestro();
+    await on.session.onUtterance('retoma a task 22');
+    on.fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await on.session.onUtterance('roda os testes de novo');
+    expect(on.calls.filter(([name]) => name === 'deliver')).toEqual([]);
+    expect(on.pendingOrder.pending().label).toBe('mandar pra 22: roda os testes de novo');
+    on.fire();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(on.calls).toContainEqual(['deliver', 's22', 'roda os testes de novo']);
+
+    const off = maestro({ maestro: () => false });
+    await off.session.onUtterance('retoma a task 22');
+    await off.session.onUtterance('roda os testes de novo');
+    expect(off.calls).toContainEqual(['deliver', 's22', 'roda os testes de novo']);
+  });
+
+  it('cancela drops the held order; manda runs it now', async () => {
+    const { session, interrupted, pendingOrder } = maestro();
+    await session.onUtterance('interrompa a task 22');
+    await session.onUtterance('cancela');
+    expect(pendingOrder.pending()).toBeNull();
+    expect(interrupted).toEqual([]);
+    await session.onUtterance('interrompa a task 22');
+    await session.onUtterance('manda');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(interrupted).toEqual(['p-s22']);
+  });
+
+  it('another utterance during the window cancels the held order first', async () => {
+    const { session, interrupted, pendingOrder, focused, fire } = maestro();
+    await session.onUtterance('interrompa a task 22');
+    await session.onUtterance('vai pra 2');
+    expect(pendingOrder.pending()).toBeNull();
+    fire();
+    expect(interrupted).toEqual([]);
+    expect(focused).toEqual(['s2']);
+  });
+
+  it('ative o modo Maestro / desative o modo Maestro', async () => {
+    const { session, modes, texts } = maestro({ maestro: () => false });
+    await session.onUtterance('Vizor, ative o modo Maestro');
+    expect(modes).toEqual([true]);
+    expect(texts().at(-1)).toBe('Modo Maestro ativado.');
+    await session.onUtterance('desative o modo maestro');
+    expect(modes).toEqual([true, false]);
+    expect(texts().at(-1)).toBe('Modo Maestro desativado.');
+    const english = maestro({ lang: () => 'en' });
+    await english.session.onUtterance('ative o modo maestro');
+    expect(english.texts().at(-1)).toBe('Maestro mode on.');
+  });
+});
