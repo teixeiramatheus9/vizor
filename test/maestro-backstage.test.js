@@ -27,20 +27,51 @@ describe('the backstage of a músico', () => {
     expect(backstage.backgroundOf('s1')).toEqual([]);
   });
 
-  it('a background Bash run is picked up with its id and output file', () => {
-    const event = {
-      hook_event_name: 'PostToolUse',
-      session_id: 's1',
-      tool_name: 'Bash',
-      tool_input: { command: 'npm run dev', run_in_background: true },
-      tool_output_tail: 'Command running in background with ID: bxk2a. Output is being written to: /tmp/claude-1000/x/tasks/bxk2a.output',
-    };
-    expect(parseBackground(event)).toEqual({ id: 'bxk2a', command: 'npm run dev', outputFile: '/tmp/claude-1000/x/tasks/bxk2a.output' });
-    expect(parseBackground({ ...event, tool_input: { command: 'ls' } })).toBeNull();
-    const backstage = createBackstage();
-    backstage.onEvent(event);
-    backstage.onEvent(event); // the same run once
-    expect(backstage.backgroundOf('s1')).toEqual([{ id: 'bxk2a', command: 'npm run dev', outputFile: '/tmp/claude-1000/x/tasks/bxk2a.output' }]);
+  // The real shape (review C1): the hook only carries backgroundTaskId; the
+  // output path is built by the Vizor, never read from the event (review I1).
+  const background = {
+    hook_event_name: 'PostToolUse',
+    session_id: 's1',
+    cwd: '/home/u/vizor',
+    tool_name: 'Bash',
+    tool_input: { command: 'npm run dev', run_in_background: true },
+    background_task_id: 'bfn73e9dt',
+  };
+  const tmpRoot = '/tmp/claude-1000';
+
+  it('a background Bash run is picked up from its task id, the output path built by the Vizor', () => {
+    expect(parseBackground(background, { tmpRoot })).toEqual({
+      id: 'bfn73e9dt',
+      command: 'npm run dev',
+      outputFile: '/tmp/claude-1000/-home-u-vizor/s1/tasks/bfn73e9dt.output',
+    });
+    expect(parseBackground({ ...background, tool_input: { command: 'ls' } }, { tmpRoot })).toBeNull();
+    const backstage = createBackstage({ tmpRoot });
+    backstage.onEvent(background);
+    backstage.onEvent(background); // the same run once
+    expect(backstage.backgroundOf('s1')).toHaveLength(1);
+  });
+
+  it('a path inside the event is never trusted, nor an odd task id', () => {
+    const crafted = { ...background, background_task_id: undefined, tool_output_tail: 'Output is being written to: /home/u/.ssh/id_rsa' };
+    expect(parseBackground(crafted, { tmpRoot })).toBeNull();
+    expect(parseBackground({ ...background, background_task_id: '../../.ssh/id_rsa' }, { tmpRoot })).toBeNull();
+    expect(parseBackground({ ...background, session_id: '../x' }, { tmpRoot })).toBeNull();
+  });
+
+  it('only the 8 newest background runs are kept', () => {
+    const backstage = createBackstage({ tmpRoot });
+    for (let index = 0; index < 12; index++) backstage.onEvent({ ...background, background_task_id: `t${index}` });
+    expect(backstage.backgroundOf('s1').map((item) => item.id)).toEqual(['t4', 't5', 't6', 't7', 't8', 't9', 't10', 't11']);
+  });
+
+  it('a Task that never started (denied) does not shift the next descriptions: the queue clears at the end of the turn', () => {
+    const backstage = createBackstage({ tmpRoot });
+    backstage.onEvent(pre({ tool_name: 'Task', tool_input: { description: 'denied one' } }));
+    backstage.onEvent({ hook_event_name: 'Stop', session_id: 's1' });
+    backstage.onEvent(pre({ tool_name: 'Task', tool_input: { description: 'real one' } }));
+    backstage.onEvent({ hook_event_name: 'SubagentStart', session_id: 's1', agent_id: 'ag9', agent_type: 'x' });
+    expect(backstage.subagentsOf('s1')[0].description).toBe('real one');
   });
 
   it("listeners are parsed, and only the músico's process tree counts", () => {

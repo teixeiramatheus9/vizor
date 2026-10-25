@@ -105,7 +105,13 @@ function backstageDetail(backstage, open) {
     return backstage.background
       .map(
         (item) =>
-          `<div class="backstage-item"><b>$ ${escapeHtml(item.command)}</b>${item.gone ? ' <span class="backstage-state">terminado</span>' : ''}<pre class="backstage-log">${item.lines
+          `<div class="backstage-item"><b>$ ${cleanLogLine(item.command)}</b>${
+            item.gone
+              ? ' <span class="backstage-state">terminado</span>'
+              : item.idleSeconds > 60
+                ? ` <span class="backstage-state">parado há ${Math.round(item.idleSeconds / 60)} min</span>`
+                : ''
+          }<pre class="backstage-log">${item.lines
             .map(cleanLogLine)
             .join('\n')}</pre></div>`,
       )

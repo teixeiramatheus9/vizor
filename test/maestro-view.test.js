@@ -114,7 +114,7 @@ describe('the backstage on the stage (#142)', async () => {
       { id: 'ag1', type: 'code-reviewer', description: 'Review the diff', running: true, files: ['/r/src/a.js'], lastTool: 'Read' },
       { id: 'ag2', type: 'Explore', description: 'Find usages', running: false, files: [], lastTool: 'Grep' },
     ],
-    background: [{ id: 'b1', command: 'npm run dev', lines: ['VITE ready', 'Local: http://localhost:5173/'], gone: false }],
+    background: [{ id: 'b1', command: 'npm run dev', lines: ['VITE ready', 'Local: http://localhost:5173/'], gone: false, idleSeconds: 3 }],
     ports: [{ port: 5173, process: 'node' }],
   };
 
@@ -145,5 +145,15 @@ describe('the backstage on the stage (#142)', async () => {
   it('nothing backstage, nothing drawn', () => {
     expect(renderBackstage({ subagents: [], background: [], ports: [] }, null)).toBe('');
     expect(renderBackstage(null, null)).toBe('');
+  });
+});
+
+describe('a background command gone quiet (review I4)', async () => {
+  const { renderBackstage } = await import('../src/renderer/maestro-view.js');
+  it('a log idle for more than a minute shows how long it has been quiet', () => {
+    const html = renderBackstage({ subagents: [], ports: [], background: [{ id: 'b', command: 'npm test', lines: ['done'], gone: false, idleSeconds: 125 }] }, 'background');
+    expect(html).toContain('parado há 2 min');
+    const fresh = renderBackstage({ subagents: [], ports: [], background: [{ id: 'b', command: 'npm run dev', lines: ['x'], gone: false, idleSeconds: 10 }] }, 'background');
+    expect(fresh).not.toContain('parado');
   });
 });

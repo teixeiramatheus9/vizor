@@ -70,6 +70,9 @@ function slimToolEvent(event) {
   if (response?.type === 'create' || response?.type === 'update')
     rest.tool_response_type = response.type;
   // The voice narration only needs to know how a command ended ("3 failed").
+  // A background run (#142): only its task id, the app finds the log itself.
+  if (rest.tool_name === 'Bash' && typeof response?.backgroundTaskId === 'string' && /^[A-Za-z0-9_-]+$/.test(response.backgroundTaskId))
+    rest.background_task_id = response.backgroundTaskId;
   if (rest.tool_name === 'Bash' && response && typeof response === 'object') {
     const output = `${response.stdout ?? ''}\n${response.stderr ?? ''}`.trim();
     if (output) rest.tool_output_tail = output.slice(-300);

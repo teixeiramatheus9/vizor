@@ -3,18 +3,27 @@
 // run_in_background writes its output to a file) and the ports its process
 // tree listens on. Pure: index.js feeds the events, the `ss` text and the
 // process parents.
-const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+import path from 'node:path';
+import { flattenProjectName } from '../cc-sessions.js';
 
-export function parseBackground(event) {
+const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+const MAX_BACKGROUND = 8;
+
+// The hook carries only the task id; the log is where Claude Code keeps it,
+// <tmp>/claude-<uid>/<flattened cwd>/<session>/tasks/<id>.output. The path is
+// built here and never read from the event: a path in tool output could
+// point anywhere, ~/.ssh included (review C1, I1).
+export function parseBackground(event, { tmpRoot } = {}) {
   if (event?.tool_name !== 'Bash' || event.hook_event_name !== 'PostToolUse' || !event.tool_input?.run_in_background) return null;
-  const tail = String(event.tool_output_tail ?? '');
-  const file = tail.match(/Output is being written to: (\S+?)\.?$/m);
-  if (!file) return null;
-  const id = tail.match(/background with ID: (\S+?)[.\s]/)?.[1] ?? file[1];
-  return { id, command: String(event.tool_input.command ?? ''), outputFile: file[1] };
+  const id = event.background_task_id;
+  const sessionId = event.session_id;
+  if (!tmpRoot || !event.cwd || typeof id !== 'string' || !SAFE_ID.test(id) || typeof sessionId !== 'string' || !SAFE_ID.test(sessionId)) return null;
+  const outputFile = path.join(tmpRoot, flattenProjectName(event.cwd), sessionId, 'tasks', `${id}.output`);
+  return { id, command: String(event.tool_input.command ?? '').slice(0, 300), outputFile };
 }
 
-export function createBackstage() {
+export function createBackstage({ tmpRoot = null } = {}) {
   const sessions = new Map(); // sessionId → { agents: Map, order: [], pending: [], background: Map }
   const of = (sessionId) => {
     if (!sessions.has(sessionId)) sessions.set(sessionId, { agents: new Map(), order: [], pending: [], background: new Map() });
@@ -26,6 +35,12 @@ export function createBackstage() {
       const sessionId = event?.session_id;
       if (!sessionId) return;
       const phase = event.hook_event_name;
+      // A Task that never started (denied) must not shift the next names: the
+      // queue of descriptions lives one turn (review I3).
+      if (phase === 'Stop' || phase === 'UserPromptSubmit') {
+        if (sessions.has(sessionId)) sessions.get(sessionId).pending = [];
+        return;
+      }
       // The parent's Task/Agent call comes first: its description names the next sub-agent.
       if (phase === 'PreToolUse' && !event.agent_id && (event.tool_name === 'Task' || event.tool_name === 'Agent')) {
         of(sessionId).pending.push(String(event.tool_input?.description ?? '').trim());
@@ -58,8 +73,12 @@ export function createBackstage() {
         if (FILE_TOOLS.has(event.tool_name) && file && !agent.files.includes(file)) agent.files.push(file);
         return;
       }
-      const background = parseBackground(event);
-      if (background) of(sessionId).background.set(background.id, background);
+      const background = parseBackground(event, { tmpRoot });
+      if (!background) return;
+      const runs = of(sessionId).background;
+      runs.delete(background.id);
+      runs.set(background.id, background);
+      while (runs.size > MAX_BACKGROUND) runs.delete(runs.keys().next().value);
     },
 
     subagentsOf(sessionId) {

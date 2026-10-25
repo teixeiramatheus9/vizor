@@ -744,8 +744,9 @@ function maestroTurnEnded(musician) {
 }
 
 // --- the backstage (#142): sub-agents, background logs, ports, per músico ---
-const backstage = createBackstage();
-const backstageLogs = new Map(); // output file → { lines, gone }
+// Claude Code keeps background logs under <tmp>/claude-<uid> (TMPDIR honoured).
+const backstage = createBackstage({ tmpRoot: path.join(os.tmpdir(), `claude-${process.getuid?.() ?? ''}`) });
+const backstageLogs = new Map(); // output file → { lines, gone, idleSeconds }
 const backstagePorts = new Map(); // sessionId → [{ port, process }]
 let backstageTimers = null;
 
@@ -755,7 +756,9 @@ async function refreshBackstageLogs() {
     for (const item of backstage.backgroundOf(musician.sessionId)) {
       const tail = await readTail(item.outputFile);
       const before = JSON.stringify(backstageLogs.get(item.outputFile));
-      backstageLogs.set(item.outputFile, { lines: tail.lines, gone: tail.gone });
+      // Quiet time in whole minutes: the stage redraws when it moves a minute, not every 2 s.
+      const idleSeconds = tail.mtimeMs ? Math.floor((Date.now() - tail.mtimeMs) / 60000) * 60 : 0;
+      backstageLogs.set(item.outputFile, { lines: tail.lines, gone: tail.gone, idleSeconds });
       changed ||= before !== JSON.stringify(backstageLogs.get(item.outputFile));
     }
   if (changed) pushWorkspaceState();
@@ -778,7 +781,8 @@ async function refreshBackstagePorts() {
   const parents = listeners.length ? await readParents() : new Map();
   let changed = false;
   for (const musician of maestroOrchestra) {
-    const pid = readSessionPid(musician.sessionId);
+    // No listener anywhere: no músico has a port, nothing to look up.
+    const pid = listeners.length ? readSessionPid(musician.sessionId) : null;
     const ports = pid && listeners.length ? portsFor(listeners, descendantsOf(pid, parents)) : [];
     changed ||= JSON.stringify(ports) !== JSON.stringify(backstagePorts.get(musician.sessionId) ?? []);
     backstagePorts.set(musician.sessionId, ports);
@@ -802,7 +806,11 @@ function syncBackstageTimers() {
 function backstageOf(sessionId) {
   return {
     subagents: backstage.subagentsOf(sessionId),
-    background: backstage.backgroundOf(sessionId).map((item) => ({ id: item.id, command: item.command, ...(backstageLogs.get(item.outputFile) ?? { lines: [], gone: false }) })),
+    background: backstage.backgroundOf(sessionId).map((item) => ({
+      id: item.id,
+      command: item.command,
+      ...(backstageLogs.get(item.outputFile) ?? { lines: [], gone: false, idleSeconds: 0 }),
+    })),
     ports: backstagePorts.get(sessionId) ?? [],
   };
 }
@@ -2591,7 +2599,8 @@ function verifiedTerm(event) {
 }
 
 function onHookEvent(event, reply) {
-  backstage.onEvent(event);
+  // Only while the Maestro is on: off, nothing would ever forget it (review I2).
+  if (maestroOn()) backstage.onEvent(event);
   // Sub-agent starts and stops are the backstage's only (#142).
   if (event?.hook_event_name === 'SubagentStart' || event?.hook_event_name === 'SubagentStop') return;
   if (event?.type === 'guard-ask' || event?.type === 'guard-event') {
