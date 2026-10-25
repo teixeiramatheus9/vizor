@@ -70,7 +70,9 @@ Toda ordem que mexe em trabalho aparece como "entendi: …" e espera 3 s, pra
 você dizer "cancela" se ele entendeu errado. À direita, o **grafo** do projeto
 (JS/TS): as pastas e seus arquivos; aproxime (roda do mouse ou clique) e o
 arquivo se abre nas funções. Cada músico acende o que mexeu e o que planejou
-mexer, na cor dele.
+mexer, na cor dele. O gerente guarda ordens ("quando a 22 terminar, roda os
+testes e abre a PR", com até duas tentativas de correção) e chama um avaliador
+quando a mudança é grande ou mexe em algo crítico.
 
 Com uma voz em inglês, o Vizor **fala em inglês** — recados, modo voz, resumos,
 narração — e você continua falando com ele em português. A interface segue em
