@@ -50,6 +50,9 @@ function render() {
     loadedText = scope.markdown;
   }
   $('review').innerHTML = renderReview(scope);
+  if (scope.compiling) say('O gerente está traduzindo as linhas novas…');
+  else if (scope.compileError) say(COMPILE_ERRORS[scope.compileError] ?? scope.compileError);
+  else if ($('message').textContent.startsWith('O gerente está traduzindo')) say('Pronto: revise as traduções abaixo.');
   $('history').innerHTML = renderHistory(state.history);
 }
 
@@ -66,7 +69,7 @@ $('save').addEventListener('click', async () => {
   const text = $('editor').value;
   state = await window.rules.save(current, text);
   loadedText = text;
-  say('Salvo. Linhas novas ou mudadas ficam esperando revisão.');
+  say('Salvo. O gerente está traduzindo as linhas novas…');
   render();
 });
 
@@ -121,7 +124,7 @@ $('review').addEventListener('click', async (event) => {
       }
     }
     state = await window.rules.approve(current, id, rule);
-    say('');
+    say(state.error ? 'Essa edição não vira uma trava válida — confira os tipos e campos.' : '');
     render();
   } else if (action === 'discard') {
     state = await window.rules.discard(current, id);

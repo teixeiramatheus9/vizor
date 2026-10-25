@@ -19,12 +19,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
-import { guardCommand } from './guard-runtime.js';
+import { guardCommand, installGuardScript } from './guard-runtime.js';
 import { createGuardAsks } from './guard-asks.js';
 import { createRulesStore } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
-import { compileRules } from './rules-compiler.js';
+import { compileRules, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
@@ -2828,20 +2828,9 @@ function findNodeOnPath() {
 }
 
 function copyGuardScript() {
-  const source = path.join(currentDir, '..', 'hook', 'rule-guard.js');
-  const target = path.join(guardDir, 'rule-guard.js');
-  const content = fs.readFileSync(source, 'utf8');
-  let current = null;
-  try {
-    current = fs.readFileSync(target, 'utf8');
-  } catch {
-    // first install
-  }
-  if (current === content) return target;
-  fs.mkdirSync(guardDir, { recursive: true });
-  const tmp = `${target}.tmp`;
-  fs.writeFileSync(tmp, content);
-  fs.renameSync(tmp, target);
+  const target = installGuardScript({ source: path.join(currentDir, '..', 'hook', 'rule-guard.js'), dir: guardDir });
+  // The .js copy of the first builds is never run again.
+  fs.rmSync(path.join(guardDir, 'rule-guard.js'), { force: true });
   return target;
 }
 
@@ -2944,11 +2933,43 @@ async function rulesRootOf(cwd) {
 function syncRulesScope(scope) {
   const markdown = readRulesFile(scope);
   if (markdown === null && scope !== 'global' && !rulesStore.snapshot().repos[scope]) return;
-  const text = markdown ?? '';
-  if (rulesSynced.get(scope) === text) return;
-  rulesSynced.set(scope, text);
+  if (rulesSynced.get(scope) === markdown) return;
+  rulesSynced.set(scope, markdown);
   if (scope !== 'global' && markdown !== null) rulesStore.markSeenRepo(scope);
-  rulesStore.syncFile(scope, text);
+  rulesStore.syncFile(scope, scope === 'global' ? (markdown ?? '') : markdown);
+}
+
+// Spec §5: a save, or an outside edit of a file already trusted, compiles
+// the new lines on its own. A repo file that came with a clone waits for the
+// user's first compile in the window.
+const rulesCompiling = new Set();
+const rulesCompileStatus = new Map(); // scope → error code of the last try
+
+function trustedScope(scope) {
+  return scope === 'global' || Boolean(rulesStore.snapshot().repos[scope]?.compiled);
+}
+
+async function autoCompile(scope, { force = false } = {}) {
+  if (rulesCompiling.has(scope) || (!force && !trustedScope(scope))) return;
+  const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+  const drafted = new Set((view?.drafts ?? []).map((draft) => draft.source));
+  const fresh = (view?.pending ?? []).filter((line) => !drafted.has(line));
+  const lines = fresh.length || !force ? fresh : (view?.pending ?? []);
+  if (lines.length === 0) return;
+  rulesCompiling.add(scope);
+  rulesCompileStatus.delete(scope);
+  notifyRulesChanged();
+  try {
+    const result = await compileRules({ lines, scope, budget: tokenBudget, budgetDaily: managerConfig.tokenBudgetDaily });
+    if (result.error) rulesCompileStatus.set(scope, result.error);
+    else rulesStore.setDrafts(scope, result.drafts);
+  } catch (error) {
+    log(`rules compile failed: ${error}`);
+    rulesCompileStatus.set(scope, 'sem-claude');
+  } finally {
+    rulesCompiling.delete(scope);
+    notifyRulesChanged();
+  }
 }
 
 async function ruleScopeKeys() {
@@ -2978,6 +2999,7 @@ function watchRulesDirs(keys) {
           for (const key of keys) syncRulesScope(key);
           syncGuardHook();
           notifyRulesChanged();
+          for (const key of keys) autoCompile(key);
         }, 500);
       });
       watcher.on('error', () => rulesWatchers.delete(dir));
@@ -3007,6 +3029,8 @@ async function rulesState() {
       // A project the user starts from the window is theirs; only a file that
       // arrived with the repo waits for a first compile.
       compiled: markdown === null || view.compiled,
+      compiling: rulesCompiling.has(key),
+      compileError: rulesCompileStatus.get(key) ?? null,
     };
   });
   return { status: guardStatus(), scopes, history: rulesStore.recentHistory(50) };
@@ -3065,7 +3089,8 @@ ipcMain.handle('rules:save', async (event, { scope, markdown } = {}) => {
   if (scope !== 'global') rulesStore.markSeenRepo(scope);
   syncRulesScope(scope);
   syncGuardHook();
-  notifyRulesChanged();
+  // Saved from the window: the user's own text, so it compiles right away.
+  autoCompile(scope, { force: true });
   return rulesState();
 });
 
@@ -3087,7 +3112,13 @@ ipcMain.handle('rules:compile', async (event, { scope } = {}) => {
 
 ipcMain.handle('rules:approve', async (event, { scope, ruleId, edited = null } = {}) => {
   if (!fromRules(event) || !validScope(scope)) return rulesState();
-  const clean = edited && typeof edited === 'object' ? edited : null;
+  let clean = null;
+  if (edited) {
+    const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+    const draft = view?.drafts.find((candidate) => candidate.id === ruleId);
+    clean = draft ? validateEditedRule(draft, edited) : null;
+    if (!clean) return { ...(await rulesState()), error: 'edicao-invalida' };
+  }
   rulesStore.approve(scope, ruleId, clean);
   syncGuardHook();
   notifyRulesChanged();
@@ -3117,6 +3148,21 @@ ipcMain.handle('rules:set-enabled', async (event, enabled) => {
   notifyRulesChanged();
   return fromRules(event) ? rulesState() : guardStatus();
 });
+
+let rulesRefreshTimer = null;
+function refreshRuleWatches() {
+  clearTimeout(rulesRefreshTimer);
+  rulesRefreshTimer = setTimeout(async () => {
+    try {
+      const keys = await ruleScopeKeys();
+      for (const key of keys) syncRulesScope(key);
+      watchRulesDirs(keys);
+      syncGuardHook();
+    } catch (error) {
+      log(`rules refresh failed: ${error}`);
+    }
+  }, 2000);
+}
 
 function bootSyncRules() {
   for (const scope of ['global', ...Object.keys(rulesStore.snapshot().repos)]) {
@@ -3243,6 +3289,8 @@ app.whenReady().then(() => {
   registry.on('change', forgetRemovedSessions);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
+  registry.on('change', refreshRuleWatches);
+  refreshRuleWatches();
   registry.on('change', scheduleTabsSave);
   restoreWorkspaceTabs();
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);

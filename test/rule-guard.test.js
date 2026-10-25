@@ -208,3 +208,32 @@ describe('rule-guard script', () => {
     expect(result).toEqual({ code: 0, stdout: '' });
   });
 });
+
+describe('rule-guard script entrypoints (I9)', () => {
+  let home;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'vzguard-'));
+    const dir = path.join(home, '.config', 'vizor', 'regras');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'compiladas.json'), JSON.stringify({ version: 1, global: [PROD], repos: {} }));
+  });
+  afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  function decisionWith(entrypoint) {
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, [GUARD], {
+        env: { PATH: process.env.PATH, HOME: home, VIZOR_SOCKET: path.join(home, 'none.sock'), CLAUDE_CODE_ENTRYPOINT: entrypoint },
+      });
+      let stdout = '';
+      child.stdout.on('data', (chunk) => (stdout += chunk));
+      child.on('close', () => resolve(JSON.parse(stdout).hookSpecificOutput.permissionDecision));
+      child.stdin.end(JSON.stringify({ ...preTool('echo prod'), cwd: home }));
+    });
+  }
+
+  it('only sdk entrypoints count as headless; IDE extensions keep the permission prompt', async () => {
+    expect(await decisionWith('claude-vscode')).toBe('ask');
+    expect(await decisionWith('sdk-cli')).toBe('deny');
+    expect(await decisionWith('sdk-ts')).toBe('deny');
+  });
+});

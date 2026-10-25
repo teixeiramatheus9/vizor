@@ -86,3 +86,26 @@ describe('compileRules', () => {
     expect(spent).toBe(42);
   });
 });
+
+describe('validateEditedRule (review I7)', () => {
+  const draft = { id: 'x1', source: 'linha', kind: 'forbid', irreversible: true, explain: 'e', match: [{ type: 'sql', statements: ['DROP'] }] };
+
+  it('keeps a valid edit, with the draft id and source', async () => {
+    const { validateEditedRule } = await import('../src/main/rules-compiler.js');
+    const edited = validateEditedRule(draft, { kind: 'ask', irreversible: false, explain: 'pergunta', match: [{ type: 'keyword', words: ['prod'] }] });
+    expect(edited).toMatchObject({ id: 'x1', source: 'linha', kind: 'ask', match: [{ type: 'keyword', words: ['prod'] }] });
+  });
+
+  it('rejects an edit that would silently stop locking', async () => {
+    const { validateEditedRule } = await import('../src/main/rules-compiler.js');
+    expect(validateEditedRule(draft, { kind: 'forbid', explain: 'x', match: [{ type: 'comand', pattern: 'rm' }] })).toBeNull();
+    expect(validateEditedRule(draft, { kind: 'talvez', match: [] })).toBeNull();
+    expect(validateEditedRule(draft, { kind: 'forbid', explain: 42, match: { type: 'sql' } })).toBeNull();
+    expect(validateEditedRule(draft, null)).toBeNull();
+  });
+
+  it('an agent rule edit stays an agent rule', async () => {
+    const { validateEditedRule } = await import('../src/main/rules-compiler.js');
+    expect(validateEditedRule(draft, { kind: 'agent', explain: 'só instrução', match: [] })).toMatchObject({ kind: 'agent', match: [] });
+  });
+});

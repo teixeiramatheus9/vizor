@@ -109,4 +109,30 @@ describe('rules store', () => {
     expect(store.recentHistory(3).map((item) => item.at)).toEqual([204, 203, 202]);
     expect(store.recentHistory(500)).toHaveLength(200);
   });
+
+  it('boots from the previous copy when compiladas.json is corrupt, and never overwrites it with the bad file (I6)', () => {
+    const { fs } = setup();
+    const good = fs.files['/d/compiladas.json'];
+    fs.files['/d/compiladas.anterior.json'] = good;
+    fs.files['/d/compiladas.json'] = '{corrupt';
+    const again = createRulesStore({ dir: '/d', ...fs });
+    expect(again.snapshot().global.approved).toHaveLength(3);
+    again.syncFile('global', MD + '- regra d\n');
+    again.setDrafts('global', [draft('regra d')]);
+    again.approve('global', 'id-regra d');
+    expect(compiled(fs).global).toHaveLength(4);
+    expect(JSON.parse(fs.files['/d/compiladas.anterior.json']).global).toHaveLength(3);
+  });
+
+  it('a repo file that went missing (branch switch) keeps its approvals (I8)', () => {
+    const fs = memoryFs();
+    const store = createRulesStore({ dir: '/d', ...fs });
+    store.markSeenRepo('/repo');
+    store.syncFile('/repo', '- regra r\n');
+    store.setDrafts('/repo', [draft('regra r')]);
+    store.approve('/repo', 'id-regra r');
+    store.syncFile('/repo', null);
+    expect(compiled(fs).repos['/repo']).toHaveLength(1);
+    expect(store.snapshot().repos['/repo'].approved).toHaveLength(1);
+  });
 });

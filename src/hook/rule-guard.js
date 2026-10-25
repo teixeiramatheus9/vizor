@@ -12,10 +12,28 @@ import { pathToFileURL } from 'node:url';
 
 // --- Evaluator (pure) -------------------------------------------------------
 
-const SEPARATORS = ['&&', '||', ';', '|', '\n'];
-const WRAPPERS = new Set(['sudo', 'env', 'nohup', 'time', 'exec', 'command']);
+const SEPARATORS = ['&&', '||', ';', '|&', '|', '&', '\n'];
+// Wrappers that run the rest of the line; the value-taking options of each.
+const WRAPPERS = new Map([
+  ['sudo', new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-U'])],
+  ['env', new Set(['-u', '-C', '-S'])],
+  ['nohup', new Set()],
+  ['time', new Set()],
+  ['exec', new Set(['-a'])],
+  ['command', new Set()],
+  ['nice', new Set(['-n'])],
+  ['ionice', new Set(['-c', '-n'])],
+  ['timeout', new Set(['-s', '-k'])],
+  ['xargs', new Set(['-n', '-I', '-P', '-L', '-d', '-s', '-E', '-a'])],
+  ['stdbuf', new Set(['-i', '-o', '-e'])],
+]);
+// A wrapper's own positional argument before the command (timeout 60 …).
+const WRAPPER_POSITIONAL = new Set(['timeout']);
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', '}', '(', ')']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash']);
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const REDIRECTION = /^(?:\d*|&)(?:>>?|<<?<?|>&|<&)/;
+const BARE_REDIRECTION = /^(?:\d*|&)(?:>>?|<<?|>\||<>)$/;
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 // Words of a shell segment with their offsets in it, quotes removed.
@@ -45,7 +63,23 @@ function words(text) {
   return result;
 }
 
-// Top-level split on && || ; | and newlines, quotes respected.
+// Redirections (2>&1, > /tmp/log, <in) are not arguments.
+function withoutRedirections(tokens) {
+  const kept = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const text = tokens[index].text ?? tokens[index];
+    if (BARE_REDIRECTION.test(text)) {
+      index++; // the file that follows
+      continue;
+    }
+    if (REDIRECTION.test(text)) continue;
+    kept.push(tokens[index]);
+  }
+  return kept;
+}
+
+// Top-level split on && || ; | & and newlines, quotes respected; `>&`, `&>`
+// and `2>&1` are redirections, not separators.
 function splitTopLevel(command) {
   const parts = [];
   let start = 0;
@@ -65,6 +99,7 @@ function splitTopLevel(command) {
       index++;
       continue;
     }
+    if (char === '&' && (command[index - 1] === '>' || command[index - 1] === '<' || command[index + 1] === '>')) continue;
     const separator = SEPARATORS.find((candidate) => command.startsWith(candidate, index));
     if (separator) {
       parts.push(command.slice(start, index));
@@ -76,23 +111,80 @@ function splitTopLevel(command) {
   return parts.map((part) => part.trim()).filter(Boolean);
 }
 
-export function splitCommand(command) {
-  if (typeof command !== 'string') return [];
-  const segments = [];
-  for (const part of splitTopLevel(command)) {
-    const tokens = words(part);
-    let first = 0;
-    while (first < tokens.length) {
-      const token = tokens[first].text;
-      if (WRAPPERS.has(token) || ASSIGNMENT.test(token)) first++;
-      else if (first > 0 && WRAPPERS.has(tokens[first - 1].text) && token.startsWith('-')) first++;
-      else break;
+// $(…) and `…` run too, even inside double quotes (not inside single ones).
+function substitutions(command) {
+  const found = [];
+  let quote = null;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
     }
-    if (first >= tokens.length) continue;
-    const rest = tokens.slice(first);
+    if (char === '\\') {
+      index++;
+      continue;
+    }
+    if (char === "'" && !quote) quote = "'";
+    else if (char === '"') quote = quote === '"' ? null : '"';
+    else if (char === '`') {
+      const close = command.indexOf('`', index + 1);
+      if (close === -1) break;
+      found.push(command.slice(index + 1, close));
+      index = close;
+    } else if (char === '$' && command[index + 1] === '(' && command[index + 2] !== '(') {
+      let depth = 0;
+      let close = -1;
+      for (let inner = index + 1; inner < command.length; inner++) {
+        if (command[inner] === '(') depth++;
+        else if (command[inner] === ')' && --depth === 0) {
+          close = inner;
+          break;
+        }
+      }
+      if (close === -1) break;
+      found.push(command.slice(index + 2, close));
+      index = close;
+    }
+  }
+  return found;
+}
+
+function unwrap(tokens) {
+  let first = 0;
+  while (first < tokens.length) {
+    const token = tokens[first].text;
+    if (KEYWORDS.has(token) || ASSIGNMENT.test(token)) {
+      first++;
+      continue;
+    }
+    const options = WRAPPERS.get(token);
+    if (!options) break;
+    first++;
+    while (first < tokens.length && tokens[first].text.startsWith('-')) {
+      first += options.has(tokens[first].text) ? 2 : 1;
+    }
+    if (WRAPPER_POSITIONAL.has(token)) first++;
+  }
+  return tokens.slice(first);
+}
+
+export function splitCommand(command, depth = 0) {
+  if (typeof command !== 'string' || depth > 4) return [];
+  const segments = [];
+  for (const inner of substitutions(command)) segments.push(...splitCommand(inner, depth + 1));
+  for (const raw of splitTopLevel(command)) {
+    // Subshells and groups: ( … ) and { …; }
+    const part = raw.replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '').trim();
+    const rest = unwrap(words(part));
+    if (rest.length === 0) continue;
     const dashC = rest.findIndex((token) => token.text === '-c');
     if (SHELLS.has(rest[0].text) && dashC > 0 && rest[dashC + 1]) {
-      segments.push(...splitCommand(rest[dashC + 1].text));
+      segments.push(...splitCommand(rest[dashC + 1].text, depth + 1));
+      continue;
+    }
+    if (rest[0].text === 'eval') {
+      segments.push(...splitCommand(rest.slice(1).map((token) => token.text).join(' '), depth + 1));
       continue;
     }
     segments.push(part.slice(rest[0].start).trim());
@@ -104,10 +196,13 @@ function branchName(ref) {
   return ref.replace(/^\+/, '').replace(/^refs\/heads\//, '');
 }
 
+// target: the branch named (null = the current one); targets: every branch a
+// multi-refspec push names; unknown: the branch cannot be read from the line
+// ($var, --all, gh pr merge) — a guard that is unsure asks.
 export function parseGitAction(segment) {
-  const tokens = words(segment).map((token) => token.text);
+  const tokens = withoutRedirections(words(segment)).map((token) => token.text);
   if (tokens[0] === 'gh' && tokens[1] === 'pr' && tokens[2] === 'merge')
-    return { action: 'pr-merge', target: null, force: false };
+    return { action: 'pr-merge', target: null, targets: [], force: false, unknown: true };
   if (tokens[0] !== 'git') return null;
   let index = 1;
   // Global options before the subcommand (-C dir, -c key=value).
@@ -117,20 +212,29 @@ export function parseGitAction(segment) {
   const sub = tokens[index];
   const args = tokens.slice(index + 1);
   const positional = args.filter((arg) => !arg.startsWith('-'));
+  const base = { targets: [], force: false, unknown: false };
   if (sub === 'push') {
     const force = args.some((arg) => arg === '-f' || arg === '--force' || arg.startsWith('--force-with-lease'));
-    const refspec = positional.length > 1 ? positional[positional.length - 1] : null;
-    if (!refspec) return { action: 'push', target: null, force };
-    const destination = refspec.includes(':') ? refspec.split(':').pop() : refspec;
-    const plusForced = refspec.startsWith('+');
-    const target = destination === 'HEAD' ? null : branchName(destination);
-    return { action: 'push', target, force: force || plusForced };
+    const refspecs = positional.slice(1);
+    const everything = args.some((arg) => arg === '--all' || arg === '--mirror' || arg === '--branches');
+    const unknown = everything || refspecs.some((ref) => /[$`*]/.test(ref));
+    const targets = refspecs.map((ref) => {
+      const destination = ref.includes(':') ? ref.split(':').pop() : ref;
+      return destination === 'HEAD' ? null : branchName(destination);
+    });
+    return {
+      action: 'push',
+      target: targets[0] ?? null,
+      targets,
+      force: force || refspecs.some((ref) => ref.startsWith('+')),
+      unknown,
+    };
   }
-  if (sub === 'merge') return { action: 'merge', target: null, force: false };
-  if (sub === 'commit') return { action: 'commit', target: null, force: false };
-  if (sub === 'reset' && args.includes('--hard')) return { action: 'reset-hard', target: null, force: false };
+  if (sub === 'merge') return { ...base, action: 'merge', target: null };
+  if (sub === 'commit') return { ...base, action: 'commit', target: null };
+  if (sub === 'reset' && args.includes('--hard')) return { ...base, action: 'reset-hard', target: null };
   if (sub === 'branch' && args.some((arg) => arg === '-D' || arg === '-d' || arg === '--delete'))
-    return { action: 'branch-delete', target: positional[0] ?? null, force: args.includes('-D') };
+    return { ...base, action: 'branch-delete', target: positional[0] ?? null, force: args.includes('-D') };
   return null;
 }
 
@@ -154,7 +258,8 @@ function escapeRegex(text) {
 function wholeWords(list) {
   const alternatives = list.filter((word) => typeof word === 'string' && word).map(escapeRegex);
   if (alternatives.length === 0) return null;
-  return regex(`(?<![\\p{L}\\p{N}_])(?:${alternatives.join('|')})(?![\\p{L}\\p{N}_])`, 'iu');
+  // `_` is a boundary on purpose: DB_PROD and PROD_URL name prod too.
+  return regex(`(?<![\\p{L}\\p{N}])(?:${alternatives.join('|')})(?![\\p{L}\\p{N}])`, 'iu');
 }
 
 function deepStrings(value, out = []) {
@@ -181,21 +286,43 @@ function keywordTexts(call) {
   return [];
 }
 
+// Searching for or committing about a statement is not running it.
+const SQL_QUIET_PROGRAMS = new Set(['grep', 'egrep', 'rg', 'ag', 'ack', 'git']);
+const DB_TOOL = /sql|query|database|(^|_)db(_|$)|postgres|mysql|maria|supabase|mongo|redis|sqlite|neon|planetscale|prisma|bigquery|snowflake/i;
+
 function sqlTexts(call) {
-  if (call.tool === 'Bash') return [call.input?.command ?? ''];
+  if (call.tool === 'Bash')
+    return splitCommand(call.input?.command).filter((segment) => !SQL_QUIET_PROGRAMS.has(words(segment)[0]?.text));
   if (EDIT_TOOLS.has(call.tool)) return /\.sql$/i.test(editPath(call.input)) ? writtenTexts(call.input) : [];
-  if (call.tool?.startsWith('mcp__')) return deepStrings(call.input);
+  if (call.tool?.startsWith('mcp__') && DB_TOOL.test(call.tool)) return deepStrings(call.input);
   return [];
+}
+
+// A statement, not the word: DROP TABLE x, TRUNCATE users — never "drop it".
+const SQL_SHAPES = {
+  DROP: 'DROP\\s+(?:TABLE|DATABASE|SCHEMA|VIEW|INDEX|COLUMN|USER|ROLE|TABLESPACE|SEQUENCE|FUNCTION|TRIGGER|TYPE|EXTENSION|MATERIALIZED|CONSTRAINT|IF\\s+EXISTS)',
+  TRUNCATE: 'TRUNCATE\\s+(?:TABLE\\s+)?[\\w"`.]',
+  DELETE: 'DELETE\\s+FROM',
+};
+
+function sqlPattern(statements) {
+  const shapes = statements
+    .filter((statement) => typeof statement === 'string' && statement)
+    .map((statement) => SQL_SHAPES[statement.toUpperCase()] ?? `${escapeRegex(statement)}\\s+[\\w"\`.]`);
+  return shapes.length ? regex(`\\b(?:${shapes.join('|')})\\b`, 'i') : null;
 }
 
 // Unknown facts count as matching: a guard that is unsure asks.
 function gitTargetMatches(match, parsed, git) {
-  const defaultBranch = git?.defaultBranch ?? 'main';
-  const branch = parsed.target ?? (parsed.action === 'pr-merge' ? null : (git?.currentBranch ?? null));
   if (match.target === 'any' || match.target === undefined) return true;
   if (match.target === 'others') return git?.ownBranch !== true;
-  const wanted = match.target === 'default' ? defaultBranch : match.target;
-  return branch === null || branch === wanted;
+  if (parsed.unknown) return true;
+  const wanted = match.target === 'default' ? (git?.defaultBranch ?? 'main') : match.target;
+  const named = parsed.targets.length ? parsed.targets : [parsed.target];
+  return named.some((target) => {
+    const branch = target ?? git?.currentBranch ?? null;
+    return branch === null || branch === wanted;
+  });
 }
 
 function matchHits(match, call, git) {
@@ -223,7 +350,7 @@ function matchHits(match, call, git) {
       return Boolean(pattern) && keywordTexts(call).some((text) => pattern.test(text));
     }
     case 'sql': {
-      const pattern = wholeWords(match.statements ?? []);
+      const pattern = sqlPattern(match.statements ?? []);
       return Boolean(pattern) && sqlTexts(call).some((text) => pattern.test(text));
     }
     default:
@@ -511,7 +638,9 @@ async function main(raw) {
       gitContext: () => gitContextOf(event.cwd),
       ask: (request) => askVizor(request, waitMs),
       notify: tellVizor,
-      headless: Boolean(entrypoint) && entrypoint !== 'cli',
+      // claude -p and the Agent SDK (sdk-*) have nobody to ask; IDE
+      // extensions do.
+      headless: Boolean(entrypoint?.startsWith('sdk')),
     });
   }
   const context = contextFor({ event, rules, repoRoot, seenVersion: readSeen(event.session_id) });

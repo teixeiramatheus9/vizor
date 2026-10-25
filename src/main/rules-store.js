@@ -24,7 +24,11 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
     rename(`${target}.tmp`, target);
   }
 
-  const compiledFile = readJson('compiladas.json', {});
+  // Same fallback as the guard's loadRules: a corrupt file must not boot the
+  // store empty (the next approve would then drop every earlier one).
+  const parsesAsRules = (value) => value && typeof value === 'object' && Array.isArray(value.global);
+  const mainCompiled = readJson('compiladas.json', null);
+  const compiledFile = parsesAsRules(mainCompiled) ? mainCompiled : (readJson('compiladas.anterior.json', null) ?? {});
   const draftsFile = readJson('rascunhos.json', {});
   let version = Number(compiledFile.version) || 0;
   let history = Array.isArray(readJson('historico.json', [])) ? readJson('historico.json', []) : [];
@@ -60,9 +64,10 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
     for (const [key, scope] of scopes) if (key !== 'global' && scope.compiled) repos[key] = scope.approved;
     try {
       const previous = readFile(file('compiladas.json'));
-      writeAtomic('compiladas.anterior.json', previous);
+      // Only a good copy is worth keeping as the guard's fallback.
+      if (parsesAsRules(JSON.parse(previous))) writeAtomic('compiladas.anterior.json', previous);
     } catch {
-      // first compile: nothing to keep
+      // first compile, or a corrupt file: keep the fallback we have
     }
     writeAtomic('compiladas.json', JSON.stringify({ version, global: scopeOf('global').approved, repos }, null, 2));
   }
@@ -83,7 +88,10 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
       return { version, global: view(scopeOf('global')), repos };
     },
 
+    // null = the file is gone. A repo's rules stay as they were (a branch
+    // switch must not cost a recompile); the global file counts as empty.
     syncFile(key, markdown) {
+      if (markdown === null && key !== 'global') return pendingOf(scopeOf(key));
       const scope = scopeOf(key);
       const lines = ruleLines(markdown);
       const result = diffRules({ lines, approved: scope.approved, drafts: scope.drafts });

@@ -58,14 +58,14 @@ describe('splitCommand', () => {
 
 describe('parseGitAction', () => {
   it('reads the push destination from the refspec', () => {
-    expect(parseGitAction('git push origin HEAD:main')).toEqual({ action: 'push', target: 'main', force: false });
-    expect(parseGitAction('git push -f origin main')).toEqual({ action: 'push', target: 'main', force: true });
-    expect(parseGitAction('git push')).toEqual({ action: 'push', target: null, force: false });
-    expect(parseGitAction('git push -u origin feat/x')).toEqual({ action: 'push', target: 'feat/x', force: false });
+    expect(parseGitAction('git push origin HEAD:main')).toMatchObject({ action: 'push', target: 'main', force: false });
+    expect(parseGitAction('git push -f origin main')).toMatchObject({ action: 'push', target: 'main', force: true });
+    expect(parseGitAction('git push')).toMatchObject({ action: 'push', target: null, force: false });
+    expect(parseGitAction('git push -u origin feat/x')).toMatchObject({ action: 'push', target: 'feat/x', force: false });
   });
 
   it('knows gh pr merge, reset --hard and branch -D', () => {
-    expect(parseGitAction('gh pr merge 141 --merge')).toEqual({ action: 'pr-merge', target: null, force: false });
+    expect(parseGitAction('gh pr merge 141 --merge')).toMatchObject({ action: 'pr-merge', target: null, force: false });
     expect(parseGitAction('git reset --hard HEAD~1')?.action).toBe('reset-hard');
     expect(parseGitAction('git branch -D velha')?.action).toBe('branch-delete');
     expect(parseGitAction('git log maintenance')).toBeNull();
@@ -148,5 +148,51 @@ describe('evaluate', () => {
     const rules = [{ id: 't', source: 'z', kind: 'ask', irreversible: false, explain: '', match: [{ type: 'tool', pattern: '^mcp__.*__deploy$' }] }];
     expect(hit({ tool: 'mcp__vercel__deploy', input: {} }, onFeature, rules)).toBe('t');
     expect(hit(bash('ls'), onFeature, rules)).toBeNull();
+  });
+});
+
+describe('final review fixes', () => {
+  it('redirections and a trailing & do not hide the push target (C1)', () => {
+    for (const command of [
+      'git push origin main 2>&1',
+      'git push origin main 2>&1 | tail -5',
+      'git push origin main > /tmp/log',
+      'git push origin main &',
+    ])
+      expect(hit(bash(command)), command).toBe('main');
+  });
+
+  it('loops, conditionals, groups, wrappers and substitutions still count (I2)', () => {
+    for (const command of [
+      'for b in main; do git push origin $b; done',
+      'if true; then git push origin main; fi',
+      '{ git push origin main; }',
+      '(git push origin main)',
+      'sleep 1 & git push origin main',
+      'timeout 60 git push origin main',
+      'nice -n 5 git push origin main',
+      'sudo -u me git push origin main',
+      'echo $(git push origin main)',
+      'echo `git push origin main`',
+      'eval "git push origin main"',
+      'git push origin main feature',
+    ])
+      expect(hit(bash(command)), command).toBe('main');
+    expect(hit(bash('git push --all'))).toBe('main');
+  });
+
+  it('DROP only counts as a statement, and never in a commit message, a search or a chat tool (I3)', () => {
+    for (const command of ['git commit -m "drop unused import"', 'cat drop.sql', 'grep -rn "DROP TABLE" migrations/'])
+      expect(hit(bash(command)), command).toBeNull();
+    expect(hit({ tool: 'mcp__slack__send_message', input: { text: 'we can drop table x later' } })).toBeNull();
+    expect(hit(bash('psql -c "DROP TABLE users"'))).toBe('drop');
+    expect(hit(bash('echo "drop database app" | psql'))).toBe('drop');
+    expect(hit({ tool: 'mcp__postgres__query', input: { sql: 'truncate t' } })).toBe('drop');
+  });
+
+  it('an underscore is a word boundary for keywords, so DB_PROD counts', () => {
+    expect(hit(bash('echo $DB_PROD'))).toBe('prod');
+    expect(hit(bash('PROD_URL=x ./deploy.sh'))).toBe('prod');
+    expect(hit(bash('cat product.md'))).toBeNull();
   });
 });

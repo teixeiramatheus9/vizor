@@ -119,3 +119,17 @@ export async function compileRules({ lines, scope, run = runClaude, budget, budg
   const drafts = parseCompilerOutput(result.text, lines, scope);
   return drafts ? { drafts } : { error: 'resposta-invalida' };
 }
+
+// The rules window's "editar": the user's JSON goes through the same cleaning
+// as the compiler's. An edit that would quietly stop locking (a typo in a
+// type, a bad kind) is refused instead of shown as "proibido".
+export function validateEditedRule(draft, edited) {
+  if (!edited || typeof edited !== 'object' || Array.isArray(edited)) return null;
+  if (!KINDS.has(edited.kind)) return null;
+  if (edited.explain !== undefined && typeof edited.explain !== 'string') return null;
+  if (edited.kind !== 'agent' && !Array.isArray(edited.match)) return null;
+  const rule = { ...cleanRule(edited, draft.source, 'edit'), id: draft.id };
+  if (edited.kind !== 'agent' && rule.kind === 'agent') return null;
+  if (edited.kind !== 'agent' && rule.match.length !== edited.match.length) return null;
+  return rule;
+}

@@ -30,3 +30,23 @@ describe('guardCommand', () => {
     expect(result.shim.content).toContain('rule-guard.js');
   });
 });
+
+describe('installGuardScript (review I4)', () => {
+  it('copies the guard as .mjs, so it runs where .js means CommonJS', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { execFileSync } = await import('node:child_process');
+    const { installGuardScript } = await import('../src/main/guard-runtime.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vzrt-'));
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+    const dir = path.join(root, 'guard');
+    const source = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'hook', 'rule-guard.js');
+    const target = installGuardScript({ source, dir });
+    expect(target.endsWith('rule-guard.mjs')).toBe(true);
+    expect(installGuardScript({ source, dir })).toBe(target);
+    const out = execFileSync(process.execPath, [target], { input: 'not json', env: { PATH: process.env.PATH, HOME: root } });
+    expect(String(out)).toBe('');
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
