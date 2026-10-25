@@ -236,9 +236,12 @@ const SUPERTONIC_WORDS = [
   [/\bbackend\b/gi, 'béqui-êndi'],
   [/\bfront\b(?!-)/gi, 'fronti'],
   [/\bback\b/gi, 'béqui'],
+  [/\breview\b/gi, 'rêvíu'],
+  [/\btasks\b/gi, 'tésquís'],
+  [/\btask\b/gi, 'tésquí'],
 ];
 const SUPERTONIC_TERMS =
-  'github|prs?|pull requests?|issues?|push|commits?|merge|branch(?:es)?|main|rebase|build|deploy|review|features?|tasks?|bugs?|frontend|backend|front|back|worktrees?|hotfix|ci';
+  'github|prs?|pull requests?|issues?|push|commits?|merge|branch(?:es)?|main|rebase|build|deploy|features?|bugs?|frontend|backend|front|back|worktrees?|hotfix|ci';
 // Supertonic glues "a"/"pra" to the English word after it ("A task" came out
 // as English "a task"); a double space keeps the Portuguese word apart.
 const ARTICLE_BEFORE_TERM = new RegExp(`\\b(a|pra|para) (?=(?:${SUPERTONIC_TERMS})\\b)`, 'gi');

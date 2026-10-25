@@ -257,11 +257,12 @@ describe('dev terms said the way Brazilian devs say them (#161)', () => {
     expect(speakableText('No GitHub tem 2 PRs e 1 PR, e 3 issues.', 'clara')).toBe('No GitHub tem 2 peérris e 1 PR, e 3 issues.');
     expect(speakableText('Dois bugs no frontend e no backend.', 'davi')).toBe('Dois bugs no front-êndi e no béqui-êndi.');
     expect(speakableText('Mexi no front e no back.', 'clara')).toBe('Mexi no fronti e no béqui.');
+    expect(speakableText('Fiz o review de 2 tasks e 1 task.', 'davi')).toBe('Fiz o rêvíu de 2 tésquís e 1 tésquí.');
   });
 
   it('Supertonic: "a" and "pra" before a term stay Portuguese (a double space keeps them apart)', () => {
-    expect(speakableText('A task tem dois bugs.', 'clara')).toBe('A  task tem dois bugs.');
-    expect(speakableText('Abri uma pull request pra review da feature.', 'davi')).toBe('Abri uma pull request pra  review da feature.');
+    expect(speakableText('A feature tem dois bugs.', 'clara')).toBe('A  feature tem dois bugs.');
+    expect(speakableText('Abri uma pull request pra main.', 'davi')).toBe('Abri uma pull request pra  main.');
     expect(speakableText('Vou pra casa e a gente vê.', 'clara')).toBe('Vou pra casa e a gente vê.');
   });
 
