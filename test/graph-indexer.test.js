@@ -96,3 +96,56 @@ describe('createWorkerParser', () => {
     }
   });
 });
+
+describe('the graph indexer, review fixes', () => {
+  it('I2: after an edit only the touched file is read again (no listing, no stat of the rest)', async () => {
+    const { files, parsed, indexer } = project({ 'a.js': 'export function a() {}', 'b.js': 'export function b() {}' });
+    let listed = 0;
+    let stats = 0;
+    const counted = createGraphIndexer({
+      ...indexer.options,
+      listFiles: async () => (listed++, indexer.options.listFiles()),
+      statFile: async (relPath) => (stats++, indexer.options.statFile(relPath)),
+    });
+    await counted.refresh();
+    [listed, stats] = [0, 0];
+    parsed.length = 0;
+    files.set('a.js', { source: 'export function a() {}\nexport function c() {}', mtimeMs: 2 });
+    counted.touch('a.js');
+    await counted.refreshTouched();
+    expect([listed, stats]).toEqual([0, 1]);
+    expect(parsed).toEqual(['a.js']);
+    expect(counted.graph().functions['a.js#c']).toBeDefined();
+  });
+
+  it('M2: a failing build does not stop later refreshes', async () => {
+    let fail = true;
+    const indexer = createGraphIndexer({
+      root: '/p',
+      listFiles: async () => ['a.js'],
+      statFile: async () => ({ mtimeMs: 1, size: 1 }),
+      readFile: async () => '',
+      parse: async (source, relPath) => {
+        if (fail) throw new Error('worker gone');
+        return extractFile(source, relPath);
+      },
+    });
+    await expect(indexer.refresh()).rejects.toThrow('worker gone');
+    fail = false;
+    await indexer.refresh();
+    expect(indexer.graph().modules).toHaveLength(1);
+  });
+});
+
+describe('createWorkerParser, review fixes', () => {
+  it('M1: a dead worker is replaced and parses still answer', async () => {
+    const parser = createWorkerParser();
+    try {
+      await parser.worker().terminate();
+      const extract = await parser.parse('export function again() {}', 'w.js');
+      expect(extract.functions.map((item) => item.name)).toEqual(['<topo>', 'again']);
+    } finally {
+      parser.close();
+    }
+  });
+});

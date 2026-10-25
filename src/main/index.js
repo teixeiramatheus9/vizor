@@ -607,14 +607,16 @@ function graphFor(root) {
   let indexer = graphIndexers.get(root);
   if (!indexer) {
     graphParser ??= createWorkerParser();
+    const parser = graphParser; // this indexer's own: a later Maestro gets a new one
     indexer = createGraphIndexer({
       root,
       listFiles: async () => (await runText('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root })).split('\n').filter(Boolean),
       statFile: (relPath) => fs.promises.stat(path.join(root, relPath)),
       readFile: (relPath) => fs.promises.readFile(path.join(root, relPath), 'utf8'),
-      parse: (source, relPath) => graphParser.parse(source, relPath),
+      parse: (source, relPath) => parser.parse(source, relPath),
     });
     indexer.on('graph', (graph) => {
+      if (graphIndexers.get(root) !== indexer) return; // from before the Maestro went off
       touchCache.clear();
       workspaceWindow?.send('maestro:graph', { root, graph });
       pushWorkspaceState();
@@ -635,7 +637,7 @@ function graphTouched(event) {
   clearTimeout(graphRefreshTimers.get(musician.root));
   graphRefreshTimers.set(
     musician.root,
-    setTimeout(() => indexer.refresh().catch((error) => log(`graph refresh failed: ${error}`)), 500),
+    setTimeout(() => indexer.refreshTouched().catch((error) => log(`graph refresh failed: ${error}`)), 500),
   );
 }
 

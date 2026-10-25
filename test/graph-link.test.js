@@ -68,3 +68,32 @@ describe('linkGraph', () => {
     expect(graph.modules[1].functions).toEqual(['src/main/tts.js#<topo>']);
   });
 });
+
+describe('linkGraph on a big repo (review C1: it blocked the main process for 7 s)', () => {
+  it('3000 files with object-less member calls link in well under a second', () => {
+    const extracts = new Map();
+    for (let file = 0; file < 3000; file++) {
+      const relPath = `src/f${file}.js`;
+      extracts.set(relPath, {
+        functions: [
+          { id: `${relPath}#<topo>`, name: '<topo>', startLine: 1, endLine: 10 },
+          { id: `${relPath}#K.run`, name: 'K.run', startLine: 2, endLine: 5 },
+        ],
+        imports: [],
+        calls: [
+          { from: `${relPath}#K.run`, callee: { kind: 'member', name: 'run' } },
+          { from: `${relPath}#K.run`, callee: { kind: 'member', name: 'other' } },
+        ],
+        error: null,
+      });
+    }
+    const start = Date.now();
+    linkGraph(extracts);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it('this.helper() still resolves to the unique same-file method', () => {
+    const graph = linkGraph(files({ 'k.js': 'class K { a() { this.b(); } b() {} }' }));
+    expect(graph.callEdges).toEqual([{ from: 'k.js#K.a', to: 'k.js#K.b' }]);
+  });
+});

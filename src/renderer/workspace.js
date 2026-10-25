@@ -618,6 +618,9 @@ const asked = new Set();
 let graphView = { scale: 1, x: 0, y: 0, open: null, openedByZoom: false };
 let graphRoot = null;
 let centeredFor = null; // the músico the view was last centered for
+let lastGraphSignature = null;
+const graphStamps = new WeakMap();
+let graphSerial = 0;
 
 window.vizor.onMaestroGraph(({ root, graph }) => {
   graphs.set(root, graph);
@@ -643,14 +646,14 @@ function renderGraphColumn() {
     impactEl.innerHTML = renderImpact(musician);
     return;
   }
+  // Asked once: while the first build runs the answer is null, and the
+  // maestro:graph push brings it (review I1: no request loop meanwhile).
   if (!graphs.has(root) && !asked.has(root)) {
     asked.add(root);
     window.vizor.maestroGraph(root).then((graph) => {
-      asked.delete(root);
-      if (graph) {
-        graphs.set(root, graph);
-        layouts.delete(root);
-      }
+      if (!graph) return;
+      graphs.set(root, graph);
+      layouts.delete(root);
       renderGraphColumn();
     });
   }
@@ -664,8 +667,18 @@ function renderGraphColumn() {
     const node = target && layoutOf(root).modules[target];
     if (node) graphView = { ...graphView, x: 500 - node.x * graphView.scale, y: 500 - node.y * graphView.scale };
   }
+  // Redrawn only when something it shows changed (review I3: a 1.4 MB SVG on
+  // every state push stalls big repos).
+  const signature = [graph ? graphStamp(graph) : 'none', JSON.stringify(impacts), graphView.scale, graphView.x, graphView.y, graphView.open].join('|');
+  if (signature === lastGraphSignature && impactEl.firstChild) return;
+  lastGraphSignature = signature;
   const svg = renderGraph({ graph, layout: layoutOf(root), view: graphView, impacts });
   impactEl.innerHTML = `<div class="maestro-title">área de impacto</div>${svg}${graph?.unavailable ? renderImpact(musician) : ''}`;
+}
+
+function graphStamp(graph) {
+  if (!graphStamps.has(graph)) graphStamps.set(graph, ++graphSerial);
+  return graphStamps.get(graph);
 }
 
 // Pointer position in the drawing's units (the SVG is 1000×1000, "meet").
@@ -712,20 +725,29 @@ impactEl.addEventListener('mousedown', (event) => {
 });
 window.addEventListener('mousemove', (event) => {
   if (!graphDrag) return;
+  // Released outside the window: the drag ends (review M7).
+  if (!(event.buttons & 1)) {
+    graphDrag = null;
+    renderGraphColumn();
+    return;
+  }
   const point = graphPoint(event);
   if (!point) return;
   const dx = point.x - graphDrag.start.x;
   const dy = point.y - graphDrag.start.y;
   if (Math.hypot(dx, dy) > 4) graphDrag.moved = true;
-  if (graphDrag.moved) {
-    graphView = { ...graphDrag.view, x: graphDrag.view.x + dx, y: graphDrag.view.y + dy };
-    renderGraphColumn();
-  }
+  if (!graphDrag.moved) return;
+  graphView = { ...graphDrag.view, x: graphDrag.view.x + dx, y: graphDrag.view.y + dy };
+  // Dragging moves the drawing; it is not drawn again (review I3).
+  impactEl.querySelector('svg.graph > g')?.setAttribute('transform', `translate(${graphView.x} ${graphView.y}) scale(${graphView.scale})`);
 });
 window.addEventListener('mouseup', (event) => {
   const drag = graphDrag;
   graphDrag = null;
+  if (drag?.moved) renderGraphColumn(); // settle the drawing where the drag left it
   if (!drag || drag.moved) return;
+  // A function circle can sit over another file: the element wins (review M6).
+  if (event.target.closest('[data-function]')) return;
   const point = graphPoint(event);
   const layout = graphRoot && layoutOf(graphRoot);
   if (!point || !layout) return;

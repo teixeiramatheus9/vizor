@@ -38,6 +38,17 @@ export function linkGraph(extracts) {
     list.push({ from, to });
   };
   const fnIn = (module, name) => (functions[`${module}#${name}`] ? `${module}#${name}` : null);
+  // Class methods by file and short name, built once: looking them up by
+  // scanning every function per call froze a 3000-file repo for 7 s (review C1).
+  const methods = new Map(); // module → Map(shortName → [fnId])
+  for (const [fnId, fn] of Object.entries(functions)) {
+    const dot = fn.name.lastIndexOf('.');
+    if (dot === -1) continue;
+    if (!methods.has(fn.module)) methods.set(fn.module, new Map());
+    const byName = methods.get(fn.module);
+    const short = fn.name.slice(dot + 1);
+    byName.set(short, [...(byName.get(short) ?? []), fnId]);
+  }
 
   for (const id of ids) {
     const { imports, calls } = extracts.get(id);
@@ -59,8 +70,8 @@ export function linkGraph(extracts) {
         if (via?.imported === '*') to = fnIn(via.module, callee.name);
       } else {
         // this.helper(): a method of a class in the same file, when unique.
-        const methods = Object.keys(functions).filter((fnId) => fnId.startsWith(`${id}#`) && fnId.endsWith(`.${callee.name}`));
-        if (methods.length === 1) [to] = methods;
+        const found = methods.get(id)?.get(callee.name) ?? [];
+        if (found.length === 1) [to] = found;
       }
       if (to) edge(callEdges, from, to);
     }
