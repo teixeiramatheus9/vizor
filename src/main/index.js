@@ -33,6 +33,8 @@ import { createVoiceSession } from './voice/session.js';
 import { createNarrator } from './voice/narration.js';
 import { buildOrchestra, nextFocus } from './maestro/orchestra.js';
 import { createPendingOrder } from './maestro/pending-order.js';
+import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
+import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
@@ -591,6 +593,74 @@ function maestroNarrate(event) {
   const line = narrator.narrate(event);
   if (line) workspaceWindow?.send('maestro:narration', { sessionId: event.session_id, text: line.text });
 }
+
+// The graph of each músico's checkout (#159, part 2): built off the main
+// thread when the Maestro turns on, refreshed after a músico's edit.
+let graphParser = null;
+const graphIndexers = new Map(); // checkout root → indexer
+const graphRefreshTimers = new Map();
+const maestroPlans = new Map(); // sessionId → the plan its "Vizor-plano:" line declared
+const touchCache = new Map(); // memo of touchedFunctions, cleared when a graph changes
+
+function graphFor(root) {
+  if (!root) return null;
+  let indexer = graphIndexers.get(root);
+  if (!indexer) {
+    graphParser ??= createWorkerParser();
+    indexer = createGraphIndexer({
+      root,
+      listFiles: async () => (await runText('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root })).split('\n').filter(Boolean),
+      statFile: (relPath) => fs.promises.stat(path.join(root, relPath)),
+      readFile: (relPath) => fs.promises.readFile(path.join(root, relPath), 'utf8'),
+      parse: (source, relPath) => graphParser.parse(source, relPath),
+    });
+    indexer.on('graph', (graph) => {
+      touchCache.clear();
+      workspaceWindow?.send('maestro:graph', { root, graph });
+      pushWorkspaceState();
+    });
+    graphIndexers.set(root, indexer);
+    indexer.refresh().catch((error) => log(`graph failed for ${root}: ${error}`));
+  }
+  return indexer;
+}
+
+// A músico's edit: that file is parsed again, at most every 0.5 s per checkout.
+function graphTouched(event) {
+  const musician = maestroOrchestra.find((item) => item.sessionId === event?.session_id);
+  const filePath = event?.tool_input?.file_path ?? event?.tool_input?.notebook_path;
+  const indexer = musician?.root && graphIndexers.get(musician.root);
+  if (!indexer || !filePath) return;
+  indexer.touch(path.relative(musician.root, filePath).split(path.sep).join('/'));
+  clearTimeout(graphRefreshTimers.get(musician.root));
+  graphRefreshTimers.set(
+    musician.root,
+    setTimeout(() => indexer.refresh().catch((error) => log(`graph refresh failed: ${error}`)), 500),
+  );
+}
+
+// What each músico touched (its task's files against the graph) and plans.
+function maestroImpacts() {
+  const impacts = [];
+  for (const musician of maestroOrchestra) {
+    const graph = musician.root ? graphIndexers.get(musician.root)?.graph() : null;
+    if (!graph || graph.unavailable) continue;
+    const touched = [];
+    const touchedModules = [];
+    for (const [filePath, file] of editTracker.currentTask(musician.sessionId)?.files ?? []) {
+      const relPath = path.relative(musician.root, filePath).split(path.sep).join('/');
+      touchedModules.push(relPath);
+      const key = `${musician.sessionId}|${relPath}|${file.start?.length ?? 'new'}|${file.current?.length ?? 0}`;
+      if (!touchCache.has(key)) touchCache.set(key, touchedFunctions(graph, relPath, file.start, file.current));
+      touched.push(...touchCache.get(key));
+    }
+    const impact = impactOf(graph, { touched, touchedModules, planned: maestroPlans.get(musician.sessionId) ?? [] });
+    impacts.push({ sessionId: musician.sessionId, root: musician.root, color: musician.color, ...impact });
+  }
+  return impacts;
+}
+
+ipcMain.handle('maestro:graph', (_event, root) => (typeof root === 'string' ? graphFor(root)?.graph() ?? null : null));
 
 function maestroFocus(sessionId) {
   maestroFocusId = sessionId;
@@ -1432,7 +1502,13 @@ async function generateVoiceForStop(session) {
   // pending ask found here is shown too instead of being discarded.
   registry.setQuestion(session.id, snapshot.pendingQuestion);
   registry.setLastMessage(session.id, digestMessage(snapshot.lastAssistantMessage));
-  if (maestroOrchestra.some((musician) => musician.sessionId === session.id)) maestroSay(session.id, snapshot.lastAssistantMessage);
+  const playing = maestroOrchestra.find((musician) => musician.sessionId === session.id);
+  if (playing) {
+    maestroSay(session.id, snapshot.lastAssistantMessage);
+    // The plan it declared lights up on the graph, dashed (#159).
+    const plan = playing.root ? parsePlan(snapshot.lastAssistantMessage, playing.root) : [];
+    if (plan.length) maestroPlans.set(session.id, plan);
+  }
   // The chat bound to the voice answers in its own words, not the gerente's
   // alert — and no tokens go to the alert (#161).
   const bound = voiceSession?.target();
@@ -1600,15 +1676,19 @@ function pushWorkspaceStateNow() {
   });
   maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
   maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
-  for (const sessionId of maestroNarrators.keys())
-    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroNarrators.delete(sessionId);
+  if (maestroOn()) for (const musician of maestroOrchestra) graphFor(musician.root);
+  for (const sessionId of [...maestroNarrators.keys(), ...maestroPlans.keys()])
+    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) {
+      maestroNarrators.delete(sessionId);
+      maestroPlans.delete(sessionId);
+    }
   workspaceWindow.send('workspace:state', {
     tree,
     terminals: ptyHost?.list() ?? [],
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
-    maestro: { on: maestroOn(), orchestra: maestroOrchestra, focusedId: maestroFocusId },
+    maestro: { on: maestroOn(), orchestra: maestroOrchestra, focusedId: maestroFocusId, impacts: maestroOn() ? maestroImpacts() : [] },
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2325,6 +2405,7 @@ function onHookEvent(event, reply) {
   if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
     voiceSession?.onToolEvent(event);
     maestroNarrate(event);
+    if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name)) graphTouched(event);
   }
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
@@ -2544,7 +2625,13 @@ function applyConfig(partial) {
   if ('audioOutput' in allowed) tts.setAudioOutput(managerConfig.audioOutput);
   if ('audioOutput' in allowed || 'voiceMic' in allowed) refreshTrayMenu();
   if ('maestroEnabled' in allowed) {
-    if (!allowed.maestroEnabled) maestroOrder.cancel();
+    if (!allowed.maestroEnabled) {
+      maestroOrder.cancel();
+      // The graphs go with the stage: rebuilt (from cache-less parse) on the next one.
+      graphIndexers.clear();
+      graphParser?.close();
+      graphParser = null;
+    }
     pushWorkspaceState();
   }
   if ('audioOutput' in allowed && managerConfig.audioOutput && !chromiumSinkId(chromiumOutputs, managerConfig.audioOutput))

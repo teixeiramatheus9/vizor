@@ -9,18 +9,19 @@ export const MUSICIAN_COLORS = ['#ebcb8b', '#a3be8c', '#b48ead', '#88c0d0', '#d0
 // numberOf(sessionId, projectRoot) → the linked task number, or null.
 export function buildOrchestra(tree, numberOf) {
   const placed = (tree?.projects ?? []).flatMap((project) =>
-    project.worktrees.flatMap((worktree) => worktree.sessions.map((session) => ({ session, root: project.root }))),
+    project.worktrees.flatMap((worktree) => worktree.sessions.map((session) => ({ session, root: project.root, checkout: worktree.path }))),
   );
-  const unplaced = (tree?.unplacedSessions ?? []).map((session) => ({ session, root: null }));
+  const unplaced = (tree?.unplacedSessions ?? []).map((session) => ({ session, root: null, checkout: null }));
   let agents = 0;
   return [...placed, ...unplaced]
     .filter(({ session }) => session.ptyId)
-    .map(({ session, root }, index) => {
+    .map(({ session, root, checkout }, index) => {
       const number = numberOf(session.id, root) ?? null;
       const agent = number === null ? ++agents : null;
       return {
         sessionId: session.id,
         ptyId: session.ptyId,
+        root: checkout, // the checkout it works in: its graph's root
         number,
         agent,
         name: number === null ? `A${agent}` : `#${number}`,

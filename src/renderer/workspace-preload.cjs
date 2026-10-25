@@ -36,4 +36,6 @@ contextBridge.exposeInMainWorld('vizor', {
   onMaestroOrder: (callback) => ipcRenderer.on('maestro:order', (_event, payload) => callback(payload)),
   setMaestro: (on) => ipcRenderer.send('maestro:set', Boolean(on)),
   focusMusician: (sessionId) => ipcRenderer.send('maestro:focus', sessionId),
+  onMaestroGraph: (callback) => ipcRenderer.on('maestro:graph', (_event, payload) => callback(payload)),
+  maestroGraph: (root) => ipcRenderer.invoke('maestro:graph', root),
 });

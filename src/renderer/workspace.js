@@ -27,6 +27,7 @@ import {
   stillWanted,
 } from './inspector-state.js';
 import { renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
+import { ZOOM_OPEN, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -610,10 +611,138 @@ const consequencesEl = document.getElementById('maestro-consequences');
 
 const musicianOf = (sessionId) => maestro.orchestra.find((musician) => musician.sessionId === sessionId) ?? null;
 
+// --- the graph (#159, part 2): the focused músico's checkout ---------------
+const graphs = new Map(); // root → graph | { unavailable }
+const layouts = new Map(); // root → layout of that graph
+const asked = new Set();
+let graphView = { scale: 1, x: 0, y: 0, open: null, openedByZoom: false };
+let graphRoot = null;
+let centeredFor = null; // the músico the view was last centered for
+
+window.vizor.onMaestroGraph(({ root, graph }) => {
+  graphs.set(root, graph);
+  layouts.delete(root);
+  if (root === graphRoot) renderGraphColumn();
+});
+
+function layoutOf(root) {
+  const graph = graphs.get(root);
+  if (!graph || graph.unavailable) return null;
+  if (!layouts.has(root)) layouts.set(root, layoutGraph(graph));
+  return layouts.get(root);
+}
+
+function renderGraphColumn() {
+  const musician = musicianOf(maestro.focusedId);
+  const root = musician?.root ?? null;
+  if (root !== graphRoot) {
+    graphRoot = root;
+    graphView = { scale: 1, x: 0, y: 0, open: null, openedByZoom: false };
+  }
+  if (!root) {
+    impactEl.innerHTML = renderImpact(musician);
+    return;
+  }
+  if (!graphs.has(root) && !asked.has(root)) {
+    asked.add(root);
+    window.vizor.maestroGraph(root).then((graph) => {
+      asked.delete(root);
+      if (graph) {
+        graphs.set(root, graph);
+        layouts.delete(root);
+      }
+      renderGraphColumn();
+    });
+  }
+  const graph = graphs.get(root) ?? null;
+  const impacts = (maestro.impacts ?? []).filter((impact) => impact.root === root);
+  // A new focus: the view centers on the file it touched last.
+  if (centeredFor !== maestro.focusedId && layoutOf(root)) {
+    centeredFor = maestro.focusedId;
+    const mine = impacts.find((impact) => impact.sessionId === maestro.focusedId);
+    const target = Object.keys(mine?.modules ?? {}).find((id) => mine.modules[id] === 'touched') ?? Object.keys(mine?.modules ?? {})[0];
+    const node = target && layoutOf(root).modules[target];
+    if (node) graphView = { ...graphView, x: 500 - node.x * graphView.scale, y: 500 - node.y * graphView.scale };
+  }
+  const svg = renderGraph({ graph, layout: layoutOf(root), view: graphView, impacts });
+  impactEl.innerHTML = `<div class="maestro-title">área de impacto</div>${svg}${graph?.unavailable ? renderImpact(musician) : ''}`;
+}
+
+// Pointer position in the drawing's units (the SVG is 1000×1000, "meet").
+function graphPoint(event) {
+  const svg = impactEl.querySelector('svg.graph');
+  if (!svg) return null;
+  const rect = svg.getBoundingClientRect();
+  const side = Math.min(rect.width, rect.height);
+  return {
+    x: ((event.clientX - rect.left - (rect.width - side) / 2) * 1000) / side,
+    y: ((event.clientY - rect.top - (rect.height - side) / 2) * 1000) / side,
+  };
+}
+
+impactEl.addEventListener(
+  'wheel',
+  (event) => {
+    const point = graphPoint(event);
+    const layout = graphRoot && layoutOf(graphRoot);
+    if (!point || !layout) return;
+    event.preventDefault();
+    const scale = Math.min(8, Math.max(0.5, graphView.scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    const ratio = scale / graphView.scale;
+    graphView = { ...graphView, scale, x: point.x - (point.x - graphView.x) * ratio, y: point.y - (point.y - graphView.y) * ratio };
+    // Zooming in far enough opens the file nearest the middle; back out, it closes.
+    if (scale >= ZOOM_OPEN && !graphView.open) {
+      let best = null;
+      let bestDistance = Infinity;
+      for (const [id, node] of Object.entries(layout.modules)) {
+        const distance = Math.hypot(node.x * scale + graphView.x - 500, node.y * scale + graphView.y - 500);
+        if (distance < bestDistance) [best, bestDistance] = [id, distance];
+      }
+      graphView = { ...graphView, open: best, openedByZoom: true };
+    } else if (scale < ZOOM_OPEN && graphView.openedByZoom) graphView = { ...graphView, open: null, openedByZoom: false };
+    renderGraphColumn();
+  },
+  { passive: false },
+);
+
+let graphDrag = null;
+impactEl.addEventListener('mousedown', (event) => {
+  const point = graphPoint(event);
+  if (point) graphDrag = { start: point, view: graphView, moved: false };
+});
+window.addEventListener('mousemove', (event) => {
+  if (!graphDrag) return;
+  const point = graphPoint(event);
+  if (!point) return;
+  const dx = point.x - graphDrag.start.x;
+  const dy = point.y - graphDrag.start.y;
+  if (Math.hypot(dx, dy) > 4) graphDrag.moved = true;
+  if (graphDrag.moved) {
+    graphView = { ...graphDrag.view, x: graphDrag.view.x + dx, y: graphDrag.view.y + dy };
+    renderGraphColumn();
+  }
+});
+window.addEventListener('mouseup', (event) => {
+  const drag = graphDrag;
+  graphDrag = null;
+  if (!drag || drag.moved) return;
+  const point = graphPoint(event);
+  const layout = graphRoot && layoutOf(graphRoot);
+  if (!point || !layout) return;
+  // A click on a file opens it (zooming in if needed); on the background, closes.
+  const hit = moduleAt(layout, graphView, point.x, point.y);
+  if (hit) {
+    const node = layout.modules[hit];
+    const scale = Math.max(graphView.scale, ZOOM_OPEN);
+    graphView = { scale, x: 500 - node.x * scale, y: 500 - node.y * scale, open: hit, openedByZoom: false };
+  } else if (!event.target.closest('[data-function]')) graphView = { ...graphView, open: null, openedByZoom: false };
+  renderGraphColumn();
+});
+
 function renderMaestro() {
   if (!maestro.on) return;
   orchestraEl.innerHTML = renderOrchestra(maestro.orchestra, maestro.focusedId);
-  impactEl.innerHTML = renderImpact(musicianOf(maestro.focusedId));
+  renderGraphColumn();
   consequencesEl.innerHTML = renderConsequences(maestroLines.get(maestro.focusedId) ?? []);
   balloonEl.innerHTML = renderBalloon(maestroSaid, musicianOf, { full: maestroSaidFull });
   orderEl.innerHTML = renderOrder(maestroOrderShown);
@@ -694,7 +823,8 @@ window.vizor.onMaestroNarration(({ sessionId, text }) => {
 window.vizor.onMaestroOrder((order) => {
   maestroOrderShown = order;
   clearInterval(maestroOrderTimer);
-  maestroOrderTimer = order ? setInterval(renderMaestro, 250) : null;
+  // The countdown redraws its own strip only (review M5: not the whole stage).
+  maestroOrderTimer = order ? setInterval(() => (orderEl.innerHTML = renderOrder(maestroOrderShown)), 250) : null;
   renderMaestro();
 });
 

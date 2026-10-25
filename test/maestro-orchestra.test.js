@@ -53,3 +53,10 @@ describe('the Maestro orchestra', () => {
     expect(nextFocus([], 'x')).toBeNull();
   });
 });
+
+describe('the músico knows its project (for its graph)', () => {
+  it('root is the checkout (worktree) it works in; null outside every project', () => {
+    const orchestra = buildOrchestra(tree([session('a')], [session('c')]), () => null);
+    expect(orchestra.map((musician) => musician.root)).toEqual(['/r', null]);
+  });
+});

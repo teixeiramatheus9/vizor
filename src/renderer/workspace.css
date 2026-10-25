@@ -1057,3 +1057,64 @@ body[data-maestro='true'] #detail:empty::before {
 body[data-maestro='true'] #topbar .toggle-chat {
   display: none;
 }
+
+/* --- Maestro graph (#159, part 2) --- */
+#maestro-impact {
+  display: none;
+}
+body[data-maestro='true'] #maestro-impact {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+svg.graph {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  cursor: grab;
+  user-select: none;
+}
+svg.graph:active {
+  cursor: grabbing;
+}
+svg.graph .group-area {
+  fill: var(--bg-surface);
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.55;
+}
+svg.graph .group-label,
+svg.graph .module-label,
+svg.graph .fn-label {
+  fill: var(--muted);
+  font-family: inherit;
+  pointer-events: none;
+}
+svg.graph .module-label {
+  fill: var(--text);
+}
+svg.graph .fn-label {
+  fill: var(--text);
+}
+svg.graph .fn-label.outside {
+  fill: var(--muted);
+}
+svg.graph line.import {
+  stroke: var(--border);
+}
+svg.graph [data-module] {
+  cursor: pointer;
+}
+svg.graph [data-module].opened {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+svg.graph .graph-note {
+  fill: var(--warn);
+  font-size: 12px;
+}
+.graph-unavailable {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 4px;
+}
