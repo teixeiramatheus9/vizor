@@ -167,3 +167,31 @@ describe('routeUtterance — the full pipeline on the voz2 recordings', () => {
     expect(route('abre o arquivo pty-host.js', chat)).toEqual({ type: 'workspace', action: 'open-file', file: 'pty-host.js' });
   });
 });
+
+describe('routeUtterance — Maestro', () => {
+  it('interrupt only with the specific phrase', () => {
+    expect(routeUtterance('Vizor, interrompa a task 22')).toEqual({ type: 'interrupt', number: 22 });
+    expect(routeUtterance('interrompe a tarefa vinte e dois')).toEqual({ type: 'interrupt', number: 22 });
+    expect(routeUtterance('interromper a issue 7')).toEqual({ type: 'interrupt', number: 7 });
+    expect(routeUtterance('interrompa')).toMatchObject({ type: 'ask-manager' });
+    expect(routeUtterance('para a 22')).toMatchObject({ type: 'ask-manager' });
+  });
+
+  it('focus a músico and switch the mode', () => {
+    expect(routeUtterance('vai pra 31')).toEqual({ type: 'focus', number: 31 });
+    expect(routeUtterance('foca na task 31')).toEqual({ type: 'focus', number: 31 });
+    expect(routeUtterance('Vizor, ative o modo Maestro')).toEqual({ type: 'maestro', on: true });
+    expect(routeUtterance('ativa o modo maestro')).toEqual({ type: 'maestro', on: true });
+    expect(routeUtterance('desative o modo maestro')).toEqual({ type: 'maestro', on: false });
+    expect(routeUtterance('sai do modo maestro')).toEqual({ type: 'maestro', on: false });
+    // Only the explicit request turns it on: a passing mention never does.
+    expect(routeUtterance('modo maestro')).toMatchObject({ type: 'ask-manager' });
+    expect(routeUtterance('o que é o modo maestro?')).toMatchObject({ type: 'ask-manager' });
+  });
+
+  it('a pending order is cancelled or sent now, only while one is pending', () => {
+    for (const said of ['cancela', 'não, espera', 'espera', 'não']) expect(routeUtterance(said, { pendingOrder: true })).toEqual({ type: 'order', action: 'cancel' });
+    for (const said of ['manda', 'pode', 'pode mandar']) expect(routeUtterance(said, { pendingOrder: true })).toEqual({ type: 'order', action: 'now' });
+    expect(routeUtterance('cancela')).not.toMatchObject({ type: 'order' });
+  });
+});

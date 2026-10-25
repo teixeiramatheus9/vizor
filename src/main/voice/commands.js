@@ -44,10 +44,22 @@ const ALWAYS = [
     if (words.length > 4 || words.some((word) => NOT_A_NAME.has(word))) return null;
     return { type: 'workspace', action: 'open-file', file: rawTail(raw, match[1]) };
   }],
+  // The Maestro (#159): interrupting takes the whole phrase, never a bare
+  // "para"; the mode only turns on when asked for by name.
+  [/^(interrompa|interrompe|interromper) a (task|tarefa|issue) (numero )?(\d+)$/, (match) => ({ type: 'interrupt', number: Number(match[4]) })],
+  [/^(vai (pra|para) (a )?|foca na )(task |tarefa |issue )?(\d+)$/, (match) => ({ type: 'focus', number: Number(match[5]) })],
+  [/^(ative|ativa|ativar) o modo maestro$/, () => ({ type: 'maestro', on: true })],
+  [/^(desative|desativa|desativar|sai do) (o )?modo maestro$/, () => ({ type: 'maestro', on: false })],
   [/^(para|cala( a boca)?|silencio|chega|pode parar)$/, () => ({ type: 'stop' })],
   // "ditar" is the word every model missed on the user's voice ("vou de
   // tentar", "vou de ter", "vou editar"): those count too.
   [/^(vou|vo|voo) (ditar|de tar|de ter|de terra|de tentar|editar|de ditar)$|^(modo )?ditado$/, () => ({ type: 'dictate' })],
+];
+
+// An order the Maestro holds for a few seconds ("entendi: …"): dropped or sent now.
+const WHEN_ORDER = [
+  [/^(cancela|nao espera|espera|nao)$/, () => ({ type: 'order', action: 'cancel' })],
+  [/^(manda|pode|pode mandar)$/, () => ({ type: 'order', action: 'now' })],
 ];
 
 // "não, é pty-host" — only right after an utterance, and only a name: "não é
@@ -108,7 +120,15 @@ function firstMatch(rules, text, raw) {
 
 export function routeUtterance(
   utterance,
-  { target = 'manager', pendingAsk = false, hasLastReply = false, pendingConfirm = false, canCorrect = false, pendingChoice = false } = {},
+  {
+    target = 'manager',
+    pendingAsk = false,
+    hasLastReply = false,
+    pendingConfirm = false,
+    canCorrect = false,
+    pendingChoice = false,
+    pendingOrder = false,
+  } = {},
 ) {
   let raw = numbersToDigits(String(utterance ?? '').trim());
   // The wake word comes along in the transcript, spelled as Whisper heard it
@@ -120,6 +140,7 @@ export function routeUtterance(
   else if (forced) raw = raw.replace(WAKE, '').trim();
   const text = norm(raw);
   const intent =
+    (pendingOrder && firstMatch(WHEN_ORDER, text, raw)) ||
     (pendingChoice && firstMatch(WHEN_CHOOSING, text, raw)) ||
     (pendingAsk && firstMatch(WHEN_ASKING, text, raw)) ||
     (canCorrect && firstMatch(WHEN_CORRECTING, text, raw)) ||
