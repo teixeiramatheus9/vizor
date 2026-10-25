@@ -196,3 +196,42 @@ describe('final review fixes', () => {
     expect(hit(bash('cat product.md'))).toBeNull();
   });
 });
+
+describe('the repo a git command runs in (#165)', () => {
+  // Own feature branch here; someone else's branch in ../outro.
+  const asked = [];
+  const byDir = (dir) => {
+    asked.push(dir);
+    if (dir === null) return null; // decide's answer for a directory it cannot resolve
+    return dir === '../outro' || dir === '/abs/outro' ? { currentBranch: 'feat/dele', defaultBranch: 'main', ownBranch: false } : onFeature;
+  };
+  const at = (command) => {
+    asked.length = 0;
+    return evaluate({ rules: RULES, call: bash(command), git: byDir })?.rule.id ?? null;
+  };
+
+  it('a cd before the push judges it in the repo it lands in', () => {
+    expect(at('git push')).toBeNull();
+    expect(at('cd ../outro && git push')).toBe('owner');
+    expect(at('cd /abs/outro; git commit -m x')).toBe('owner');
+    expect(at('git -C ../outro push')).toBe('owner');
+    expect(at('cd .. && git -C outro push')).toBe('owner');
+  });
+
+  it('a cd it cannot follow is unknown: the guard asks', () => {
+    // unknown branch and owner: both the main and the owner rules hold
+    expect(at('cd "$REPO" && git push')).not.toBeNull();
+    expect(asked).toContain(null);
+  });
+
+  it('no git action, no git context', () => {
+    expect(at('cd ../outro && ls')).toBeNull();
+    expect(asked).toEqual([]);
+  });
+
+  it('parseGitAction keeps the -C directory', () => {
+    expect(parseGitAction('git -C ../x push')).toMatchObject({ action: 'push', dir: '../x' });
+    expect(parseGitAction('git push')).toMatchObject({ dir: '' });
+    expect(parseGitAction('git -C "$X" push')).toMatchObject({ dir: null });
+  });
+});

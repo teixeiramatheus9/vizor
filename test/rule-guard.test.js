@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { contextFor, decide, loadRules } from '../src/hook/rule-guard.js';
+import { contextFor, decide, gitContextOf, loadRules } from '../src/hook/rule-guard.js';
 
 const GUARD = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'hook', 'rule-guard.js');
 
@@ -96,9 +96,58 @@ describe('decide', () => {
     expect(await run(preTool('ls -la'))).toBeNull();
   });
 
+  it('runs git only for a git command, once per directory, resolved from the session cwd (#165)', async () => {
+    const OWNER = { id: 'owner', source: 'branch dos outros', kind: 'ask', irreversible: false, explain: '', match: [{ type: 'git', actions: ['push'], target: 'others' }] };
+    const rules = { version: 1, global: [OWNER], repos: {} };
+    const dirs = [];
+    const gitContext = (dir) => {
+      dirs.push(dir);
+      return { currentBranch: 'x', defaultBranch: 'main', ownBranch: dir === '/repo/sub' };
+    };
+    const go = (command) => decide({ event: preTool(command), rules, repoRoot: null, gitContext, ask: async () => 'barrar', headless: false });
+    expect(await go('ls -la && echo oi')).toBeNull();
+    expect(dirs).toEqual([]);
+    expect(await go('git push')).toBeNull();
+    expect(dirs).toEqual(['/repo/sub']);
+    dirs.length = 0;
+    expect((await go('cd ../outro && git push && git push')).hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(dirs).toEqual(['/repo/sub', '/repo/outro']);
+  });
+
   it('repo rules apply only inside that repo', async () => {
     expect(await run(preTool('echo prod'), { repoRoot: '/other' })).toBeNull();
     expect((await run(preTool('drop table x'), { repoRoot: '/other' })).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
+describe('gitContextOf (#165)', () => {
+  function fakeGit() {
+    const calls = [];
+    const answers = {
+      'rev-parse': 'feat/x',
+      'symbolic-ref': 'origin/trunk',
+      config: 'eu@x.dev',
+      log: 'eu@x.dev\neu@x.dev',
+    };
+    return { calls, run: (_cwd, args) => (calls.push(args[0]), answers[args[0]] ?? null) };
+  }
+
+  it('runs each git process only when its fact is read, and once', () => {
+    const { calls, run } = fakeGit();
+    const context = gitContextOf('/r', run);
+    expect(calls).toEqual([]);
+    expect(context.currentBranch).toBe('feat/x');
+    expect(calls).toEqual(['rev-parse']);
+    expect(context.defaultBranch).toBe('trunk');
+    expect(context.ownBranch).toBe(true);
+    expect(context.ownBranch).toBe(true);
+    expect(calls).toEqual(['rev-parse', 'symbolic-ref', 'config', 'log']);
+  });
+
+  it('outside a repo every fact is unknown', () => {
+    const context = gitContextOf('/tmp', () => null);
+    expect([context.currentBranch, context.defaultBranch, context.ownBranch]).toEqual([null, 'main', null]);
+    expect(gitContextOf(null)).toBeNull();
   });
 });
 
