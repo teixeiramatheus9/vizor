@@ -176,3 +176,73 @@ export async function readLastAssistantMessage(transcriptPath) {
   const snapshot = await readTranscriptSnapshot(transcriptPath);
   return snapshot.lastAssistantMessage;
 }
+
+// A real prompt from the user, as opposed to the tool_result lines Claude Code
+// also files under type 'user'.
+function isUserPrompt(entry) {
+  if (!isUserEntry(entry)) return false;
+  const content = entry.message?.content;
+  if (typeof content === 'string') return true;
+  return Array.isArray(content) && content.some((block) => block?.type !== 'tool_result');
+}
+
+function textBlocks(content) {
+  return (Array.isArray(content) ? content : [])
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text);
+}
+
+// The "why" of an edit: what the AI said right before calling the tool. Each
+// content block of a reply is its own line, tied by message.id, so the text
+// of the same reply comes first; failing that, the last thing it said since
+// the user's prompt. Never older than that prompt, never a subagent's words.
+export function parseEditReason(jsonlText, toolUseId, { maxChars = 200 } = {}) {
+  const entries = [];
+  for (const line of jsonlText.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      // a partial last line while the transcript is being written
+    }
+  }
+  const index = entries.findIndex(
+    (entry) =>
+      isAssistantEntry(entry) &&
+      Array.isArray(entry.message?.content) &&
+      entry.message.content.some((block) => block?.type === 'tool_use' && block.id === toolUseId),
+  );
+  if (index === -1) return null;
+
+  const own = entries[index];
+  const ownContent = own.message.content;
+  const toolAt = ownContent.findIndex((block) => block?.type === 'tool_use' && block.id === toolUseId);
+  let collected = textBlocks(ownContent.slice(0, toolAt));
+  let fallback = null;
+  for (let cursor = index - 1; cursor >= 0; cursor--) {
+    const entry = entries[cursor];
+    if (entry?.isSidechain) continue;
+    if (isUserPrompt(entry)) break;
+    if (!isAssistantEntry(entry)) continue;
+    const texts = textBlocks(entry.message?.content);
+    if (entry.message?.id === own.message.id) {
+      collected = [...texts, ...collected];
+      continue;
+    }
+    if (texts.length) {
+      fallback = texts;
+      break;
+    }
+  }
+  const text = (collected.length ? collected : (fallback ?? [])).join(' ').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+}
+
+export async function readEditReason(transcriptPath, toolUseId) {
+  try {
+    return parseEditReason(await readTail(transcriptPath), toolUseId);
+  } catch {
+    return null;
+  }
+}
