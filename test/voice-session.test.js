@@ -616,3 +616,14 @@ describe('voice session — músicos named A1, A2…', async () => {
     expect(pendingOrder.pending().label).toBe('mandar pro A1: roda os testes');
   });
 });
+
+describe('the plan a picked músico declares (the Maestro graph lights it up)', () => {
+  it("the picked issue's músico is asked to end its plan with a Vizor-plano line", async () => {
+    const { session, calls } = setup({ resolveTask: async () => ({ none: true, cwd: '/r' }) });
+    await session.onUtterance('puxa a issue 142');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const prompt = calls.find(([name]) => name === 'new')[1].prompt;
+    expect(prompt).toContain('Vizor-plano:');
+    expect(prompt).toMatch(/Vizor-plano: \S+#\S+/);
+  });
+});

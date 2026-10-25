@@ -18,7 +18,8 @@ const PROPOSALS = [
 // What the new músico is told: plan first (the Maestro lights the plan up),
 // and a reviewer reports without changing anything.
 const PICK_PROMPT = (number) =>
-  `Vamos trabalhar na issue #${number}. Leia com \`gh issue view ${number}\`, me diga o plano (quais arquivos e funções vai tocar) e espere meu ok antes de mexer.`;
+  `Vamos trabalhar na issue #${number}. Leia com \`gh issue view ${number}\`, me diga o plano (quais arquivos e funções vai tocar) e espere meu ok antes de mexer. ` +
+  'Termine o plano com uma linha `Vizor-plano: caminho/arquivo.js#funcao, outro/arquivo.js` (caminhos relativos à raiz do projeto).';
 const REVIEW_PROMPT = (number) =>
   `Revise a PR #${number}: leia com \`gh pr view ${number}\` e \`gh pr diff ${number}\`, aponte os problemas por gravidade com arquivo e linha, e não mude código nem publique comentários sem eu pedir.`;
 // What the voice says back follows the voice's language; the commands the
