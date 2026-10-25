@@ -4,6 +4,8 @@ import {
   escapeHtml,
   renderEmpty,
   renderSidebar,
+  renderTabs,
+  renderTerminalPlaceholder,
   renderTopBar,
   statusIcon,
 } from '../src/renderer/workspace-view.js';
@@ -107,5 +109,44 @@ describe('renderTopBar', () => {
     const html = renderTopBar(tree([]));
     expect(html).toContain('2 rodando');
     expect(html).toContain('1 esperando');
+  });
+});
+
+describe('renderTabs', () => {
+  const term = (id, extra = {}) => ({ id, cwd: '/r', alive: true, exitCode: null, ...extra });
+
+  it('escapes titles and marks the active tab', () => {
+    const html = renderTabs([term('p1'), term('p2')], 'p2', { p1: '<b>x</b>' });
+    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;');
+    expect(html).toContain('data-tab="p2" aria-selected="true"');
+    expect(html).toContain('data-tab="p1" aria-selected="false"');
+  });
+
+  it('numbers untitled tabs and labels the ones that ended', () => {
+    const html = renderTabs([term('p1'), term('p2', { alive: false, exitCode: 1 })], 'p1', {});
+    expect(html).toContain('terminal 2');
+    expect(html).toContain('encerrado (1)');
+    expect(html).toContain('data-close-tab="p2" title="Fechar"');
+  });
+
+  it('always offers a new terminal', () => {
+    expect(renderTabs([], null, {})).toContain('data-new-terminal title="Novo terminal com claude"');
+  });
+});
+
+describe('renderTerminalPlaceholder', () => {
+  it('explains each empty state', () => {
+    expect(renderTerminalPlaceholder('none')).toContain('Escolha uma worktree e abra um terminal com +.');
+    const outside = renderTerminalPlaceholder('outside');
+    expect(outside).toContain('Essa sessão roda em outro terminal.');
+    expect(outside).toContain('data-focus-outside');
+    expect(outside).toContain('Ir pro terminal');
+    expect(renderTerminalPlaceholder('unavailable:sem <pty>')).toContain('Terminal indisponível: sem &lt;pty&gt;');
+  });
+});
+
+describe('worktree header', () => {
+  it('is selectable by its path', () => {
+    expect(renderSidebar(tree([], { path: '/r&x' }), null)).toContain('data-worktree="/r&amp;x"');
   });
 });

@@ -8,6 +8,7 @@
     />
     <title>Vizor — workspace</title>
     <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
     <link rel="stylesheet" href="workspace.css" />
   </head>
   <body>
@@ -15,8 +16,9 @@
     <main id="columns">
       <nav id="sidebar" aria-label="Projetos"></nav>
       <section class="pane" id="terminal-pane">
-        <div class="pane-bar">terminal</div>
-        <p class="placeholder">O terminal chega na próxima versão (#92).</p>
+        <div class="pane-bar" id="tabs"></div>
+        <div id="term-host"></div>
+        <div class="placeholder" id="term-placeholder"></div>
       </section>
       <section class="pane" id="file-pane">
         <div class="pane-bar">arquivo vivo</div>

@@ -19,6 +19,11 @@ describe('shouldAnnounce', () => {
 describe('shouldAutoApply', () => {
   const base = { autoUpdate: true, mode: 'notify', available: '0.14.0', ready: null, installing: false, failed: false, attemptedVersion: null };
 
+  it('waits while workspace terminals are alive: the restart would kill them', () => {
+    expect(shouldAutoApply({ ...base, liveTerminals: 1 })).toBe(false);
+    expect(shouldAutoApply({ ...base, liveTerminals: 0 })).toBe(true);
+  });
+
   it('applies a notify-mode update as soon as one is available', () => {
     expect(shouldAutoApply(base)).toBe(true);
   });

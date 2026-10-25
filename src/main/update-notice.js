@@ -20,8 +20,12 @@ export function shouldAutoApply({
   installing,
   failed,
   attemptedVersion,
+  liveTerminals = 0,
 }) {
-  if (!autoUpdate || installing || failed) return false;
+  // Installing restarts the app, and the workspace terminals live in it: a
+  // claude mid-task would die. Wait until none is alive (index.js re-checks
+  // when the last one ends).
+  if (!autoUpdate || installing || failed || liveTerminals > 0) return false;
   const target = mode === 'auto' ? ready : available;
   return Boolean(target) && attemptedVersion !== target;
 }

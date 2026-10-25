@@ -39,6 +39,10 @@ export function createWorkspaceWindowManager({
       autoHideMenuBar: true,
       webPreferences: { preload: preloadPath, contextIsolation: true },
     });
+    // Electron's default menu brings a Quit (Ctrl+Q, File > Quit) that calls
+    // app.quit() straight — it would kill the live terminals without the
+    // confirmation the tray and panel ask for.
+    win.removeMenu();
     win.on('close', (event) => {
       if (isQuitting()) return;
       event.preventDefault();

@@ -17,6 +17,7 @@ class FakeWindow extends EventEmitter {
   show() { this.visible = true; }
   hide() { this.visible = false; }
   focus() {}
+  removeMenu() { this.menuRemoved = true; }
   getBounds() { return { x: 0, y: 0, width: 1, height: 1 }; }
 }
 
@@ -52,5 +53,10 @@ describe('workspace window manager', () => {
     expect(prevented).toBe(true);
     expect(workspace.isOpen()).toBe(false);
     expect(workspace.isReady()).toBe(true);
+  });
+
+  it('has no application menu, so no Ctrl+Q that would skip the quit prompt', () => {
+    manager().show();
+    expect(FakeWindow.last.menuRemoved).toBe(true);
   });
 });

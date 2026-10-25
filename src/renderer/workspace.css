@@ -242,3 +242,73 @@ button:hover {
     animation: none;
   }
 }
+
+#terminal-pane {
+  min-height: 0;
+}
+
+#tabs {
+  gap: 2px;
+  padding: 0 4px;
+  overflow-x: auto;
+}
+
+#tabs .tab,
+#tabs .tab-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  max-width: 220px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 3px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+#tabs .tab[aria-selected='true'] {
+  background: var(--hairline);
+  color: var(--text);
+}
+
+#tabs .tab.exited {
+  color: var(--dim);
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  color: var(--muted);
+}
+
+.tab-close:hover,
+#tabs .tab-new:hover {
+  color: var(--accent);
+}
+
+#term-host {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding: 4px 0 0 6px;
+}
+
+#term-host .term {
+  position: absolute;
+  inset: 4px 0 0 6px;
+}
+
+#term-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+[hidden] {
+  display: none !important;
+}
