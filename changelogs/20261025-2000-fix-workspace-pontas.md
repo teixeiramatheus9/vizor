@@ -1,0 +1,5 @@
+- Workspace: se o encerramento do Vizor for cancelado, as abas voltam a ser salvas (antes paravam até reiniciar)
+- Workspace: foco, resposta rápida, escolha de opção e comentários usam a aba onde o chat está agora, não um terminal de uma execução anterior; um chat recém-retomado já é alcançável pela aba antes do primeiro evento
+- "Retomar conversa" mostra o nome dado com /rename mesmo quando ele foi feito no começo de uma conversa longa
+- "Retomar conversa" lista as conversas de pastas com caminho muito longo
+- Menos leitura de disco a cada ação de um chat rodando numa aba do workspace

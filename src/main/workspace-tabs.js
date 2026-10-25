@@ -84,6 +84,41 @@ export function restorePlan({ saved, liveIds, dirExists }) {
   return plan;
 }
 
+// The tab saves freeze when a quit starts (before-quit), so the dying ptys can't
+// overwrite the snapshot. Electron says nothing when a quit is cancelled (a
+// window refusing to close): a quit that doesn't reach will-quit within the
+// grace period was cancelled, and the saves resume (#157). A slow quit can
+// still reach will-quit after that thaw, so will-quit always holds the saves
+// again (no new save: the windows are gone by then) before the ptys die.
+export function createQuitFreeze({
+  freeze,
+  thaw,
+  hold,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  graceMs = 10000,
+}) {
+  let timer = null;
+  const stopTimer = () => {
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  };
+  return {
+    beforeQuit() {
+      freeze();
+      stopTimer();
+      timer = setTimer(() => {
+        timer = null;
+        thaw();
+      }, graceMs);
+    },
+    willQuit() {
+      stopTimer();
+      hold();
+    },
+  };
+}
+
 // Which tab each session runs in, from what exists now. A chat resumed by a
 // restore keeps its old pty id until its first hook event: `restored` (new pty
 // id → session id) points it at the new tab meanwhile. A pty id that matches no

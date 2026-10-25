@@ -56,13 +56,13 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost, withoutClaudeSession } from './pty-host.js';
-import { linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
-import { listConversations } from './conversations.js';
+import { createQuitFreeze, linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
+import { listConversations, resolveClaudeProjectDir } from './conversations.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
 import { createCommentDelivery } from './comment-delivery.js';
-import { inForeground, onTerminal } from './pty-foreground.js';
+import { createPtyIdentityCheck, inForeground } from './pty-foreground.js';
 import {
   answerKeys,
   answerRoute,
@@ -121,7 +121,6 @@ import {
   readLiveSessionIds,
   readAdoptableSessions,
   claudeTranscriptPath,
-  claudeProjectDir,
 } from './cc-sessions.js';
 import { readInboundPolicy, setInboundPolicy } from './claude-settings.js';
 import {
@@ -772,7 +771,7 @@ ipcMain.on('bubble:activate', () => activateBubble());
 // The balloon of a session born in the Vizor opens its workspace tab, like
 // its panel card (spec §9.1, #144); any other balloon opens the panel.
 ipcMain.on('tooltip:click', (_event, sessionId) => {
-  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  const session = linkedSession(sessionId);
   if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
     hideOverlay();
     workspaceWindow.focusSession(session.id);
@@ -1549,6 +1548,15 @@ function linkedSessions(sessions) {
   return linkTerminals(sessions, ids, resumedChats);
 }
 
+// One session with the tab it runs in NOW (#157): a pty id left over from an
+// earlier run doesn't count as "in the Vizor", and a chat resumed in a tab is
+// reachable there before its first hook event. Every path that types into a
+// tab or focuses one goes through this, never the raw registry term.
+function linkedSession(sessionId) {
+  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  return session ? linkedSessions([session])[0] : null;
+}
+
 // kind: 'shell' | 'claude' | 'resume' (with sessionId) — #154.
 function openTerminal({ cwd, kind, sessionId }) {
   const { command, error: invalid } = terminalCommand({ kind, sessionId });
@@ -1587,7 +1595,7 @@ ipcMain.handle('workspace:conversations', async (event, cwd) => {
     ...[...resumedChats].map(([ptyId, sessionId]) => [sessionId, ptyId]),
     ...linked.map((session) => [session.id, session.term.VIZOR_PTY_ID]),
   ]);
-  const list = await listConversations(claudeProjectDir(cwd));
+  const list = await listConversations(await resolveClaudeProjectDir(cwd));
   return list.map((conversation) => ({
     ...conversation,
     open: Boolean(live?.has(conversation.sessionId)),
@@ -1685,6 +1693,25 @@ function freezeWorkspaceTabs() {
   saveWorkspaceTabs();
   tabsFrozen = true;
 }
+
+// The thaw only brings tab saving back. appQuitting stays set on purpose:
+// cleared, the workspace and rules windows would go back to hiding on close,
+// and a quit that was merely slow (not cancelled) would then be cancelled by
+// them. The rest of before-quit (socket, hooks, tray) isn't undone either.
+const quitFreeze = createQuitFreeze({
+  freeze: freezeWorkspaceTabs,
+  thaw: () => {
+    if (!tabsFrozen) return;
+    log('quit did not go through: workspace tab saves resume');
+    tabsFrozen = false;
+    scheduleTabsSave();
+  },
+  hold: () => {
+    clearTimeout(tabsSaveTimer);
+    tabsSaveTimer = null;
+    tabsFrozen = true;
+  },
+});
 
 function restoreWorkspaceTabs() {
   if (!workspaceWindow) return;
@@ -2031,7 +2058,7 @@ function claudeInPty(session, ptyId) {
 
 const commentDelivery = createCommentDelivery({
   store: commentStore,
-  sessionOf: (sessionId) => registry.sessions.get(sessionId) ?? null,
+  sessionOf: (sessionId) => linkedSession(sessionId),
   claudeInPty,
   writePty: (ptyId, data) => ptyHost?.write(ptyId, data),
   sendPeer: (session, text) => sendPeerMessage(session, text),
@@ -2126,23 +2153,25 @@ function logEdit(edit) {
 // A VIZOR_PTY_ID that doesn't hold (no such tab in this run, or the session
 // runs on another terminal — e.g. a terminal app started from a tab) is
 // dropped: the session is treated as an outside one (#140).
+const ptyIdentityHolds = createPtyIdentityCheck({
+  ttyPath: (ptyId) => ptyHost?.ttyPath(ptyId) ?? null,
+  ttyRdev: (tty) => fs.statSync(tty).rdev,
+  readSessionPid: (sessionId) => readSessionPid(sessionId),
+  readStat: (pid) => fs.readFileSync(`/proc/${pid}/stat`, 'utf8'),
+  pidAlive: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code === 'EPERM';
+    }
+  },
+});
+
 function verifiedTerm(event) {
   const ptyId = event?.term?.VIZOR_PTY_ID;
   if (!ptyId) return event;
-  const tty = ptyHost?.ttyPath(ptyId);
-  let holds = Boolean(tty);
-  if (tty) {
-    const pid = readSessionPid(event.session_id);
-    if (pid) {
-      try {
-        holds =
-          onTerminal({ stat: fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), ttyRdev: fs.statSync(tty).rdev }) !== false;
-      } catch {
-        holds = true; // can't tell: keep what the hook saw
-      }
-    }
-  }
-  if (holds) return event;
+  if (ptyIdentityHolds(event.session_id, ptyId)) return event;
   const { VIZOR_PTY_ID: _dropped, ...rest } = event.term;
   return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
 }
@@ -2553,7 +2582,7 @@ async function huntSessionTab(session) {
 }
 
 ipcMain.handle('warp:focus', (_event, sessionId) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   // A session born in the Vizor lives in a workspace tab: no window hunt.
   if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
     if (overlayMode === 'panel') hideOverlay();
@@ -2572,7 +2601,7 @@ ipcMain.handle('transcript:tail', async (_event, sessionId) => {
 });
 
 ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   const index = Number(optionIndex);
   if (!session || !Number.isInteger(index) || index < 0) return 'failed';
 
@@ -2670,7 +2699,7 @@ async function typeIntoTerminal(session, text) {
 }
 
 ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   const reply = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!reply) return 'failed';
   const ptyId = session?.term?.VIZOR_PTY_ID;
@@ -3316,6 +3345,7 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
+  quitFreeze.willQuit();
   globalShortcut.unregisterAll();
   ptyHost?.killAll();
   commandWatcher.stopAll();
@@ -3350,7 +3380,8 @@ async function requestQuit() {
 app.on('before-quit', () => {
   appQuitting = true;
   // Before will-quit kills the terminals: their chats are still alive here.
-  freezeWorkspaceTabs();
+  // A quit cancelled after this point thaws the saves again (#157).
+  quitFreeze.beforeQuit();
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
