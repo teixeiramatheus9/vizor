@@ -130,6 +130,49 @@ export function ensureHooks(settings, command) {
   return addHooks(dedupeToolHooks(cleaned, command), command);
 }
 
+// The rule guard (src/hook/rule-guard.js) is separate from hook-emit: it
+// blocks (no async), may wait minutes for the user, and stays installed after
+// the app quits so forbidden rules keep holding.
+export const GUARD_MARKER = 'rule-guard';
+export const GUARD_TOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*';
+export const GUARD_TIMEOUT_S = 600;
+// UserPromptSubmit hooks are capped at 30 s by Claude Code.
+const GUARD_PROMPT_TIMEOUT_S = 25;
+const GUARD_EVENTS = ['PreToolUse', 'SessionStart', 'UserPromptSubmit'];
+
+export function removeGuard(settings) {
+  const next = { ...settings, hooks: { ...(settings.hooks ?? {}) } };
+  for (const eventName of Object.keys(next.hooks)) {
+    if (!Array.isArray(next.hooks[eventName])) continue;
+    const groups = next.hooks[eventName]
+      .map((group) =>
+        Array.isArray(group.hooks)
+          ? { ...group, hooks: group.hooks.filter((hook) => !(hook.command ?? '').includes(GUARD_MARKER)) }
+          : group,
+      )
+      .filter((group) => !Array.isArray(group.hooks) || group.hooks.length > 0);
+    if (groups.length > 0) next.hooks[eventName] = groups;
+    else delete next.hooks[eventName];
+  }
+  return next;
+}
+
+function guardGroup(eventName, command) {
+  if (eventName === 'PreToolUse')
+    return { matcher: GUARD_TOOL_MATCHER, hooks: [{ type: 'command', command, timeout: GUARD_TIMEOUT_S }] };
+  if (eventName === 'UserPromptSubmit')
+    return { hooks: [{ type: 'command', command, timeout: GUARD_PROMPT_TIMEOUT_S }] };
+  return { hooks: [{ type: 'command', command }] };
+}
+
+export function ensureGuard(settings, command) {
+  const next = removeGuard(settings);
+  for (const eventName of GUARD_EVENTS) {
+    next.hooks[eventName] = [...(next.hooks[eventName] ?? []), guardGroup(eventName, command)];
+  }
+  return next;
+}
+
 function main() {
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const hookScript = path.resolve(scriptDir, '..', 'src', 'hook', 'hook-emit.js');

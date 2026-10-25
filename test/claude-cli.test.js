@@ -85,3 +85,18 @@ describe('runClaude command fallback', () => {
     expect(spawnFn).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('runClaude model', () => {
+  it('defaults to haiku and takes another model when asked', () => {
+    const seen = [];
+    const spawnFn = (_command, args) => {
+      seen.push(args[args.indexOf('--model') + 1]);
+      const child = hangingSpawn().child;
+      return child;
+    };
+    runClaude({ prompt: 'a', spawnFn });
+    runClaude({ prompt: 'b', spawnFn, model: 'sonnet' });
+    killPendingClaude();
+    expect(seen).toEqual(['haiku', 'sonnet']);
+  });
+});

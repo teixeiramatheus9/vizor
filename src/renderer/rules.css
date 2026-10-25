@@ -1,0 +1,146 @@
+body {
+  margin: 0;
+  padding: 16px 20px 24px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font: 13px/1.5 'JetBrains Mono', ui-monospace, monospace;
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+h1 {
+  margin: 0;
+  font-size: 15px;
+}
+h3 {
+  margin: 16px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: lowercase;
+}
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #3ecf8e;
+}
+.status-dot.status-off {
+  background: var(--warn);
+}
+.status.status-off strong,
+.status-warn {
+  color: var(--warn);
+}
+.toggle {
+  margin-left: auto;
+}
+#scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+button,
+input,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+}
+button {
+  padding: 3px 9px;
+  cursor: pointer;
+}
+button:hover,
+#scopes button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+#scopes button.waiting::after {
+  content: ' ●';
+  color: var(--warn);
+}
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 180px;
+  padding: 8px;
+  resize: vertical;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+#test-command {
+  flex: 1;
+  padding: 4px 6px;
+}
+.shortcuts {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.file,
+.empty,
+#message,
+.rule-ref,
+.when {
+  color: var(--muted);
+}
+.banner {
+  margin-top: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+}
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rule {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.rule-meaning {
+  color: var(--muted);
+}
+.rule-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+}
+.rule textarea {
+  min-height: 120px;
+  margin-top: 5px;
+}
+.chip {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text);
+}
+.kind-forbid,
+.chip-warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.kind-ask {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.history li {
+  padding: 3px 0;
+}

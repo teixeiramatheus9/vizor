@@ -19,6 +19,7 @@ export function trayMenuTemplate({ bubbleVisible, workspace = false }) {
     ...(workspace ? [{ id: 'workspace', label: 'Abrir o workspace' }] : []),
     { id: 'panel', label: 'Abrir o painel' },
     { id: 'settings', label: 'Configurações' },
+    { id: 'rules', label: 'Regras…' },
     { type: 'separator' },
     { id: 'toggle', label: bubbleVisible ? 'Esconder a bolha' : 'Mostrar a bolha' },
     { id: 'find', label: 'Encontrar a bolha' },

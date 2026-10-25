@@ -1,4 +1,5 @@
 import { Terminal } from '../../node_modules/@xterm/xterm/lib/xterm.mjs';
+import { renderGuardCard } from './guard-card.js';
 import { FitAddon } from '../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs';
 import { WebglAddon } from '../../node_modules/@xterm/addon-webgl/lib/addon-webgl.mjs';
 import {
@@ -507,7 +508,21 @@ document.addEventListener('change', (event) => {
   refreshInspector({ scroll: true });
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette }) => {
+// The rule guard's questions (#160) float over the terminals until answered.
+const guardHost = document.getElementById('guard-asks');
+function renderGuardAsks(asks = []) {
+  guardHost.hidden = asks.length === 0;
+  guardHost.innerHTML = asks.map(renderGuardCard).join('');
+}
+guardHost.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-guard-choice]');
+  if (!button) return;
+  button.closest('.guard-card')?.classList.add('answered');
+  window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
+});
+
+window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks }) => {
+  renderGuardAsks(guardAsks);
   if (theme) document.body.dataset.theme = theme;
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;

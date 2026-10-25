@@ -13,7 +13,8 @@ export function parseCliJson(stdout) {
   }
 }
 
-// Runs one headless prompt on Haiku with the anti-recursion guard set.
+// Runs one headless prompt (Haiku unless told otherwise) with the
+// anti-recursion guard set.
 // Resolves {text, tokens} or null (spawn failure, timeout, non-zero exit,
 // unparseable output) — never rejects.
 // Quitting used to orphan a claude -p mid-flight: it is only killed on the
@@ -40,6 +41,7 @@ function defaultCommands() {
 
 export function runClaude({
   prompt,
+  model = 'haiku',
   timeoutMs = 15000,
   spawnFn = spawn,
   commands = defaultCommands(),
@@ -58,7 +60,7 @@ export function runClaude({
       try {
         child = spawnFn(
           commands[index],
-          ['-p', prompt, '--model', 'haiku', '--output-format', 'json'],
+          ['-p', prompt, '--model', model, '--output-format', 'json'],
           {
             env: { ...process.env, VIZOR_INTERNAL: '1', CLAUDE_MANAGER_INTERNAL: '1' },
             stdio: ['ignore', 'pipe', 'ignore'],

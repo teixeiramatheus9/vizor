@@ -18,7 +18,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildHookCommand, ensureHooks, removeAppHooks } from '../../scripts/install-hooks.js';
+import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
+import { guardCommand, installGuardScript } from './guard-runtime.js';
+import { createGuardAsks } from './guard-asks.js';
+import { createRulesStore } from './rules-store.js';
+import { guardSpeech } from '../renderer/guard-card.js';
+import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
+import { compileRules, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
@@ -96,6 +102,10 @@ import {
   usageFile,
   updateNoticeFile,
   configDir,
+  rulesDir,
+  guardDir,
+  globalRulesFile,
+  PROJECT_RULES_FILE,
 } from './paths.js';
 import {
   UPDATE_DONE_PHRASE,
@@ -355,6 +365,74 @@ const registry = new SessionRegistry({
   folderAliasFor: (cwd) => managerConfig.folderAliases[cwd] ?? null,
 });
 let managerConfig = loadConfig(configFile);
+
+const rulesStore = createRulesStore({
+  dir: rulesDir,
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+// sendState and the halo are hoisted functions: safe to call from here on.
+const guardAsks = createGuardAsks({
+  onChange: () => {
+    sendState();
+    updateNotificationHalo();
+  },
+});
+
+function recordGuardOutcome(request, outcome) {
+  try {
+    rulesStore.addHistory({
+      at: Date.now(),
+      sessionId: request.sessionId ?? null,
+      cwd: request.cwd ?? null,
+      ruleSource: request.ruleSource ?? '',
+      summary: request.summary ?? '',
+      outcome,
+    });
+  } catch (error) {
+    log(`guard history failed: ${error}`);
+  }
+}
+
+function onGuardMessage(message, reply) {
+  if (message.type === 'guard-event') {
+    recordGuardOutcome(message, message.outcome ?? 'barrado');
+    return;
+  }
+  const result = guardAsks.add(message, reply);
+  if (result.answered) {
+    recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
+    return;
+  }
+  const ask = guardAsks.pending().find((candidate) => candidate.id === result.id);
+  if (!ask) return;
+  // The balloon announces; the choices live in the panel and the workspace.
+  sendToRenderer('tooltip', {
+    projectName: path.basename(ask.cwd ?? '') || 'Claude',
+    text: ask.summary,
+    kind: 'guard',
+    sessionId: null,
+    speech: guardSpeech(ask),
+  });
+  showTooltip();
+}
+
+function guardSummary(message) {
+  return message.tool === 'Bash' ? String(message.input?.command ?? '').slice(0, 200) : message.tool;
+}
+
+const GUARD_OUTCOMES = { liberar: 'liberado', 'liberar-sessao': 'liberado nesta sessão', barrar: 'barrado' };
+ipcMain.handle('guard:answer', (_event, { id, choice } = {}) => {
+  if (!GUARD_OUTCOMES[choice]) return false;
+  const ask = guardAsks.pending().find((candidate) => candidate.id === id);
+  const request = guardAsks.answer(id, choice);
+  if (request) recordGuardOutcome({ ...request, summary: ask?.summary ?? guardSummary(request) }, GUARD_OUTCOMES[choice]);
+  return Boolean(request);
+});
 const tokenBudget = new TokenBudget({ file: usageFile });
 const isEconomyMode = () => tokenBudget.isExceeded(managerConfig.tokenBudgetDaily);
 let mainWindow = null;
@@ -405,6 +483,8 @@ let announcedUpdateVersion = null;
 function sendState() {
   sendToRenderer('state', {
     sessions: listWithDisplayNames(),
+    guardAsks: guardAsks.pending(),
+    guard: guardStatus(),
     unread: registry.unreadCount(),
     update: updateStatus,
     hint: lastHint,
@@ -864,7 +944,7 @@ async function showGentleHalo(state, generation) {
 // and whenever the bubble settles somewhere new. The find-the-bubble flash
 // borrows the window and hands it back through here.
 function updateNotificationHalo() {
-  const state = haloState(registry.list());
+  const state = guardAsks.pending().length ? 'permission' : haloState(registry.list());
   const positionable = canPositionWindows && Boolean(bubbleAnchor);
   sendToRenderer('halo', { state: positionable ? null : state });
   if (spotlightTimer) return; // a find-the-bubble flash is running — after it
@@ -982,6 +1062,7 @@ function refreshTrayMenu() {
     find: findBubble,
     quit: () => requestQuit().catch((error) => log(`quit failed: ${error}`)),
     workspace: () => workspaceWindow?.show(),
+    rules: () => openRulesWindow(),
   };
   const template = trayMenuTemplate({
     bubbleVisible: bubbleVisible(),
@@ -1368,6 +1449,7 @@ function pushWorkspaceStateNow() {
     tree,
     terminals: ptyHost?.list() ?? [],
     activeTerminal: activeTerminalId,
+    guardAsks: guardAsks.pending(),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2065,7 +2147,11 @@ function verifiedTerm(event) {
   return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
 }
 
-function onHookEvent(event) {
+function onHookEvent(event, reply) {
+  if (event?.type === 'guard-ask' || event?.type === 'guard-event') {
+    onGuardMessage(event, reply);
+    return;
+  }
   event = verifiedTerm(event);
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
@@ -2716,6 +2802,394 @@ function ensureHooksInstalled() {
   }
 }
 
+// The rule guard (#160) lives in its own hook, copied to a stable path so it
+// keeps working with the app closed (an AppImage mount vanishes on quit).
+let guardOffline = false;
+let guardInstalled = false;
+
+function approvedRuleCount() {
+  const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
+  if (!rules) return 0;
+  return rules.global.length + Object.values(rules.repos).reduce((sum, list) => sum + list.length, 0);
+}
+
+function findNodeOnPath() {
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, 'node');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return fs.realpathSync(candidate);
+    } catch {
+      // next PATH entry
+    }
+  }
+  return null;
+}
+
+function copyGuardScript() {
+  const target = installGuardScript({ source: path.join(currentDir, '..', 'hook', 'rule-guard.js'), dir: guardDir });
+  // The .js copy of the first builds is never run again.
+  fs.rmSync(path.join(guardDir, 'rule-guard.js'), { force: true });
+  return target;
+}
+
+function syncGuardHook() {
+  try {
+    const compiledFile = path.join(rulesDir, 'compiladas.json');
+    rulesUnreadable = fs.existsSync(compiledFile) && !loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
+    const settings = readClaudeSettings();
+    let next;
+    if (managerConfig.guardEnabled !== false && approvedRuleCount() > 0) {
+      const { command, offline, shim } = guardCommand({
+        platform: process.platform,
+        execPath: process.execPath,
+        appImage: process.env.APPIMAGE,
+        findNode: findNodeOnPath,
+        scriptPath: copyGuardScript(),
+        shimDir: configDir,
+      });
+      if (shim) {
+        fs.mkdirSync(path.dirname(shim.path), { recursive: true });
+        fs.writeFileSync(shim.path, shim.content);
+      }
+      guardOffline = offline;
+      guardInstalled = true;
+      next = ensureGuard(settings, command);
+    } else {
+      guardInstalled = false;
+      next = removeGuard(settings);
+    }
+    if (JSON.stringify(next) === JSON.stringify(settings)) return;
+    writeClaudeSettings(next);
+    log(`rule guard ${guardInstalled ? 'installed' : 'removed'}`);
+  } catch (error) {
+    log(`syncGuardHook failed: ${error}`);
+  }
+}
+
+function removeGuardIfOnlineOnly() {
+  if (!guardInstalled || guardOffline) return;
+  try {
+    const settings = readClaudeSettings();
+    const next = removeGuard(settings);
+    if (JSON.stringify(next) !== JSON.stringify(settings)) writeClaudeSettings(next);
+    log('rule guard removed on quit (no offline runtime)');
+  } catch (error) {
+    log(`removeGuardIfOnlineOnly failed: ${error}`);
+  }
+}
+
+let rulesUnreadable = false;
+
+function guardStatus() {
+  const snapshot = rulesStore.snapshot();
+  const repos = Object.values(snapshot.repos);
+  return {
+    enabled: managerConfig.guardEnabled !== false,
+    installed: guardInstalled,
+    offline: guardOffline,
+    active: snapshot.global.approved.length + repos.filter((repo) => repo.compiled).reduce((sum, repo) => sum + repo.approved.length, 0),
+    pending: snapshot.global.pending.length + repos.reduce((sum, repo) => sum + repo.pending.length, 0),
+    unreadable: rulesUnreadable,
+  };
+}
+
+// --- Rules window (#160) ----------------------------------------------------
+
+let rulesWindow = null;
+const rulesRootCache = new Map(); // cwd → repo root (main checkout) | null
+const rulesSynced = new Map(); // scope → markdown last handed to the store
+const rulesWatchers = new Map(); // watched dir → FSWatcher
+let rulesWatchTimer = null;
+
+function rulesFileOf(scope) {
+  return scope === 'global' ? globalRulesFile : path.join(scope, PROJECT_RULES_FILE);
+}
+
+function readRulesFile(scope) {
+  try {
+    return fs.readFileSync(rulesFileOf(scope), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// The same root the guard computes: worktrees share their main checkout's rules.
+async function rulesRootOf(cwd) {
+  if (rulesRootCache.has(cwd)) return rulesRootCache.get(cwd);
+  let root = null;
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd, timeout: 2000 });
+    const common = stdout.trim();
+    root = common.endsWith(`${path.sep}.git`) ? path.dirname(common) : common || null;
+  } catch {
+    // not a repo
+  }
+  rulesRootCache.set(cwd, root);
+  return root;
+}
+
+function syncRulesScope(scope) {
+  const markdown = readRulesFile(scope);
+  if (markdown === null && scope !== 'global' && !rulesStore.snapshot().repos[scope]) return;
+  if (rulesSynced.get(scope) === markdown) return;
+  rulesSynced.set(scope, markdown);
+  if (scope !== 'global' && markdown !== null) rulesStore.markSeenRepo(scope);
+  rulesStore.syncFile(scope, scope === 'global' ? (markdown ?? '') : markdown);
+}
+
+// Spec §5: a save, or an outside edit of a file already trusted, compiles
+// the new lines on its own. A repo file that came with a clone waits for the
+// user's first compile in the window.
+const rulesCompiling = new Set();
+const rulesCompileStatus = new Map(); // scope → error code of the last try
+
+function trustedScope(scope) {
+  return scope === 'global' || Boolean(rulesStore.snapshot().repos[scope]?.compiled);
+}
+
+async function autoCompile(scope, { force = false } = {}) {
+  if (rulesCompiling.has(scope) || (!force && !trustedScope(scope))) return;
+  const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+  const drafted = new Set((view?.drafts ?? []).map((draft) => draft.source));
+  const fresh = (view?.pending ?? []).filter((line) => !drafted.has(line));
+  const lines = fresh.length || !force ? fresh : (view?.pending ?? []);
+  if (lines.length === 0) return;
+  rulesCompiling.add(scope);
+  rulesCompileStatus.delete(scope);
+  notifyRulesChanged();
+  try {
+    const result = await compileRules({ lines, scope, budget: tokenBudget, budgetDaily: managerConfig.tokenBudgetDaily });
+    if (result.error) rulesCompileStatus.set(scope, result.error);
+    else rulesStore.setDrafts(scope, result.drafts);
+  } catch (error) {
+    log(`rules compile failed: ${error}`);
+    rulesCompileStatus.set(scope, 'sem-claude');
+  } finally {
+    rulesCompiling.delete(scope);
+    notifyRulesChanged();
+  }
+}
+
+async function ruleScopeKeys() {
+  const keys = new Set(['global']);
+  for (const root of workspaceProjects()) {
+    const repo = await rulesRootOf(root);
+    if (repo) keys.add(repo);
+  }
+  for (const session of registry.list()) {
+    if (!session.cwd) continue;
+    const repo = await rulesRootOf(session.cwd);
+    if (repo && readRulesFile(repo) !== null) keys.add(repo);
+  }
+  for (const repo of Object.keys(rulesStore.snapshot().repos)) keys.add(repo);
+  return [...keys];
+}
+
+function watchRulesDirs(keys) {
+  for (const scope of keys) {
+    const dir = path.dirname(rulesFileOf(scope));
+    if (rulesWatchers.has(dir) || !isDirectory(dir)) continue;
+    try {
+      const watcher = fs.watch(dir, (_type, name) => {
+        if (name && name !== 'regras.md') return;
+        clearTimeout(rulesWatchTimer);
+        rulesWatchTimer = setTimeout(() => {
+          for (const key of keys) syncRulesScope(key);
+          syncGuardHook();
+          notifyRulesChanged();
+          for (const key of keys) autoCompile(key);
+        }, 500);
+      });
+      watcher.on('error', () => rulesWatchers.delete(dir));
+      rulesWatchers.set(dir, watcher);
+    } catch (error) {
+      log(`rules watch failed for ${dir}: ${error}`);
+    }
+  }
+}
+
+async function rulesState() {
+  const keys = await ruleScopeKeys();
+  for (const key of keys) syncRulesScope(key);
+  watchRulesDirs(keys);
+  const snapshot = rulesStore.snapshot();
+  const scopes = keys.map((key) => {
+    const view = key === 'global' ? snapshot.global : snapshot.repos[key] ?? { approved: [], drafts: [], pending: [], compiled: true };
+    const markdown = readRulesFile(key);
+    return {
+      scope: key,
+      label: key === 'global' ? 'global' : path.basename(key),
+      file: rulesFileOf(key),
+      markdown: markdown ?? '',
+      approved: view.approved,
+      drafts: view.drafts,
+      pending: view.pending,
+      // A project the user starts from the window is theirs; only a file that
+      // arrived with the repo waits for a first compile.
+      compiled: markdown === null || view.compiled,
+      compiling: rulesCompiling.has(key),
+      compileError: rulesCompileStatus.get(key) ?? null,
+    };
+  });
+  return { status: guardStatus(), scopes, history: rulesStore.recentHistory(50) };
+}
+
+function notifyRulesChanged() {
+  if (rulesWindow && !rulesWindow.isDestroyed()) rulesWindow.webContents.send('rules:changed');
+  sendState();
+}
+
+// Opened from the tray menu, mutter's focus-stealing prevention leaves a new
+// (or re-shown) window behind the others; a moment of always-on-top makes it
+// come to the front, the same as a click on it would.
+function bringRulesWindowForward() {
+  if (!rulesWindow || rulesWindow.isDestroyed()) return;
+  if (rulesWindow.isMinimized()) rulesWindow.restore();
+  rulesWindow.show();
+  rulesWindow.setAlwaysOnTop(true);
+  rulesWindow.moveTop();
+  rulesWindow.focus();
+  setTimeout(() => {
+    if (rulesWindow && !rulesWindow.isDestroyed()) rulesWindow.setAlwaysOnTop(false);
+  }, 300);
+}
+
+function openRulesWindow() {
+  if (rulesWindow && !rulesWindow.isDestroyed()) {
+    bringRulesWindowForward();
+    return;
+  }
+  rulesWindow = new BrowserWindow({
+    width: 860,
+    height: 780,
+    minWidth: 560,
+    minHeight: 480,
+    title: 'Vizor — regras',
+    backgroundColor: '#0d1117',
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: { preload: path.join(rendererDir, 'rules-preload.cjs'), contextIsolation: true },
+  });
+  rulesWindow.removeMenu();
+  rulesWindow.on('close', (event) => {
+    if (appQuitting) return;
+    event.preventDefault();
+    rulesWindow.hide();
+  });
+  rulesWindow.once('ready-to-show', bringRulesWindowForward);
+  rulesWindow.loadFile(path.join(rendererDir, 'rules.html'));
+}
+
+const fromRules = (event) => Boolean(rulesWindow && !rulesWindow.isDestroyed() && event.sender === rulesWindow.webContents);
+
+function writeRulesFile(scope, markdown) {
+  const file = rulesFileOf(scope);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, markdown);
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+function validScope(scope) {
+  return scope === 'global' || (typeof scope === 'string' && path.isAbsolute(scope) && isDirectory(scope));
+}
+
+ipcMain.on('rules:open', () => openRulesWindow());
+
+ipcMain.handle('rules:state', (event) => (fromRules(event) ? rulesState() : null));
+
+ipcMain.handle('rules:save', async (event, { scope, markdown } = {}) => {
+  if (!fromRules(event) || !validScope(scope) || typeof markdown !== 'string') return rulesState();
+  writeRulesFile(scope, markdown);
+  if (scope !== 'global') rulesStore.markSeenRepo(scope);
+  syncRulesScope(scope);
+  syncGuardHook();
+  // Saved from the window: the user's own text, so it compiles right away.
+  autoCompile(scope, { force: true });
+  return rulesState();
+});
+
+ipcMain.handle('rules:compile', async (event, { scope } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return { error: 'origem inválida' };
+  syncRulesScope(scope);
+  const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+  const pending = view?.pending ?? [];
+  const drafted = new Set((view?.drafts ?? []).map((draft) => draft.source));
+  const fresh = pending.filter((line) => !drafted.has(line));
+  const lines = fresh.length ? fresh : pending;
+  if (lines.length === 0) return { state: await rulesState(), compiled: 0 };
+  const result = await compileRules({ lines, scope, budget: tokenBudget, budgetDaily: managerConfig.tokenBudgetDaily });
+  if (result.error) return { error: result.error };
+  rulesStore.setDrafts(scope, result.drafts);
+  sendState();
+  return { state: await rulesState(), compiled: result.drafts.length };
+});
+
+ipcMain.handle('rules:approve', async (event, { scope, ruleId, edited = null } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return rulesState();
+  let clean = null;
+  if (edited) {
+    const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+    const draft = view?.drafts.find((candidate) => candidate.id === ruleId);
+    clean = draft ? validateEditedRule(draft, edited) : null;
+    if (!clean) return { ...(await rulesState()), error: 'edicao-invalida' };
+  }
+  rulesStore.approve(scope, ruleId, clean);
+  syncGuardHook();
+  notifyRulesChanged();
+  return rulesState();
+});
+
+ipcMain.handle('rules:discard', async (event, { scope, ruleId } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return rulesState();
+  rulesStore.discard(scope, ruleId);
+  notifyRulesChanged();
+  return rulesState();
+});
+
+ipcMain.handle('rules:test', (event, { scope, command } = {}) => {
+  if (!fromRules(event) || !validScope(scope) || typeof command !== 'string') return null;
+  const snapshot = rulesStore.snapshot();
+  const rules = [...snapshot.global.approved, ...(scope === 'global' ? [] : (snapshot.repos[scope]?.approved ?? []))];
+  const hit = evaluate({ rules, call: { tool: 'Bash', input: { command } }, git: scope === 'global' ? null : gitContextOf(scope) });
+  return hit ? { kind: hit.rule.kind, source: hit.rule.source, explain: hit.rule.explain } : null;
+});
+
+// Also flipped from the settings window, hence no sender check.
+ipcMain.handle('rules:set-enabled', async (event, enabled) => {
+  managerConfig = { ...managerConfig, guardEnabled: Boolean(enabled) };
+  saveConfig(configFile, managerConfig);
+  syncGuardHook();
+  notifyRulesChanged();
+  return fromRules(event) ? rulesState() : guardStatus();
+});
+
+let rulesRefreshTimer = null;
+function refreshRuleWatches() {
+  clearTimeout(rulesRefreshTimer);
+  rulesRefreshTimer = setTimeout(async () => {
+    try {
+      const keys = await ruleScopeKeys();
+      for (const key of keys) syncRulesScope(key);
+      watchRulesDirs(keys);
+      syncGuardHook();
+    } catch (error) {
+      log(`rules refresh failed: ${error}`);
+    }
+  }, 2000);
+}
+
+function bootSyncRules() {
+  for (const scope of ['global', ...Object.keys(rulesStore.snapshot().repos)]) {
+    try {
+      syncRulesScope(scope);
+    } catch (error) {
+      log(`rules sync failed for ${scope}: ${error}`);
+    }
+  }
+}
+
 // crossSessionInbound decides what a session does with the quick reply this app
 // sends. It lives in the user's Claude Code settings, so the app only ever
 // writes the user level — a repo or managed setting can still tighten it, and
@@ -2779,6 +3253,7 @@ function reapDeadSessions() {
     if (!registry.sessions.has(sessionId)) {
       editTracker.forgetSession(sessionId);
       commentStore.forgetSession(sessionId);
+      guardAsks.dropSession(sessionId);
     }
 }
 
@@ -2816,6 +3291,8 @@ app.whenReady().then(() => {
   announceUpdateIfJustInstalled();
   renewMacosGrantAfterUpdate();
   ensureHooksInstalled();
+  bootSyncRules();
+  syncGuardHook();
   autoSetupBridgeOnWayland();
   hydrateRegistry();
   reapDeadSessions();
@@ -2828,6 +3305,8 @@ app.whenReady().then(() => {
   registry.on('change', forgetRemovedSessions);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
+  registry.on('change', refreshRuleWatches);
+  refreshRuleWatches();
   registry.on('change', scheduleTabsSave);
   restoreWorkspaceTabs();
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);
@@ -2875,6 +3354,7 @@ app.on('before-quit', () => {
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
+  removeGuardIfOnlineOnly();
   tts.stopSpeaking();
   killPendingClaude();
   stopSocketServer(socketServer, socketPath);

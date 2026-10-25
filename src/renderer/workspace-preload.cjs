@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('vizor', {
   outsideStatus: (sessionId) => ipcRenderer.invoke('workspace:outside-status', sessionId),
   bringToVizor: (sessionId) => ipcRenderer.invoke('workspace:bring', sessionId),
   reportActiveTab: (id) => ipcRenderer.send('workspace:active-tab', id ?? null),
+  answerGuard: (id, choice) => ipcRenderer.invoke('guard:answer', { id, choice }),
   writeTerminal: (id, data) => ipcRenderer.send('pty:write', { id, data }),
   resizeTerminal: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
   closeTerminal: (id) => ipcRenderer.send('pty:close', id),

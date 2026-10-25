@@ -1,0 +1,33 @@
+// The rule guard's question card (#160), shared by the bubble's panel and the
+// workspace. Everything in an ask came from a hook: escape it all.
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) => ESCAPES[char]);
+
+const baseName = (file) => String(file ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
+
+export function renderGuardCard(ask) {
+  const id = escape(ask.id);
+  const button = (choice, label) =>
+    `<button type="button" class="guard-choice guard-${choice}" data-guard-id="${id}" data-guard-choice="${choice}">${label}</button>`;
+  return [
+    `<div class="guard-card${ask.irreversible ? ' irreversible' : ''}" data-guard-card="${id}">`,
+    `<div class="guard-head"><span class="guard-title">Posso seguir?</span><span class="guard-project">${escape(baseName(ask.cwd))}</span></div>`,
+    `<code class="guard-call">${escape(ask.summary)}</code>`,
+    `<div class="guard-rule">regra: ${escape(ask.ruleSource)}</div>`,
+    ask.explain ? `<div class="guard-explain">${escape(ask.explain)}</div>` : '',
+    ask.irreversible ? '<div class="guard-hint">isso não tem volta — pergunto sempre</div>' : '',
+    '<div class="guard-actions">',
+    button('liberar', 'Liberar'),
+    ask.irreversible ? '' : button('liberar-sessao', 'Liberar nesta sessão'),
+    button('barrar', 'Barrar'),
+    '</div>',
+    '</div>',
+  ].join('');
+}
+
+export function guardSpeech(ask) {
+  const project = baseName(ask.cwd) || 'um projeto';
+  const what =
+    ask.tool === 'Bash' ? `rodar ${ask.summary}` : `mexer em ${baseName(ask.summary.split(' ').slice(1).join(' ')) || ask.tool}`;
+  return `Um Claude no ${project} quer ${what}. Posso seguir?`;
+}

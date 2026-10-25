@@ -1,0 +1,4 @@
+- Regras em português: escreva o que os Claudes podem ou não fazer (global ou por projeto, em `.vizor/regras.md`). O Vizor transforma cada linha numa trava e você aprova uma por uma.
+- Os Claudes param antes de quebrar uma regra: o proibido é barrado, e o resto pergunta na bolha e no workspace (Liberar, Liberar nesta sessão, Barrar). Push e merge na branch principal perguntam sempre.
+- A trava continua valendo com o Vizor fechado: o proibido segue barrado e o resto cai no pedido de permissão do terminal.
+- Tela de regras com revisão, "testar um comando" e o histórico do que foi barrado ou perguntado, acessível pelas configurações e pela bandeja.

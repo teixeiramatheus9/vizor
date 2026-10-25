@@ -7,6 +7,21 @@ export function isPipePath(socketPath) {
   return socketPath.startsWith('\\\\.\\pipe\\');
 }
 
+// A client that waits (the rule guard) gets one JSON line back through
+// reply(obj); fire-and-forget clients (hook-emit) never see one. reply.end()
+// hangs up without an answer, and reply.onClose(cb) fires when the client
+// leaves.
+function replierFor(socket) {
+  const reply = (payload) => {
+    if (!socket.destroyed && socket.writable) socket.end(`${JSON.stringify(payload)}\n`);
+  };
+  reply.end = () => {
+    if (!socket.destroyed) socket.end();
+  };
+  reply.onClose = (callback) => socket.once('close', callback);
+  return reply;
+}
+
 export function startSocketServer(socketPath, onEvent, log) {
   if (!isPipePath(socketPath)) {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true });
@@ -19,6 +34,7 @@ export function startSocketServer(socketPath, onEvent, log) {
 
   const server = net.createServer((socket) => {
     let buffer = '';
+    const reply = replierFor(socket);
     socket.on('data', (chunk) => {
       buffer += chunk;
       let newlineIndex;
@@ -27,7 +43,7 @@ export function startSocketServer(socketPath, onEvent, log) {
         buffer = buffer.slice(newlineIndex + 1);
         if (!line) continue;
         try {
-          onEvent(JSON.parse(line));
+          onEvent(JSON.parse(line), reply);
         } catch (error) {
           log(`socket-server: dropped bad line: ${error}`);
         }
