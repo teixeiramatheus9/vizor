@@ -29,3 +29,39 @@ export function onTerminal({ stat, ttyRdev }) {
   if (!parsed) return null;
   return parsed.ttyNr === ttyRdev;
 }
+
+// Whether a hook's VIZOR_PTY_ID holds (#140), cached per session and tab for a
+// few seconds (#148): every Pre/PostToolUse carries the id, and the answer
+// costs a scan of ~/.claude/sessions plus /proc reads. A closed tab is seen at
+// once (ttyPath is in memory); a cached pid that died means the chat moved to
+// another process, so it is looked up again. "Can't tell" is never cached.
+export function createPtyIdentityCheck({
+  ttyPath,
+  ttyRdev,
+  readSessionPid,
+  readStat,
+  pidAlive,
+  now = Date.now,
+  ttlMs = 3000,
+}) {
+  const cache = new Map();
+  return function holds(sessionId, ptyId) {
+    const tty = ttyPath(ptyId);
+    if (!tty) return false;
+    const key = `${sessionId}\0${ptyId}`;
+    const hit = cache.get(key);
+    if (hit && now() - hit.at < ttlMs && pidAlive(hit.pid)) return hit.holds;
+    cache.delete(key);
+    const pid = readSessionPid(sessionId);
+    if (!pid) return true; // not registered yet: keep what the hook saw
+    let result;
+    try {
+      result = onTerminal({ stat: readStat(pid), ttyRdev: ttyRdev(tty) }) !== false;
+    } catch {
+      return true; // can't tell: keep what the hook saw
+    }
+    if (cache.size > 64) for (const [old, entry] of cache) if (now() - entry.at >= ttlMs) cache.delete(old);
+    cache.set(key, { pid, holds: result, at: now() });
+    return result;
+  };
+}

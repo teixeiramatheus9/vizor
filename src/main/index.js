@@ -62,7 +62,7 @@ import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
 import { createCommentDelivery } from './comment-delivery.js';
-import { inForeground, onTerminal } from './pty-foreground.js';
+import { createPtyIdentityCheck, inForeground } from './pty-foreground.js';
 import {
   answerKeys,
   answerRoute,
@@ -2126,23 +2126,25 @@ function logEdit(edit) {
 // A VIZOR_PTY_ID that doesn't hold (no such tab in this run, or the session
 // runs on another terminal — e.g. a terminal app started from a tab) is
 // dropped: the session is treated as an outside one (#140).
+const ptyIdentityHolds = createPtyIdentityCheck({
+  ttyPath: (ptyId) => ptyHost?.ttyPath(ptyId) ?? null,
+  ttyRdev: (tty) => fs.statSync(tty).rdev,
+  readSessionPid: (sessionId) => readSessionPid(sessionId),
+  readStat: (pid) => fs.readFileSync(`/proc/${pid}/stat`, 'utf8'),
+  pidAlive: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code === 'EPERM';
+    }
+  },
+});
+
 function verifiedTerm(event) {
   const ptyId = event?.term?.VIZOR_PTY_ID;
   if (!ptyId) return event;
-  const tty = ptyHost?.ttyPath(ptyId);
-  let holds = Boolean(tty);
-  if (tty) {
-    const pid = readSessionPid(event.session_id);
-    if (pid) {
-      try {
-        holds =
-          onTerminal({ stat: fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), ttyRdev: fs.statSync(tty).rdev }) !== false;
-      } catch {
-        holds = true; // can't tell: keep what the hook saw
-      }
-    }
-  }
-  if (holds) return event;
+  if (ptyIdentityHolds(event.session_id, ptyId)) return event;
   const { VIZOR_PTY_ID: _dropped, ...rest } = event.term;
   return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
 }
