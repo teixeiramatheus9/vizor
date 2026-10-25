@@ -148,6 +148,17 @@ describe('rules store', () => {
     expect(store.snapshot().global.approved).toEqual([]);
   });
 
+  it('a refused draft (risky regex) is approved only through an edit, which clears the refusal (#165)', () => {
+    const fs = memoryFs();
+    const store = createRulesStore({ dir: '/d', ...fs });
+    store.syncFile('global', '- regra r\n');
+    store.setDrafts('global', [{ ...draft('regra r', 'forbid'), refused: 'regex arriscada: x' }]);
+    expect(store.approve('global', 'id-regra r')).toBe(false);
+    expect(store.snapshot().global.pending).toEqual(['regra r']);
+    expect(store.approve('global', 'id-regra r', { kind: 'forbid', match: [{ type: 'keyword', words: ['r'] }] })).toBe(true);
+    expect(compiled(fs).global[0].refused).toBeUndefined();
+  });
+
   it('a draft for a line already approved does not come back as a draft (#165)', () => {
     const { store } = setup();
     store.setDrafts('global', [draft('regra a', 'forbid')]);

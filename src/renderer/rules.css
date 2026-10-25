@@ -115,6 +115,9 @@ ul {
 .rule-meaning {
   color: var(--muted);
 }
+.rule-refused {
+  color: var(--warn);
+}
 .rule-actions {
   display: flex;
   gap: 6px;

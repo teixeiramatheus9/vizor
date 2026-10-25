@@ -24,7 +24,7 @@ import { createGuardAsks, isGuardChoice } from './guard-asks.js';
 import { createRulesStore, pruneSeenSessions } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
-import { compileRules, validateEditedRule } from './rules-compiler.js';
+import { compileRules, editProblem, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
@@ -3147,7 +3147,8 @@ ipcMain.handle('rules:approve', async (event, { scope, ruleId, edited = null } =
     const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
     const draft = view?.drafts.find((candidate) => candidate.id === ruleId);
     clean = draft ? validateEditedRule(draft, edited) : null;
-    if (!clean) return { ...(await rulesState()), error: 'edicao-invalida' };
+    // A risky regex says why, instead of the generic message.
+    if (!clean) return { ...(await rulesState()), error: 'edicao-invalida', reason: editProblem(edited) ?? undefined };
   }
   rulesStore.approve(scope, ruleId, clean);
   syncGuardHook();

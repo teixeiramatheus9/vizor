@@ -121,7 +121,11 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
       const scope = scopeOf(key);
       const draft = scope.drafts.find((candidate) => candidate.id === ruleId);
       if (!draft || !scope.lines.includes(draft.source)) return false;
-      const rule = edited ? { ...draft, ...edited, id: draft.id, source: draft.source } : draft;
+      // A refused draft (risky regex) goes through only as an edit, which the
+      // caller validated again.
+      if (draft.refused && !edited) return false;
+      const { refused: _refused, ...base } = draft;
+      const rule = edited ? { ...base, ...edited, id: draft.id, source: draft.source } : draft;
       scope.drafts = scope.drafts.filter((candidate) => candidate.id !== ruleId);
       scope.approved = [...scope.approved.filter((candidate) => candidate.source !== rule.source), rule];
       scope.compiled = true;

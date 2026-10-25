@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import { runClaude } from './claude-cli.js';
+import { regexRisk } from './regex-risk.js';
+
+export { regexRisk };
 
 // Turns the user's free-text rules into checks the guard can run without AI
 // (#160). The gerente reads them once per change; the user approves each
@@ -35,6 +38,7 @@ export function buildCompilerPrompt({ lines, scope }) {
     '  {"type":"sql","statements":["DROP","TRUNCATE",...]} — comando, arquivos .sql escritos e ferramentas MCP',
     '  {"type":"tool","pattern":"<regex no nome da ferramenta, ex.: ^mcp__.*__execute_sql$>"}',
     'Prefira palavras inteiras e checagens estreitas: pergunta demais faz o usuário desligar a trava.',
+    'Nas regex, nunca ponha quantificador dentro de quantificador ((a+)+, (\\w+\\s?)*) nem alternativas que se sobrepõem numa repetição ((.|\\s)*): a trava recusa esses padrões. Para "qualquer flag" use (\\s+\\S+)* ou (\\s+-\\w+)*.',
     '',
     'Exemplos:',
     examples,
@@ -44,75 +48,10 @@ export function buildCompilerPrompt({ lines, scope }) {
   ].join('\n');
 }
 
-// The guard runs approved regexes synchronously on every guarded call, and
-// JavaScript has no match timeout: a catastrophic pattern would hang the hook
-// (and Claude Code with it) until its 600 s timeout. The classic culprit is a
-// repeated group that itself repeats — (a+)+, (\w+\s?)*, (.*x){12} — so those
-// are refused here, before anyone can approve them, along with patterns too
-// long to read (#165). A refused check leaves the line as an agent rule.
-const MAX_PATTERN_CHARS = 500;
-
-// Length of a quantifier starting at `index` and whether it repeats (more
-// than once); 0 = no quantifier there.
-function quantifierAt(pattern, index) {
-  const char = pattern[index];
-  let length = 0;
-  let repeats = false;
-  if (char === '*' || char === '+') [length, repeats] = [1, true];
-  else if (char === '?') [length, repeats] = [1, false];
-  else if (char === '{') {
-    const braces = /^\{(\d+)(,(\d*))?\}/.exec(pattern.slice(index));
-    if (!braces) return { length: 0, repeats: false };
-    const [whole, min, comma, max] = braces;
-    length = whole.length;
-    repeats = comma ? max === '' || Number(max) > 1 : Number(min) > 1;
-  }
-  if (length && pattern[index + length] === '?') length += 1; // lazy
-  return { length, repeats };
-}
-
-export function isRiskyRegex(pattern) {
-  const text = String(pattern);
-  if (text.length > MAX_PATTERN_CHARS) return true;
-  const groups = [{ repeatsInside: false }];
-  for (let index = 0; index < text.length; index++) {
-    const char = text[index];
-    let atomEnd = index;
-    if (char === '\\') atomEnd = index + 1;
-    else if (char === '[') {
-      atomEnd = index + 1;
-      if (text[atomEnd] === '^') atomEnd++;
-      if (text[atomEnd] === ']') atomEnd++;
-      while (atomEnd < text.length && text[atomEnd] !== ']') atomEnd += text[atomEnd] === '\\' ? 2 : 1;
-    } else if (char === '(') {
-      groups.push({ repeatsInside: false });
-      // (?: (?= (?! (?<= (?<! (?<name> — the ? there is no quantifier.
-      if (text[index + 1] === '?') {
-        index += 2;
-        if (text[index] === '<' && text[index + 1] !== '=' && text[index + 1] !== '!') index = text.indexOf('>', index);
-        else if (text[index] === '<') index += 1;
-      }
-      continue;
-    } else if (char === ')') {
-      const group = groups.length > 1 ? groups.pop() : { repeatsInside: false };
-      const quantifier = quantifierAt(text, index + 1);
-      if (quantifier.repeats && group.repeatsInside) return true;
-      const parent = groups[groups.length - 1];
-      parent.repeatsInside ||= group.repeatsInside || quantifier.repeats;
-      index += quantifier.length;
-      continue;
-    } else if (char === '|' || char === '^' || char === '$') continue;
-    const quantifier = quantifierAt(text, atomEnd + 1);
-    if (quantifier.repeats) groups[groups.length - 1].repeatsInside = true;
-    index = atomEnd + quantifier.length;
-  }
-  return false;
-}
-
 function validRegex(pattern) {
   try {
     new RegExp(String(pattern), 'i');
-    return typeof pattern === 'string' && pattern.length > 0 && !isRiskyRegex(pattern);
+    return typeof pattern === 'string' && pattern.length > 0;
   } catch {
     return false;
   }
@@ -154,7 +93,25 @@ function cleanRule(raw, source, scope) {
   if (raw.kind === 'agent') return agent(explain || UNCOMPILABLE);
   const match = (Array.isArray(raw.match) ? raw.match : []).map(cleanMatch).filter(Boolean);
   if (match.length === 0) return agent(UNCOMPILABLE);
-  return { id, source, kind: raw.kind, irreversible: raw.irreversible === true, explain, match };
+  const rule = { id, source, kind: raw.kind, irreversible: raw.irreversible === true, explain, match };
+  // Never drop a risky check quietly (the lock would show as "proibido" and
+  // catch less): the whole rule waits, with the reason, until it is edited.
+  const refused = riskOf(match);
+  return refused ? { ...rule, refused } : rule;
+}
+
+function riskOf(matches) {
+  for (const match of matches) {
+    if (match?.type !== 'command' && match?.type !== 'tool') continue;
+    const reason = typeof match.pattern === 'string' ? regexRisk(match.pattern) : null;
+    if (reason) return `regex arriscada: ${reason}`;
+  }
+  return null;
+}
+
+// The rules window's "editar" shows this instead of a generic error.
+export function editProblem(edited) {
+  return Array.isArray(edited?.match) ? riskOf(edited.match) : null;
 }
 
 function firstArray(text) {
@@ -194,6 +151,7 @@ export function validateEditedRule(draft, edited) {
   if (edited.explain !== undefined && typeof edited.explain !== 'string') return null;
   if (edited.kind !== 'agent' && !Array.isArray(edited.match)) return null;
   const rule = { ...cleanRule(edited, draft.source, 'edit'), id: draft.id };
+  if (rule.refused) return null;
   if (edited.kind !== 'agent' && rule.kind === 'agent') return null;
   if (edited.kind !== 'agent' && rule.match.length !== edited.match.length) return null;
   return rule;

@@ -111,7 +111,21 @@ describe('validateEditedRule (review I7)', () => {
 });
 
 describe('regexes the guard could hang on (#165)', () => {
-  const RISKY = ['(a+)+$', '(a*)*b', '(\\w+\\s?)*$', '(?:x+){2,}', '(.*a){12}', '((ab)+c)+', '([a-z]+)*@'];
+  const RISKY = [
+    '(a+)+$',
+    '(a*)*b',
+    '(\\w+\\s?)*$',
+    '(?:x+){2,}',
+    '(.*a){12}',
+    '((ab)+c)+',
+    '([a-z]+)*@',
+    // overlapping alternatives inside a repetition
+    '(.|\\s)*x',
+    '(a|a)*',
+    '(\\w|\\d)+',
+    '(a|ab)+c',
+    '(a+|b)*c',
+  ];
   const SAFE = [
     '\\bkubectl\\b.*\\bdelete\\b',
     '^git\\s+push\\s+.*--force',
@@ -122,24 +136,51 @@ describe('regexes the guard could hang on (#165)', () => {
     '[(+*]+x',
     '\\(a+\\)+',
     'a{2,3}',
+    // "any flags" shapes: each repetition starts with a run the rest cannot eat
+    'rm(\\s+-\\w+)*\\s+/',
+    'git\\s+push(\\s+\\S+)*\\s+(-f|--force)',
+    '(?:\\s+--?\\w+(=\\S+)?)*',
+    '(foo|bar)+',
   ];
 
-  it('nested quantifiers and overlong patterns are refused; ordinary ones pass', async () => {
-    const { isRiskyRegex } = await import('../src/main/rules-compiler.js');
-    for (const pattern of RISKY) expect([pattern, isRiskyRegex(pattern)]).toEqual([pattern, true]);
-    for (const pattern of SAFE) expect([pattern, isRiskyRegex(pattern)]).toEqual([pattern, false]);
-    expect(isRiskyRegex('a'.repeat(501))).toBe(true);
+  it('nested or overlapping repetitions and overlong patterns are refused, with a reason; ordinary ones pass', async () => {
+    const { regexRisk } = await import('../src/main/rules-compiler.js');
+    for (const pattern of RISKY) expect([pattern, typeof regexRisk(pattern)]).toEqual([pattern, 'string']);
+    for (const pattern of SAFE) expect([pattern, regexRisk(pattern)]).toEqual([pattern, null]);
+    expect(regexRisk('a'.repeat(501))).toMatch(/longa/);
+    expect(regexRisk('(.|\\s)*x')).toMatch(/sobrep/);
+    expect(regexRisk('(a+)+$')).toMatch(/repeti/);
   });
 
-  it('a compiled check with one never reaches the guard, and an edit with one is refused', async () => {
-    const { validateEditedRule } = await import('../src/main/rules-compiler.js');
+  it('a compiled rule with one is not dropped: it stays a draft that cannot be approved, with the reason', () => {
     const [rule] = parseCompilerOutput(
-      JSON.stringify([{ kind: 'forbid', irreversible: false, explain: 'x', match: [{ type: 'command', pattern: '(a+)+$' }] }]),
+      JSON.stringify([
+        {
+          kind: 'forbid',
+          irreversible: false,
+          explain: 'x',
+          match: [{ type: 'keyword', words: ['prod'] }, { type: 'command', pattern: '(a+)+$' }],
+        },
+      ]),
       LINES.slice(0, 1),
       'global',
     );
-    expect(rule.kind).toBe('agent');
+    expect(rule.kind).toBe('forbid');
+    expect(rule.refused).toMatch(/^regex arriscada: /);
+    expect(rule.match).toHaveLength(2);
+  });
+
+  it('an edit with one is refused with the reason, not a generic error', async () => {
+    const { editProblem, validateEditedRule } = await import('../src/main/rules-compiler.js');
     const draft = { id: 'x1', source: 'linha', kind: 'forbid', irreversible: true, explain: 'e', match: [] };
-    expect(validateEditedRule(draft, { kind: 'forbid', explain: 'x', match: [{ type: 'tool', pattern: '(\\w+_?)*$' }] })).toBeNull();
+    const edited = { kind: 'forbid', explain: 'x', match: [{ type: 'tool', pattern: '(\\w+_?)*$' }] };
+    expect(validateEditedRule(draft, edited)).toBeNull();
+    expect(editProblem(edited)).toMatch(/^regex arriscada: /);
+    expect(editProblem({ kind: 'forbid', match: [{ type: 'command', pattern: 'rm\\s+-rf' }] })).toBeNull();
+  });
+
+  it('the prompt tells the compiler to avoid nested and overlapping repetitions', () => {
+    expect(buildCompilerPrompt({ lines: LINES, scope: 'global' })).toMatch(/quantificador/i);
   });
 });
+
