@@ -1118,3 +1118,36 @@ svg.graph .graph-note {
   font-size: 12px;
   padding: 8px 4px;
 }
+/* the graph, take 2: folder colors, readable labels, names on click */
+svg.graph .group-area {
+  fill: var(--bg-surface);
+  opacity: 0.5;
+  stroke-width: 1.5;
+}
+svg.graph .group-label {
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--bg-footer);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+svg.graph line.import {
+  opacity: 0.35;
+}
+svg.graph line.import.lit,
+svg.graph line.call.lit {
+  opacity: 1;
+}
+svg.graph .selected-label rect {
+  fill: var(--bg-footer);
+  stroke: var(--accent);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+svg.graph .selected-label text {
+  fill: var(--text);
+  pointer-events: none;
+}
+svg.graph [data-function] {
+  cursor: pointer;
+}

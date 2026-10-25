@@ -27,7 +27,7 @@ import {
   stillWanted,
 } from './inspector-state.js';
 import { renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
-import { ZOOM_OPEN, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
+import { ZOOM_MAX, ZOOM_OPEN, ZOOM_STEP, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -669,7 +669,7 @@ function renderGraphColumn() {
   }
   // Redrawn only when something it shows changed (review I3: a 1.4 MB SVG on
   // every state push stalls big repos).
-  const signature = [graph ? graphStamp(graph) : 'none', JSON.stringify(impacts), graphView.scale, graphView.x, graphView.y, graphView.open].join('|');
+  const signature = [graph ? graphStamp(graph) : 'none', JSON.stringify(impacts), graphView.scale, graphView.x, graphView.y, graphView.open, graphView.selected].join('|');
   if (signature === lastGraphSignature && impactEl.firstChild) return;
   lastGraphSignature = signature;
   const svg = renderGraph({ graph, layout: layoutOf(root), view: graphView, impacts });
@@ -700,7 +700,7 @@ impactEl.addEventListener(
     const layout = graphRoot && layoutOf(graphRoot);
     if (!point || !layout) return;
     event.preventDefault();
-    const scale = Math.min(8, Math.max(0.5, graphView.scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    const scale = Math.min(ZOOM_MAX, Math.max(0.5, graphView.scale * (event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP)));
     const ratio = scale / graphView.scale;
     graphView = { ...graphView, scale, x: point.x - (point.x - graphView.x) * ratio, y: point.y - (point.y - graphView.y) * ratio };
     // Zooming in far enough opens the file nearest the middle; back out, it closes.
@@ -712,7 +712,7 @@ impactEl.addEventListener(
         if (distance < bestDistance) [best, bestDistance] = [id, distance];
       }
       graphView = { ...graphView, open: best, openedByZoom: true };
-    } else if (scale < ZOOM_OPEN && graphView.openedByZoom) graphView = { ...graphView, open: null, openedByZoom: false };
+    } else if (scale < ZOOM_OPEN && graphView.openedByZoom) graphView = { ...graphView, open: null, openedByZoom: false, selected: null };
     renderGraphColumn();
   },
   { passive: false },
@@ -746,8 +746,14 @@ window.addEventListener('mouseup', (event) => {
   graphDrag = null;
   if (drag?.moved) renderGraphColumn(); // settle the drawing where the drag left it
   if (!drag || drag.moved) return;
-  // A function circle can sit over another file: the element wins (review M6).
-  if (event.target.closest('[data-function]')) return;
+  // A function circle can sit over another file: the element wins (review
+  // M6). A click shows the name of what was clicked.
+  const fn = event.target.closest('[data-function]');
+  if (fn) {
+    graphView = { ...graphView, selected: fn.dataset.function };
+    renderGraphColumn();
+    return;
+  }
   const point = graphPoint(event);
   const layout = graphRoot && layoutOf(graphRoot);
   if (!point || !layout) return;
@@ -756,8 +762,8 @@ window.addEventListener('mouseup', (event) => {
   if (hit) {
     const node = layout.modules[hit];
     const scale = Math.max(graphView.scale, ZOOM_OPEN);
-    graphView = { scale, x: 500 - node.x * scale, y: 500 - node.y * scale, open: hit, openedByZoom: false };
-  } else if (!event.target.closest('[data-function]')) graphView = { ...graphView, open: null, openedByZoom: false };
+    graphView = { scale, x: 500 - node.x * scale, y: 500 - node.y * scale, open: hit, openedByZoom: false, selected: hit };
+  } else graphView = { ...graphView, open: null, openedByZoom: false, selected: null };
   renderGraphColumn();
 });
 
