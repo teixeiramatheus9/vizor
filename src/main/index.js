@@ -772,7 +772,7 @@ ipcMain.on('bubble:activate', () => activateBubble());
 // The balloon of a session born in the Vizor opens its workspace tab, like
 // its panel card (spec §9.1, #144); any other balloon opens the panel.
 ipcMain.on('tooltip:click', (_event, sessionId) => {
-  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  const session = linkedSession(sessionId);
   if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
     hideOverlay();
     workspaceWindow.focusSession(session.id);
@@ -1549,6 +1549,15 @@ function linkedSessions(sessions) {
   return linkTerminals(sessions, ids, resumedChats);
 }
 
+// One session with the tab it runs in NOW (#157): a pty id left over from an
+// earlier run doesn't count as "in the Vizor", and a chat resumed in a tab is
+// reachable there before its first hook event. Every path that types into a
+// tab or focuses one goes through this, never the raw registry term.
+function linkedSession(sessionId) {
+  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  return session ? linkedSessions([session])[0] : null;
+}
+
 // kind: 'shell' | 'claude' | 'resume' (with sessionId) — #154.
 function openTerminal({ cwd, kind, sessionId }) {
   const { command, error: invalid } = terminalCommand({ kind, sessionId });
@@ -2041,7 +2050,7 @@ function claudeInPty(session, ptyId) {
 
 const commentDelivery = createCommentDelivery({
   store: commentStore,
-  sessionOf: (sessionId) => registry.sessions.get(sessionId) ?? null,
+  sessionOf: (sessionId) => linkedSession(sessionId),
   claudeInPty,
   writePty: (ptyId, data) => ptyHost?.write(ptyId, data),
   sendPeer: (session, text) => sendPeerMessage(session, text),
@@ -2565,7 +2574,7 @@ async function huntSessionTab(session) {
 }
 
 ipcMain.handle('warp:focus', (_event, sessionId) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   // A session born in the Vizor lives in a workspace tab: no window hunt.
   if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
     if (overlayMode === 'panel') hideOverlay();
@@ -2584,7 +2593,7 @@ ipcMain.handle('transcript:tail', async (_event, sessionId) => {
 });
 
 ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   const index = Number(optionIndex);
   if (!session || !Number.isInteger(index) || index < 0) return 'failed';
 
@@ -2682,7 +2691,7 @@ async function typeIntoTerminal(session, text) {
 }
 
 ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   const reply = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!reply) return 'failed';
   const ptyId = session?.term?.VIZOR_PTY_ID;
