@@ -209,4 +209,29 @@ describe('createPtyHost', () => {
     expect(spawned.map((child) => child.killed)).toEqual([true, false]);
     expect(host.aliveCount()).toBe(0);
   });
+
+  it('a full buffer restarts at a line boundary, not mid escape sequence (#112)', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r' });
+    spawned[0].emitData(`\u001b[31m${'x'.repeat(PTY_BUFFER_CHARS)}\nlinha inteira\n`);
+    const buffer = host.buffer('p1');
+    expect(buffer.startsWith('linha inteira')).toBe(true);
+  });
+
+  it('an ended terminal keeps only its tail (#116)', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r' });
+    spawned[0].emitData(`${'a'.repeat(200000)}\nfim\n`);
+    spawned[0].emitExit(0);
+    expect(host.buffer('p1').length).toBeLessThanOrEqual(65536);
+    expect(host.buffer('p1').endsWith('fim\n')).toBe(true);
+  });
+
+  it('remembers each terminal title so a reloaded window gets it back (#117)', () => {
+    const { host } = makeHost();
+    host.open({ cwd: '/r' });
+    host.setTitle('p1', 'meu chat');
+    host.setTitle('nope', 'x');
+    expect(host.list()[0].title).toBe('meu chat');
+  });
 });

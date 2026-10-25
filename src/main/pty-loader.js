@@ -7,13 +7,16 @@ import { createRequire } from 'node:module';
 // needs a C++ toolchain most desktops don't have.
 let cached = null;
 
-export function loadPty({ platform = process.platform } = {}) {
+const defaultRequire = (name) => createRequire(import.meta.url)(name);
+
+export function loadPty({ platform = process.platform, requireModule = defaultRequire, fresh = false } = {}) {
   if (platform !== 'linux') return { pty: null, error: 'só no Linux' };
-  if (cached) return cached;
+  if (cached && !fresh) return cached;
   try {
-    cached = { pty: createRequire(import.meta.url)('@lydell/node-pty'), error: null };
+    cached = { pty: requireModule('@lydell/node-pty'), error: null };
   } catch (error) {
-    cached = { pty: null, error: error?.message ?? String(error) };
+    // The window shows `error` (pt-BR); the upstream message goes to the log (#114).
+    cached = { pty: null, error: 'o módulo de terminal não carregou', detail: error?.message ?? String(error) };
   }
   return cached;
 }

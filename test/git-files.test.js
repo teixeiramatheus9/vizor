@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,5 +40,15 @@ describe('readIndexVersion', () => {
     git('add', '.');
     git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init');
     expect(await readIndexVersion(path.join(crlf, 'w.txt'))).toBe('a\r\nb\r\n');
+  });
+
+  it('follows a symlinked path to the repo (#101)', async () => {
+    const link = path.join(os.tmpdir(), `cm-git-link-${process.pid}-${Date.now()}`);
+    fs.symlinkSync(repo, link);
+    try {
+      expect(await readIndexVersion(path.join(link, 'a b.txt'))).toBe('v1');
+    } finally {
+      fs.unlinkSync(link);
+    }
   });
 });

@@ -45,13 +45,19 @@ function removeMatching(settings, shouldRemove) {
   const next = { ...settings, hooks: { ...(settings.hooks ?? {}) } };
   for (const eventName of ALL_EVENTS) {
     const groups = (next.hooks[eventName] ?? [])
-      .map((group) => ({
-        ...group,
-        hooks: (group.hooks ?? []).filter(
-          (hook) => !shouldRemove(hook.command ?? '', group, hook, eventName),
-        ),
-      }))
-      .filter((group) => group.hooks.length > 0);
+      // A group without a hooks array is someone else's (or malformed): never
+      // ours to touch, so it passes through as is (#103).
+      .map((group) =>
+        Array.isArray(group.hooks)
+          ? {
+              ...group,
+              hooks: group.hooks.filter(
+                (hook) => !shouldRemove(hook.command ?? '', group, hook, eventName),
+              ),
+            }
+          : group,
+      )
+      .filter((group) => !Array.isArray(group.hooks) || group.hooks.length > 0);
     if (groups.length > 0) next.hooks[eventName] = groups;
     else delete next.hooks[eventName];
   }

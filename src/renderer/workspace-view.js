@@ -74,22 +74,24 @@ function renderSession(session, worktreePath, selectedId) {
   )}</span><span class="where" title="${session.inside ? 'no Vizor' : 'em outro terminal'}">${ICONS[where]}</span>${files}</li>`;
 }
 
-function renderWorktree(worktree, selectedId) {
+function renderWorktree(worktree, selectedId, selectedWorktree) {
   const branch = worktree.branch === null ? '(sem branch)' : worktree.branch;
-  return `<li class="worktree${worktree.prunable ? ' prunable' : ''}" title="${escapeHtml(worktree.path)}"><div class="worktree-head" data-worktree="${escapeHtml(worktree.path)}">${
+  return `<li class="worktree${worktree.prunable ? ' prunable' : ''}" title="${escapeHtml(worktree.path)}"><div class="worktree-head" data-worktree="${escapeHtml(worktree.path)}"${
+    worktree.path === selectedWorktree ? ' aria-current="true"' : ''
+  }>${
     ICONS.branch
   }<span class="branch">${escapeHtml(branch)}</span>${worktree.prunable ? '<span class="tag">(removida)</span>' : ''}</div><ul class="sessions">${worktree.sessions
     .map((session) => renderSession(session, worktree.path, selectedId))
     .join('')}</ul></li>`;
 }
 
-function renderProject(project, selectedId) {
+function renderProject(project, selectedId, selectedWorktree) {
   return `<section class="project"><header class="project-head" title="${escapeHtml(project.root)}">${
     ICONS.folder
   }<span class="project-name">${escapeHtml(project.name)}</span><button class="remove" data-remove-project="${escapeHtml(
     project.root,
   )}" title="Tirar da lista">×</button></header><ul class="worktrees">${project.worktrees
-    .map((worktree) => renderWorktree(worktree, selectedId))
+    .map((worktree) => renderWorktree(worktree, selectedId, selectedWorktree))
     .join('')}</ul></section>`;
 }
 
@@ -106,9 +108,9 @@ function renderUnplaced(sessions, selectedId) {
     .join('')}</ul></section>`;
 }
 
-export function renderSidebar(tree, selectedId) {
+export function renderSidebar(tree, selectedId, selectedWorktree = null) {
   const projects = tree.projects.length
-    ? tree.projects.map((project) => renderProject(project, selectedId)).join('')
+    ? tree.projects.map((project) => renderProject(project, selectedId, selectedWorktree)).join('')
     : renderEmpty();
   return projects + renderUnplaced(tree.unplacedSessions, selectedId);
 }

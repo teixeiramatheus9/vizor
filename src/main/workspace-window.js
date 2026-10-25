@@ -5,6 +5,18 @@
 // free of a hard electron import.
 const SAVE_BOUNDS_DELAY_MS = 500;
 
+// Saved bounds from a monitor that is gone would open the window off screen
+// (#109): only reuse them when they overlap some display's work area.
+export function boundsVisible(bounds, displays) {
+  if (!bounds) return false;
+  return displays.some(({ workArea: area }) =>
+    bounds.x < area.x + area.width &&
+    bounds.x + bounds.width > area.x &&
+    bounds.y < area.y + area.height &&
+    bounds.y + bounds.height > area.y,
+  );
+}
+
 export function createWorkspaceWindowManager({
   BrowserWindow,
   preloadPath,
@@ -69,6 +81,13 @@ export function createWorkspaceWindowManager({
       win.show();
       win.focus();
       onShow();
+    },
+    window() {
+      return win && !win.isDestroyed() ? win : null;
+    },
+    // IPC that reaches the terminals must come from this window (#115).
+    ownsSender(sender) {
+      return Boolean(win && !win.isDestroyed() && sender === win.webContents);
     },
     send(channel, payload) {
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);

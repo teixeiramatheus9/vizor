@@ -11,6 +11,14 @@ export const PTY_BUFFER_CHARS = 1048576;
 // batching keeps the main process and the window responsive.
 export const PTY_BATCH_MS = 16;
 const CLAUDE_FALLBACK_MS = 1500;
+const ENDED_BUFFER_CHARS = 65536;
+
+// A cut buffer can start mid escape sequence or mid surrogate pair, and the
+// replay would open with garbage: restart it at the next line (#112).
+function trimToLine(text) {
+  const newline = text.indexOf('\n');
+  return newline === -1 ? text : text.slice(newline + 1);
+}
 
 // VIZOR_INTERNAL would silence every hook of the sessions started there, and
 // ELECTRON_RUN_AS_NODE would break any Electron app launched from the shell.
@@ -76,7 +84,7 @@ export function createPtyHost({
       cwd,
       env: ptyEnv(process.env, id),
     });
-    const info = { id, cwd, alive: true, exitCode: null, startedAt: Date.now() };
+    const info = { id, cwd, alive: true, exitCode: null, startedAt: Date.now(), title: null };
     const entry = { info, child, buffer: '', pending: '', timer: null };
     terminals.set(id, entry);
 
@@ -93,7 +101,7 @@ export function createPtyHost({
 
     child.onData((data) => {
       entry.buffer += data;
-      if (entry.buffer.length > PTY_BUFFER_CHARS) entry.buffer = entry.buffer.slice(-PTY_BUFFER_CHARS);
+      if (entry.buffer.length > PTY_BUFFER_CHARS) entry.buffer = trimToLine(entry.buffer.slice(-PTY_BUFFER_CHARS));
       entry.pending += data;
       if (!entry.timer) entry.timer = setTimer(() => flush(entry), PTY_BATCH_MS);
       typeClaude();
@@ -103,6 +111,9 @@ export function createPtyHost({
       if (fallback) clearTimer(fallback);
       entry.info.alive = false;
       entry.info.exitCode = exitCode ?? null;
+      // An ended tab is read, not scrolled for megabytes: keep its tail (#116).
+      if (entry.buffer.length > ENDED_BUFFER_CHARS)
+        entry.buffer = trimToLine(entry.buffer.slice(-ENDED_BUFFER_CHARS));
       host.emit('exit', { id, exitCode: entry.info.exitCode });
       host.emit('change');
     });
@@ -127,6 +138,13 @@ export function createPtyHost({
     if (entry.info.alive) entry.child.kill();
     terminals.delete(id);
     host.emit('change');
+  };
+
+  // Titles come from the terminal itself (claude sets the chat's); kept here so
+  // a reloaded window gets them back (#117).
+  host.setTitle = (id, title) => {
+    const entry = terminals.get(id);
+    if (entry && typeof title === 'string') entry.info.title = title.slice(0, 200);
   };
 
   host.list = () => [...terminals.values()].map((entry) => ({ ...entry.info }));

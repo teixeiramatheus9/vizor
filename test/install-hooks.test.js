@@ -158,3 +158,12 @@ describe('buildHookCommand', () => {
     expect(commands).toEqual(['"C:\\Users\\u\\.config\\claude-manager\\hook-emit.cmd"']);
   });
 });
+
+describe('foreign tool groups (#103)', () => {
+  it('leaves a PreToolUse group without a hooks array alone', () => {
+    const odd = { matcher: 'Bash' };
+    const settings = { hooks: { PreToolUse: [odd] } };
+    expect(ensureHooks(settings, COMMAND).hooks.PreToolUse[0]).toEqual(odd);
+    expect(removeAppHooks(settings).hooks.PreToolUse).toEqual([odd]);
+  });
+});

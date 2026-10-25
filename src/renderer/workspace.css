@@ -129,6 +129,15 @@ button:hover {
   color: var(--text-3);
 }
 
+.worktree-head {
+  cursor: pointer;
+}
+
+.worktree-head[aria-current='true'] {
+  color: var(--text);
+  box-shadow: inset 2px 0 var(--accent);
+}
+
 .worktree.prunable .worktree-head {
   color: var(--dim);
 }

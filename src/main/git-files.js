@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 const GIT_TIMEOUT_MS = 3000;
@@ -19,6 +20,11 @@ function git(args, cwd) {
 // the one fallback when an edit cannot be reversed. Null when the file is not
 // in a repo, not in the index, or git fails in any way.
 export async function readIndexVersion(filePath) {
+  // git reports the toplevel as a real path: a file reached through a symlink
+  // would otherwise sit at '../…' from it and never resolve (#101).
+  const real = await realpath(filePath).catch(() => null);
+  if (!real) return null;
+  filePath = real;
   const directory = path.dirname(filePath);
   const toplevel = await git(['rev-parse', '--show-toplevel'], directory);
   if (!toplevel) return null;

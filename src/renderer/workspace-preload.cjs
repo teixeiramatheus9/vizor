@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('vizor', {
   writeTerminal: (id, data) => ipcRenderer.send('pty:write', { id, data }),
   resizeTerminal: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
   closeTerminal: (id) => ipcRenderer.send('pty:close', id),
+  setTerminalTitle: (id, title) => ipcRenderer.send('pty:title', { id, title }),
   terminalBuffer: (id) => ipcRenderer.invoke('pty:buffer', id),
   onTerminalData: (callback) => ipcRenderer.on('pty:data', (_event, payload) => callback(payload)),
   onTerminalExit: (callback) => ipcRenderer.on('pty:exit', (_event, payload) => callback(payload)),

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,5 +32,14 @@ describe('config store', () => {
     const config = loadConfig(file);
     expect(config.terminal).toBe('kitty');
     expect(config.tokenBudgetDaily).toBe(DEFAULT_CONFIG.tokenBudgetDaily);
+  });
+
+  it('normalizes workspace lists to arrays of strings (#105)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cfg-ws-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ workspaceProjects: 'oops', workspaceDismissed: ['/a', 3, null] }));
+    const config = loadConfig(file);
+    expect(config.workspaceProjects).toEqual([]);
+    expect(config.workspaceDismissed).toEqual(['/a']);
   });
 });

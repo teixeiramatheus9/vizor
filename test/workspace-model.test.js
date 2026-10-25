@@ -5,6 +5,7 @@ import {
   matchWorktree,
   removeProject,
   taskFileStats,
+  clampTerminalSize,
   quitPrompt,
   staleRoots,
   shouldAutoAdd,
@@ -194,4 +195,20 @@ describe('session to terminal link', () => {
     expect(inside).toMatchObject({ ptyId: 'p1', inside: true });
     expect(outside).toMatchObject({ ptyId: null, inside: false });
   });
+});
+
+describe('auto-add never takes the home folder (#104)', () => {
+  it('skips a repo rooted at home', () => {
+    expect(shouldAutoAdd('/home/u', [], [], '/home/u')).toBe(false);
+    expect(shouldAutoAdd('/home/u/proj', [], [], '/home/u')).toBe(true);
+  });
+
+describe('clampTerminalSize (#115)', () => {
+  it('accepts sane sizes and refuses absurd ones', () => {
+    expect(clampTerminalSize(120, 40)).toEqual({ cols: 120, rows: 40 });
+    expect(clampTerminalSize(0, 40)).toBeNull();
+    expect(clampTerminalSize(1.5, 40)).toBeNull();
+    expect(clampTerminalSize(5000, 9000)).toEqual({ cols: 1000, rows: 1000 });
+  });
+});
 });

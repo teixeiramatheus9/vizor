@@ -18,8 +18,10 @@ export function removeProject(list, root) {
 
 // Auto-add brings in the repo of every session — except one the user took
 // off the list, which stays off until they add it back by hand.
-export function shouldAutoAdd(root, projects, dismissed) {
-  return Boolean(root) && !projects.includes(root) && !dismissed.includes(root);
+// Never the home folder itself: a dotfiles repo there (yadm, bare repo)
+// would swallow every session outside other repos (#104).
+export function shouldAutoAdd(root, projects, dismissed, home = null) {
+  return Boolean(root) && root !== home && !projects.includes(root) && !dismissed.includes(root);
 }
 
 // An unplaced cwd inside a known repo usually means a worktree was just
@@ -121,4 +123,12 @@ export function quitPrompt(aliveCount) {
       ? '1 sessão rodando no workspace vai ser encerrada.'
       : `${aliveCount} sessões rodando no workspace vão ser encerradas.`;
   return { message, buttons: ['Encerrar mesmo assim', 'Cancelar'], defaultId: 1, cancelId: 1 };
+}
+
+// Resize requests come from the window: integers only, and a ceiling so a bad
+// message cannot ask the pty for a giant screen (#115).
+const MAX_TERMINAL_SIZE = 1000;
+export function clampTerminalSize(cols, rows) {
+  if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return null;
+  return { cols: Math.min(cols, MAX_TERMINAL_SIZE), rows: Math.min(rows, MAX_TERMINAL_SIZE) };
 }

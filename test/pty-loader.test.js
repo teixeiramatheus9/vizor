@@ -22,4 +22,9 @@ describe('loadPty', () => {
     expect(output).toContain('p1');
     expect(exitCode).toBe(0);
   });
+
+  it('reports a load failure in pt-BR (#114)', () => {
+    const result = loadPty({ requireModule: () => { throw new Error('Cannot find module'); }, fresh: true });
+    expect(result).toMatchObject({ pty: null, error: 'o módulo de terminal não carregou', detail: 'Cannot find module' });
+  });
 });

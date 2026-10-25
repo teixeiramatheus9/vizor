@@ -62,9 +62,13 @@ async function ensureView(id) {
   term.onData((data) => window.vizor.writeTerminal(id, data));
   term.onTitleChange((title) => {
     titles[id] = title;
+    window.vizor.setTerminalTitle(id, title);
     renderTerminalArea();
   });
-  term.write(await window.vizor.terminalBuffer(id));
+  const replay = await window.vizor.terminalBuffer(id);
+  // Removed while the replay was loading: the view is already disposed (#111).
+  if (views.get(id) !== view) return view;
+  term.write(replay);
   view.ready = true;
   return view;
 }
@@ -114,7 +118,7 @@ async function renderTerminalArea() {
 function render() {
   if (!lastTree) return;
   topbar.innerHTML = renderTopBar(lastTree);
-  sidebar.innerHTML = renderSidebar(lastTree, selectedId);
+  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree);
   renderTerminalArea();
 }
 
@@ -123,6 +127,8 @@ window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;
   terminals = list ?? [];
+  // Titles live in main too, so a reloaded window gets them back (#117).
+  for (const terminal of terminals) if (terminal.title && !titles[terminal.id]) titles[terminal.id] = terminal.title;
   for (const id of [...views.keys()]) {
     if (terminals.some((terminal) => terminal.id === id)) continue;
     views.get(id).term.dispose();
@@ -149,7 +155,7 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (target.closest('[data-add-project]')) {
-    window.vizor.addProject();
+    window.vizor.addProject().catch(() => {}); // main logs the failure (#106)
     return;
   }
   const close = target.closest('[data-close-tab]');
@@ -200,7 +206,12 @@ document.addEventListener('click', async (event) => {
     selectedId = row.dataset.session;
     const selection = findSession(selectedId);
     if (selection?.worktree) selectedWorktree = selection.worktree.path;
-    if (selection?.session.ptyId) activeTab = selection.session.ptyId;
+    if (selection?.session.ptyId) {
+      activeTab = selection.session.ptyId;
+      // The pty may live in another folder (cd before claude): show its tabs (#119).
+      const terminal = terminals.find((item) => item.id === activeTab);
+      if (terminal) selectedWorktree = terminal.cwd;
+    }
     render();
   }
 });
