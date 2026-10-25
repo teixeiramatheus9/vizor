@@ -195,8 +195,34 @@ export function predownloadVoice(voiceId, { enabled = true, ensureFn = ensureVoi
 // The brand is pronounced like the English "visor" ("váizor"), but pt-BR
 // voices read the spelling literally. Respell it for SPEECH only — every
 // displayed surface keeps "Vizor" (issue #71).
-export function speakableText(text) {
-  return String(text ?? '').replace(/\bvizor\b/gi, 'Váizor');
+// Dev words are said in English (#161): pt-BR voices read "GitHub" as
+// "Jite Chob" and "issues" as "SUS". Each spelling was checked by speaking it
+// with that voice and transcribing it back; the voices differ, so each has
+// its own column. Speech only — every displayed surface keeps the real word.
+const DEV_WORDS = [
+  [/\bgithub\b/gi, 'guíti ráb', 'guíti ráb'],
+  [/\bissues\b/gi, 'íchius', 'íchius'],
+  [/\bissue\b/gi, 'íchiu', 'íchiu'],
+  [/\bpull requests\b/gi, 'pul requésts', 'púl ri-qués'],
+  [/\bpull request\b/gi, 'pul requést', 'púl ri-quést'],
+  [/\bbranches\b/gi, 'brénchis', 'brântchis'],
+  [/\bbranch\b/gi, 'brénch', 'brântch'],
+  [/\bpush\b/gi, 'púch', 'púch'],
+  [/\bdeploy\b/gi, 'diplói', 'diplói'],
+  [/\bbuild\b/gi, 'bíuld', 'bilde'],
+  [/\breview\b/gi, 'riviú', 'riviú'],
+  [/\bfeatures?\b/gi, 'fítcher', 'fítcher'],
+  [/\bmain\b/gi, 'mêin', 'mêin'],
+  [/\btasks?\b/gi, 'tâsk', null],
+  [/\bworktrees?\b/gi, 'uórc trí', 'uôrc tri'],
+  [/\bCI\b/g, 'si-ái', 'si-ái'],
+];
+
+export function speakableText(text, voiceId = DEFAULT_VOICE) {
+  let speech = String(text ?? '').replace(/\bvizor\b/gi, 'Váizor');
+  const column = voiceId === 'faber' ? 2 : 1;
+  for (const entry of DEV_WORDS) if (entry[column]) speech = speech.replace(entry[0], entry[column]);
+  return speech;
 }
 
 export function speak(
@@ -214,8 +240,8 @@ export function speak(
     onDone();
     return;
   }
-  const speech = speakableText(text);
   const voiceId = VOICES[voice] ? voice : DEFAULT_VOICE;
+  const speech = speakableText(text, voiceId);
   const ready = installed ?? isVoiceInstalled(sherpaDir, voiceId);
   if (ready) {
     speakNeural(speech, voiceId, spawnFn, volume, onDone);

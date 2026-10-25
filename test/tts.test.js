@@ -230,3 +230,20 @@ describe('speakableText', () => {
     expect(speakableText(`O chat vizor espera você.`)).toBe('O chat Váizor espera você.');
   });
 });
+
+describe('dev terms sound English (#161, validated by speaking and transcribing back)', () => {
+  it('Santa', () => {
+    expect(speakableText('Tem 3 issues abertas no GitHub.', 'santa')).toBe('Tem 3 íchius abertas no guíti ráb.');
+    expect(speakableText('Fiz o push na branch e o build quebrou.', 'santa')).toBe('Fiz o púch na brénch e o bíuld quebrou.');
+    expect(speakableText('A task 22 tem uma pull request.', 'santa')).toBe('A tâsk 22 tem uma pul requést.');
+  });
+
+  it('Faber has its own spellings', () => {
+    expect(speakableText('O build quebrou na branch main.', 'faber')).toBe('O bilde quebrou na brântch mêin.');
+    expect(speakableText('A task 22 tem uma issue.', 'faber')).toBe('A task 22 tem uma íchiu.');
+  });
+
+  it('only whole words, and the brand still respelled', () => {
+    expect(speakableText('o maintainer fez rebuild no Vizor', 'santa')).toBe('o maintainer fez rebuild no Váizor');
+  });
+});
