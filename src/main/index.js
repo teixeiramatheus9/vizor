@@ -3041,10 +3041,24 @@ function notifyRulesChanged() {
   sendState();
 }
 
+// Opened from the tray menu, mutter's focus-stealing prevention leaves a new
+// (or re-shown) window behind the others; a moment of always-on-top makes it
+// come to the front, the same as a click on it would.
+function bringRulesWindowForward() {
+  if (!rulesWindow || rulesWindow.isDestroyed()) return;
+  if (rulesWindow.isMinimized()) rulesWindow.restore();
+  rulesWindow.show();
+  rulesWindow.setAlwaysOnTop(true);
+  rulesWindow.moveTop();
+  rulesWindow.focus();
+  setTimeout(() => {
+    if (rulesWindow && !rulesWindow.isDestroyed()) rulesWindow.setAlwaysOnTop(false);
+  }, 300);
+}
+
 function openRulesWindow() {
   if (rulesWindow && !rulesWindow.isDestroyed()) {
-    rulesWindow.show();
-    rulesWindow.focus();
+    bringRulesWindowForward();
     return;
   }
   rulesWindow = new BrowserWindow({
@@ -3054,6 +3068,7 @@ function openRulesWindow() {
     minHeight: 480,
     title: 'Vizor — regras',
     backgroundColor: '#0d1117',
+    show: false,
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(rendererDir, 'rules-preload.cjs'), contextIsolation: true },
   });
@@ -3063,6 +3078,7 @@ function openRulesWindow() {
     event.preventDefault();
     rulesWindow.hide();
   });
+  rulesWindow.once('ready-to-show', bringRulesWindowForward);
   rulesWindow.loadFile(path.join(rendererDir, 'rules.html'));
 }
 
