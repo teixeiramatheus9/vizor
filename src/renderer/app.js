@@ -842,7 +842,7 @@ function renderVoice(voice) {
     ? `# não consegui baixar os modelos: ${voice.download.error}`
     : voice.download
       ? `# baixando os modelos… ${voice.download.percent}%`
-      : '# os modelos (~230 MB) baixam ao ligar; nada de áudio sai da máquina';
+      : '# os modelos (~500 MB) baixam ao ligar; nada de áudio sai da máquina';
   const badge = document.getElementById('voice-badge');
   badge.classList.toggle('hidden', !voice.enabled);
   badge.textContent = voice.enabled ? `🎙 ${VOICE_STATE_TEXT[voice.state] ?? voice.state}` : '';
@@ -1027,6 +1027,12 @@ function chime(kind, force = false) {
   if (muted && !force) return;
   try {
     audioContext ??= new AudioContext();
+    // The voice mode's "I heard you" (#161): one short high note, unlike
+    // every alert, so it never reads as "task done".
+    if (kind === 'beep') {
+      playNote(1318.5, 0, 0.12 * (soundVolume / 70));
+      return;
+    }
     const preset = CHIME_PRESETS[soundTimbre] ?? CHIME_PRESETS.marimba;
     const notes = preset[kind] ?? preset.done;
     const typeFactor = (typeVolumes[kind] ?? 100) / 100;

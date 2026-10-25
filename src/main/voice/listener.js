@@ -7,9 +7,13 @@ import { createListenState } from './listen-state.js';
 // and each part of speech is transcribed there too.
 const TRACKING = new Set(['listening', 'closing', 'grace']);
 
-export function createListener({ worker, now = Date.now, tickMs = 100, timings } = {}) {
+const SAMPLE_RATE = 16000;
+const GAP = new Float32Array(Math.round(0.15 * SAMPLE_RATE)); // between parts in the whole
+
+export function createListener({ worker, now = Date.now, tickMs = 100, timings, fullTranscript = true } = {}) {
   const listener = new EventEmitter();
-  const machine = createListenState({ now, timings });
+  const machine = createListenState({ now, timings, fullTranscript });
+  const audio = new Map(); // part id → its samples, for the whole-utterance transcript
   let lastState = machine.state;
   let tracking = false;
 
@@ -27,7 +31,22 @@ export function createListener({ worker, now = Date.now, tickMs = 100, timings }
   }
 
   for (const name of ['ack', 'echo', 'utterance', 'cancelled', 'sleep', 'barge']) {
-    machine.on(name, (payload) => listener.emit(name, payload));
+    machine.on(name, (payload) => {
+      if (name === 'ack' && fullTranscript && payload?.parts?.length) {
+        const pieces = payload.parts.map((id) => audio.get(id)).filter(Boolean);
+        const length = pieces.reduce((sum, piece) => sum + piece.length, 0) + GAP.length * Math.max(0, pieces.length - 1);
+        const whole = new Float32Array(length);
+        let offset = 0;
+        pieces.forEach((piece, index) => {
+          if (index > 0) offset += GAP.length;
+          whole.set(piece, offset);
+          offset += piece.length;
+        });
+        worker.postMessage({ type: 'transcribe', id: `final:${payload.parts.join(',')}`, samples: whole });
+      }
+      if (name !== 'ack' && name !== 'echo') audio.clear();
+      listener.emit(name, payload);
+    });
   }
 
   worker.on('message', (message) => {
@@ -43,11 +62,15 @@ export function createListener({ worker, now = Date.now, tickMs = 100, timings }
         // spoken order, whenever it comes back. A part of an ended turn has
         // no slot anymore and is ignored by the machine.
         const id = machine.speechEnd();
-        if (id) worker.postMessage({ type: 'transcribe', id, samples: message.samples });
+        if (id) {
+          audio.set(id, message.samples);
+          worker.postMessage({ type: 'transcribe', id, samples: message.samples });
+        }
         break;
       }
       case 'transcript':
-        machine.partial(message.text, message.id);
+        if (String(message.id).startsWith('final:')) machine.final(message.text, message.id.slice('final:'.length));
+        else machine.partial(message.text, message.id);
         break;
       case 'error':
         machine.cancel();

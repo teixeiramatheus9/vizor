@@ -16,9 +16,10 @@ describe('listener', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  function setup() {
+  // Most tests pin the per-part flow; the full-transcript one asks for it.
+  function setup({ fullTranscript = false } = {}) {
     const worker = fakeWorker();
-    const listener = createListener({ worker, now: () => Date.now(), tickMs: 50 });
+    const listener = createListener({ worker, now: () => Date.now(), tickMs: 50, fullTranscript, timings: { completeMs: 400, trailingMs: 1700, graceMs: 1500 } });
     const events = [];
     for (const name of ['ack', 'echo', 'utterance', 'state']) listener.on(name, (payload) => events.push([name, payload]));
     return { worker, listener, events };
@@ -106,6 +107,26 @@ describe('listener', () => {
     worker.reply({ type: 'error', error: 'whisper crashed' });
     expect(listener.state).toBe('sleeping');
     expect(errors).toEqual(['whisper crashed']);
+  });
+
+  it('at the beep, the whole utterance is transcribed at once and that text wins (live test)', async () => {
+    const { worker, events } = setup({ fullTranscript: true });
+    worker.reply({ type: 'wake' });
+    worker.reply({ type: 'speech-start' });
+    worker.reply({ type: 'speech-end', samples: new Float32Array(1000) });
+    await vi.advanceTimersByTimeAsync(200);
+    worker.reply({ type: 'speech-start' });
+    worker.reply({ type: 'speech-end', samples: new Float32Array(500) });
+    const parts = worker.sent.filter((message) => message.type === 'transcribe');
+    worker.reply({ type: 'transcript', id: parts[0].id, text: 'troca o bicrypt' });
+    worker.reply({ type: 'transcript', id: parts[1].id, text: 'pelo argon' });
+    await vi.advanceTimersByTimeAsync(500);
+    const whole = worker.sent.filter((message) => message.type === 'transcribe').at(-1);
+    expect(whole.id.startsWith('final:')).toBe(true);
+    expect(whole.samples.length).toBe(1000 + 500 + 2400); // a short silence between parts
+    worker.reply({ type: 'transcript', id: whole.id, text: 'troca o bcrypt pelo argon2' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(events.find(([name]) => name === 'utterance')?.[1]).toEqual({ text: 'troca o bcrypt pelo argon2' });
   });
 
   it('reports state changes for the bubble', async () => {

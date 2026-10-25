@@ -155,6 +155,16 @@ describe('voice session — edges', () => {
     expect(off.texts().at(-1)).toBe('Terminei.');
   });
 
+  it('just the wake word sends nothing and keeps listening (live test: "Pfizer")', async () => {
+    let kept = 0;
+    const { session, said, calls } = setup({ keepListening: () => kept++ });
+    await session.onUtterance('Pfizer.');
+    await session.onUtterance('Vizor');
+    expect(said).toEqual([]);
+    expect(calls.filter(([name]) => name === 'deliver')).toEqual([]);
+    expect(kept).toBe(2);
+  });
+
   it('never speaks emoji', async () => {
     const { session, texts } = setup({ askManager: async () => 'Xii, travei aqui 😅 tenta de novo?' });
     await session.onUtterance('como tá a vida?');

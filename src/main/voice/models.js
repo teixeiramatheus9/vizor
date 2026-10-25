@@ -30,6 +30,7 @@ export const VAD_MODEL = {
 
 const whisper = (size, approxMB) => ({
   id: `asr-${size}`,
+  kind: 'whisper',
   url: `${RELEASES}/asr-models/sherpa-onnx-whisper-${size}.tar.bz2`,
   dirName: `sherpa-onnx-whisper-${size}`,
   prefix: size,
@@ -37,13 +38,26 @@ const whisper = (size, approxMB) => ({
   approxMB,
 });
 
-export const ASR_MODELS = { base: whisper('base', 208), small: whisper('small', 640) };
+// Measured on the user's own recorded phrases (pt-BR with code words):
+// Parakeet v3 22.5% WER at ~0.6 s, Whisper base 39.6% at ~0.8 s, small
+// 32.4% at ~1.8 s. Parakeet is the default; base is the light option.
+const PARAKEET = {
+  id: 'asr-parakeet',
+  kind: 'parakeet',
+  url: `${RELEASES}/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2`,
+  dirName: 'sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8',
+  prefix: null,
+  files: ['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt'],
+  approxMB: 480,
+};
+
+export const ASR_MODELS = { parakeet: PARAKEET, base: whisper('base', 208) };
 
 // The English spotter's spellings of how "Vizor" is said (the spike heard
 // the user's "Vizor" as these). One per line, sherpa's keywords format.
 export const KEYWORDS = ['▁VI S OR @VIZOR', '▁VI Z OR @VIZOR', '▁VA I Z OR @VIZOR', '▁VA I S OR @VIZOR'].join('\n') + '\n';
 
-const asrOf = (model) => ASR_MODELS[model] ?? ASR_MODELS.base;
+const asrOf = (model) => ASR_MODELS[model] ?? ASR_MODELS.parakeet;
 const modelsFor = (model) => [KWS_MODEL, VAD_MODEL, asrOf(model)];
 
 export function voiceModelPaths(sherpaDir, model) {
@@ -51,7 +65,7 @@ export function voiceModelPaths(sherpaDir, model) {
   return {
     kws: { dir: path.join(sherpaDir, KWS_MODEL.dirName), keywordsFile: path.join(sherpaDir, 'voz', 'keywords.txt') },
     vad: path.join(sherpaDir, VAD_MODEL.dirName, VAD_MODEL.files[0]),
-    asr: { dir: path.join(sherpaDir, asr.dirName), prefix: asr.prefix },
+    asr: { dir: path.join(sherpaDir, asr.dirName), prefix: asr.prefix, kind: asr.kind },
   };
 }
 

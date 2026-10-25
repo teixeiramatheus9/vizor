@@ -6,15 +6,20 @@ import { ASR_MODELS, KEYWORDS, installVoiceModels, missingVoiceModels, voiceMode
 import { downloadFile } from '../src/main/sherpa-installer.js';
 
 describe('voice model paths', () => {
-  it('gives the engine its paths for base and small', () => {
+  it('Parakeet v3 is the default model, Whisper base the light one (live test)', () => {
+    expect(voiceModelPaths('/s', 'parakeet').asr).toEqual({ dir: '/s/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8', prefix: null, kind: 'parakeet' });
+    expect(voiceModelPaths('/s', 'nope').asr.kind).toBe('parakeet');
+    expect(Object.keys(ASR_MODELS)).toEqual(['parakeet', 'base']);
+    expect(missingVoiceModels('/s', 'parakeet', () => false)).toEqual(['kws', 'vad', 'asr-parakeet']);
+  });
+
+  it('gives the engine its paths for base', () => {
     const base = voiceModelPaths('/s', 'base');
-    expect(base.asr).toEqual({ dir: '/s/sherpa-onnx-whisper-base', prefix: 'base' });
+    expect(base.asr).toEqual({ dir: '/s/sherpa-onnx-whisper-base', prefix: 'base', kind: 'whisper' });
     expect(base.kws.dir).toBe('/s/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01');
     expect(base.kws.keywordsFile).toBe('/s/voz/keywords.txt');
     expect(base.vad).toBe('/s/silero-vad/silero_vad.onnx');
-    expect(voiceModelPaths('/s', 'small').asr.prefix).toBe('small');
-    expect(voiceModelPaths('/s', 'nope').asr.prefix).toBe('base');
-    expect(ASR_MODELS.base.approxMB).toBeLessThan(ASR_MODELS.small.approxMB);
+    expect(ASR_MODELS.base.approxMB).toBeLessThan(ASR_MODELS.parakeet.approxMB);
   });
 
   it('lists only what is missing', () => {

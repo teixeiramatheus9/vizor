@@ -34,7 +34,7 @@ import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
 import { runClaude } from './claude-cli.js';
 import { ASR_MODELS, KWS_MODEL, VAD_MODEL, installVoiceModels, missingVoiceModels, voiceModelPaths } from './voice/models.js';
-import { otherRecorders } from './voice/meeting.js';
+import { otherRecorders, parsePwDump } from './voice/meeting.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
@@ -2412,7 +2412,7 @@ ipcMain.handle('config:set', (_event, partial) => {
     allowed.shortcuts = sanitizeShortcuts(partial.shortcuts, managerConfig.shortcuts);
   }
   if (typeof partial?.voiceEnabled === 'boolean') allowed.voiceEnabled = partial.voiceEnabled;
-  if (partial?.voiceModel === 'base' || partial?.voiceModel === 'small') allowed.voiceModel = partial.voiceModel;
+  if (partial?.voiceModel === 'parakeet' || partial?.voiceModel === 'base') allowed.voiceModel = partial.voiceModel;
   if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
   if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
   const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
@@ -3370,6 +3370,7 @@ async function voiceGhDigest() {
       }),
     );
     lastGhDigest = buildDigest(results);
+    lastGhDigestAt = Date.now();
   } catch (error) {
     log(`gh digest failed: ${error}`);
     lastGhDigest = buildDigest({ error: String(error) });
@@ -3450,8 +3451,16 @@ async function voiceDeliverPrompt(sessionId, text) {
   return 'sent';
 }
 
+const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
+let lastGhDigestAt = 0;
+
+// The gerente has no tools of its own: it gets the project's GitHub state
+// with the question (live test: "não tenho acesso ao GitHub").
 async function voiceAskManager(text) {
-  const github = lastGhDigest ? `\n\n(GitHub do projeto agora: ${lastGhDigest.speech})` : '';
+  if (!lastGhDigest || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
+  const github = lastGhDigest
+    ? `\n\n(Estado do GitHub do projeto agora — use pra responder: ${lastGhDigest.speech}${lastGhDigest.lines.length ? ` Detalhes: ${lastGhDigest.lines.slice(0, 20).join('; ')}` : ''})`
+    : '';
   const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}` });
   tokenBudget.add(tokensUsed);
   return reply;
@@ -3541,6 +3550,7 @@ function createVoiceSessionForApp() {
     },
     findChat: voiceFindChat,
     dictation: (on) => voiceListener?.dictation(on),
+    keepListening: () => voiceListener?.wake(),
     projectRoot: () => voiceRoot(),
     settings: () => ({ narration: managerConfig.voiceNarration !== false, summary: managerConfig.voiceSummary ?? 'always' }),
   });
@@ -3553,7 +3563,7 @@ function voiceStatus() {
     available: voiceAvailable(),
     enabled: Boolean(managerConfig.voiceEnabled),
     state: voiceState,
-    model: managerConfig.voiceModel ?? 'base',
+    model: managerConfig.voiceModel ?? 'parakeet',
     narration: managerConfig.voiceNarration !== false,
     summary: managerConfig.voiceSummary ?? 'always',
     download: voiceDownload,
@@ -3564,7 +3574,7 @@ function voiceStatus() {
 // Turned on: the models come down first (with progress), then it listens.
 function enableVoice() {
   if (!voiceAvailable() || !managerConfig.voiceEnabled) return;
-  const model = managerConfig.voiceModel ?? 'base';
+  const model = managerConfig.voiceModel ?? 'parakeet';
   if (!missingVoiceModels(voiceSherpaDir, model).length) {
     startVoice();
     return;
@@ -3603,7 +3613,8 @@ function enableVoice() {
 async function checkMeeting() {
   if (!voiceListener) return;
   try {
-    const dump = JSON.parse(await runText('pw-dump', []));
+    const dump = parsePwDump(await runText('pw-dump', []));
+    if (!dump) return; // a garbled dump is not a reason to stop watching
     const ours = new Set(app.getAppMetrics().map((metric) => metric.pid));
     const others = otherRecorders(dump, ours);
     const inMeeting = others.length > 0;
@@ -3652,7 +3663,7 @@ function createMicWindow() {
 
 function startVoice() {
   if (voiceListener || !voiceAvailable() || !managerConfig.voiceEnabled) return;
-  const model = managerConfig.voiceModel ?? 'base';
+  const model = managerConfig.voiceModel ?? 'parakeet';
   const missing = missingVoiceModels(voiceSherpaDir, model);
   if (missing.length) {
     voiceState = 'sem-modelos';
@@ -3716,7 +3727,12 @@ function startVoice() {
     sendToRenderer('tooltip', { projectName: 'você disse', text, kind: 'hint', sessionId: null });
     showTooltip();
   });
-  voiceListener.on('ack', () => voiceArbiter?.say({ text: 'ok', priority: 1, kind: 'ack' }));
+  // A beep, not a spoken "ok" (live test: the word every time was tiring);
+  // its echo is not the user talking.
+  voiceListener.on('ack', () => {
+    sendToRenderer('chime', { kind: 'beep' });
+    voiceListener?.ignoreSpeech(500);
+  });
   voiceListener.on('error', (error) => log(`voice engine: ${error}`));
   voiceListener.on('barge', () => voiceArbiter?.flush());
   voiceListener.on('cancelled', (payload) => {

@@ -292,9 +292,9 @@ export function closestPhrase(text, meant) {
 
 // "Vizor" as Whisper writes it at the start of an utterance (spike: Pfizer,
 // Fizer, Bizer, Aisor, Visor, Vizer).
-const WAKE_KEYS = ['visor', 'vaisor', 'fiser', 'pfiser', 'biser', 'aisor', 'viser', 'aisur'];
+const WAKE_KEYS = ['visor', 'vaisor', 'fiser', 'pfiser', 'biser', 'aisor', 'viser', 'aisur', 'ueiser', 'advisor', 'vaser'];
 export function soundsLikeWakeWord(word) {
   const key = phoneticKey(word);
-  if (key.length < 4 || key.length > 7) return false;
+  if (key.length < 4 || key.length > 8) return false;
   return WAKE_KEYS.some((target) => distance(key, target) <= 1);
 }

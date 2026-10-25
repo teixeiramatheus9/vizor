@@ -28,7 +28,7 @@ export const DEFAULT_CONFIG = {
   workspaceDismissed: [],
   guardEnabled: true,
   voiceEnabled: false,
-  voiceModel: 'base',
+  voiceModel: 'parakeet',
   voiceNarration: true,
   voiceSummary: 'always',
 };

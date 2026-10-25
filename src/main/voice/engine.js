@@ -52,7 +52,7 @@ export function createVoiceEngine({ sherpa, paths, threads = 4, keywordsThreshol
   const spotStream = spotter.createStream();
   const vad = new sherpa.Vad(
     {
-      sileroVad: { model: paths.vad, threshold: 0.5, minSpeechDuration: 0.2, minSilenceDuration: 0.3, windowSize: WINDOW },
+      sileroVad: { model: paths.vad, threshold: 0.5, minSpeechDuration: 0.2, minSilenceDuration: 0.5, windowSize: WINDOW },
       sampleRate: SAMPLE_RATE,
       numThreads: 1,
       debug: false,
@@ -60,7 +60,7 @@ export function createVoiceEngine({ sherpa, paths, threads = 4, keywordsThreshol
     60,
   );
   let recognizer = null; // loaded on first use: ~1 s, and only if voice is used
-  const asrPrefix = path.join(paths.asr.dir, paths.asr.prefix);
+  const asrPrefix = paths.asr.prefix ? path.join(paths.asr.dir, paths.asr.prefix) : null;
 
   let listening = false;
   let speaking = false;
@@ -120,22 +120,32 @@ export function createVoiceEngine({ sherpa, paths, threads = 4, keywordsThreshol
     }
   };
 
+  // Parakeet v3 is a NeMo transducer (the default); Whisper the light option.
+  function recognizerConfig() {
+    if (paths.asr.kind === 'parakeet') {
+      const file = (name) => path.join(paths.asr.dir, name);
+      return {
+        transducer: { encoder: file('encoder.int8.onnx'), decoder: file('decoder.int8.onnx'), joiner: file('joiner.int8.onnx') },
+        tokens: file('tokens.txt'),
+        modelType: 'nemo_transducer',
+      };
+    }
+    return {
+      whisper: {
+        encoder: `${asrPrefix}-encoder.int8.onnx`,
+        decoder: `${asrPrefix}-decoder.int8.onnx`,
+        language: 'pt',
+        task: 'transcribe',
+        tailPaddings: -1,
+      },
+      tokens: `${asrPrefix}-tokens.txt`,
+    };
+  }
+
   engine.transcribe = (samples) => {
     recognizer ??= new sherpa.OfflineRecognizer({
       featConfig: feat,
-      modelConfig: {
-        whisper: {
-          encoder: `${asrPrefix}-encoder.int8.onnx`,
-          decoder: `${asrPrefix}-decoder.int8.onnx`,
-          language: 'pt',
-          task: 'transcribe',
-          tailPaddings: -1,
-        },
-        tokens: `${asrPrefix}-tokens.txt`,
-        numThreads: threads,
-        provider: 'cpu',
-        debug: 0,
-      },
+      modelConfig: { ...recognizerConfig(), numThreads: threads, provider: 'cpu', debug: 0 },
     });
     const stream = recognizer.createStream();
     stream.acceptWaveform({ samples, sampleRate: SAMPLE_RATE });

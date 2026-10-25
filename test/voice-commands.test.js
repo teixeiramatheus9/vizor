@@ -122,3 +122,48 @@ describe('routeUtterance — the wake word as Whisper writes it', () => {
     expect(route('fiz o deploy', chat)).toEqual({ type: 'prompt', text: 'fiz o deploy' });
   });
 });
+
+describe('routeUtterance — GitHub questions (live test)', () => {
+  it('asking about the GitHub in everyday words is the status command', () => {
+    for (const phrase of [
+      'quantas issues a gente tem abertas no GitHub?',
+      'quantas issues tem abertas',
+      'o que tá rolando no GitHub',
+      'o que tá rolando',
+      'como tá o GitHub',
+      'tem PR aberta?',
+      'quais PRs estão abertas',
+    ])
+      expect(route(phrase), phrase).toEqual({ type: 'status' });
+  });
+});
+
+describe('routeUtterance — how the models heard the user (voz2 recordings)', () => {
+  it('"vou ditar" as every model misheard it', () => {
+    for (const heard of ['vou ditar', 'Vou de tentar.', 'vou de ter', 'vou de terra', 'Vou editar.', 'voo de tar', 'modo ditado'])
+      expect(route(heard), heard).toEqual({ type: 'dictate' });
+  });
+
+  it('"Vizor" heard as Weiser or Advisor', () => {
+    expect(route('Weiser, o que temos para hoje?')).toEqual({ type: 'status' });
+    expect(route('Advisor, esconde o chat.')).toEqual({ type: 'workspace', action: 'hide-chat' });
+  });
+
+  it('"lê os tópicos" also as "leus tópicos"', () => {
+    expect(route('Leus tópicos.', { ...manager, hasLastReply: true })).toEqual({ type: 'navigate', action: 'topics' });
+  });
+});
+
+describe('routeUtterance — the full pipeline on the voz2 recordings', () => {
+  it('"task #161" as Parakeet writes it', () => {
+    expect(route('retoma a task #161')).toEqual({ type: 'resume-task', number: 161 });
+  });
+
+  it('"abre o arquivo X e me explica…" is a prompt for the chat, not the open-file command', () => {
+    expect(route('Abre o arquivo pty-host.js e me explica o que ele faz.', chat)).toEqual({
+      type: 'prompt',
+      text: 'Abre o arquivo pty-host.js e me explica o que ele faz.',
+    });
+    expect(route('abre o arquivo pty-host.js', chat)).toEqual({ type: 'workspace', action: 'open-file', file: 'pty-host.js' });
+  });
+});

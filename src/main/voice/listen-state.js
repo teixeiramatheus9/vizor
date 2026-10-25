@@ -12,8 +12,11 @@ import { EventEmitter } from 'node:events';
 // of silence. "ok" never waits for the transcript; a phrase hanging on a
 // connective only waits longer when its text arrived in time — otherwise the
 // grace window is what lets the user go on.
-export const DEFAULT_TIMINGS = { completeMs: 400, trailingMs: 1700, graceMs: 1500 };
+// Live test: 0.4 s cut the user mid-sentence. With the VAD's 0.5 s this is
+// ~1.4 s of silence before the beep, ~2.5 s after a connective.
+export const DEFAULT_TIMINGS = { completeMs: 900, trailingMs: 2000, graceMs: 1500 };
 const IDLE_MS = 8000;
+const FINAL_WAIT_MS = 2500; // grace over, the full transcript still on its way
 const LOST_TRANSCRIPT_MS = 8000; // grace over and a part still has no text
 const TRAILING = new Set(['e', 'tipo', 'então', 'porque', 'aí', 'que', 'mas', 'ou', 'com', 'pra', 'de']);
 const STOP = new Set(['para', 'cala', 'silêncio', 'cala a boca', 'chega']);
@@ -22,7 +25,11 @@ const FINISH = /[,\s]*\b(manda|pronto)[.!]?$/i;
 
 const words = (text) => text.toLowerCase().replace(/[.,!?;:…]/g, ' ').split(/\s+/).filter(Boolean);
 
-export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } = {}) {
+// fullTranscript: the utterance is the whole audio transcribed once at the
+// ack (final(text, parts)), far better than parts transcribed alone; the
+// parts' own texts only detect a hanging connective and stand in if the
+// full one never comes.
+export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS, fullTranscript = false } = {}) {
   const machine = new EventEmitter();
   const t = { ...DEFAULT_TIMINGS, ...timings };
   let state = 'sleeping';
@@ -36,7 +43,10 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
   let userSpeaking = false;
   let dictating = false;
   let blocked = null; // 'muted' | 'meeting'
-  let ignoreUntil = -Infinity; // its own "ok" coming back through the mic
+  let ignoreUntil = -Infinity; // its own beep coming back through the mic
+  let finalWanted = null; // the parts the full transcript was asked for
+  let finalText = null;
+  let dictatedTurn = false;
 
   const emit = (name, payload) => machine.emit(name, payload);
   const filled = () => parts.every((part) => part.text !== null);
@@ -53,9 +63,14 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
     acked = false;
     graceUntil = Infinity;
     userSpeaking = false;
+    finalWanted = null;
+    finalText = null;
+    dictatedTurn = false;
     if (!keepDictation) dictating = false;
     idleSince = now();
   }
+
+  const dropFinish = (text) => text.replace(FINISH, '').replace(/[\s.,;:]+$/, '').trim();
 
   machine.wake = () => {
     if (blocked) return;
@@ -77,6 +92,8 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
       ackAt = Infinity;
       acked = false;
       graceUntil = Infinity;
+      finalWanted = null;
+      finalText = null;
       state = 'listening';
     }
     userSpeaking = true;
@@ -112,6 +129,7 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
       reset();
       return;
     }
+    if (dictating) dictatedTurn = true;
     if (dictating && isLast) {
       if (FINISH.test(value)) {
         value = value.replace(FINISH, '').trim();
@@ -122,7 +140,17 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
       ackAt = speechEndAt + t.trailingMs;
     }
     part.text = value;
-    if (acked && filled()) emit('echo', { text: joined() });
+    if (acked && filled() && finalText === null) emit('echo', { text: joined() });
+    machine.tick();
+  };
+
+  // The whole utterance, transcribed at once; counts only for the parts it
+  // was asked for (the user may have gone on since).
+  machine.final = (raw, signature) => {
+    if (!fullTranscript || signature !== finalWanted) return;
+    const text = String(raw ?? '').trim();
+    finalText = dictatedTurn ? dropFinish(text) : text;
+    if (acked) emit('echo', { text: finalText });
     machine.tick();
   };
 
@@ -137,8 +165,26 @@ export function createListenState({ now = Date.now, timings = DEFAULT_TIMINGS } 
       acked = true;
       state = 'grace';
       graceUntil = ackAt + t.graceMs;
-      emit('ack');
+      const ids = parts.map((part) => part.id);
+      finalWanted = ids.join(',');
+      finalText = null;
+      emit('ack', { parts: ids });
       if (filled()) emit('echo', { text: joined() });
+    }
+    if (state === 'grace' && time >= graceUntil && fullTranscript) {
+      if (finalText !== null) {
+        const utterance = finalText;
+        reset();
+        emit('utterance', { text: utterance });
+      } else if (filled() && time >= graceUntil + FINAL_WAIT_MS) {
+        const utterance = joined();
+        reset();
+        emit('utterance', { text: utterance });
+      } else if (time >= graceUntil + LOST_TRANSCRIPT_MS) {
+        emit('cancelled');
+        reset();
+      }
+      return;
     }
     if (state === 'grace' && time >= graceUntil) {
       if (filled()) {

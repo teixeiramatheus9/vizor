@@ -14,21 +14,40 @@ const norm = (text) =>
     .toLowerCase()
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
-    .replace(/[?!.,;:…]/g, ' ')
+    .replace(/[?!.,;:…#]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
+const NOT_A_NAME = new Set(['e', 'me', 'pra', 'para', 'que', 'com', 'mas', 'depois', 'ai', 'entao', 've', 'olha']);
+
+const STATUS = [
+  /^o que (a gente tem|temos|tem) (pra|para) (hoje|fazer)$/,
+  /^(qual (e )?o )?status( do projeto| do github)?$/,
+  /^como (ta|esta) o (ci|build|github|projeto|repo)$/,
+  /^o que (ta|esta) rolando( no github| no projeto| no repo| hoje)?$/,
+  /^o que tem (aberto|pendente)( no github)?$/,
+  /^(quantas|quantos|quais|tem) (issues?|prs?|pull requests?|tarefas)( que)?( a gente)?( tem| temos| esta| estao| ta| tao)?( abertas?| abertos?| pendentes?)?( no github)?$/,
+];
+
 const ALWAYS = [
-  [/^(o que (a gente tem|temos|tem) (pra|para) (hoje|fazer)|qual (e )?o status( do projeto)?|status( do projeto)?|como (ta|esta) o (ci|build|github)|o que tem (aberto|pendente)( no github)?)$/, () => ({ type: 'status' })],
+  [{ test: (text) => STATUS.some((pattern) => pattern.test(text)) }, () => ({ type: 'status' })],
   [/^(retoma|retomar|volta (pra|para)|abre|abrir|continua|continuar) (a |o )?(task|tarefa|issue|pr|demanda) (numero )?(\d+)$/, (match) => ({ type: 'resume-task', number: Number(match[6]) })],
   [/^(fala|falar|conversa) com o chat (da |do |de )?(.+)$/, (match, raw) => ({ type: 'talk-to-chat', query: rawTail(raw, match[3]) })],
   [/^(volta (pro|para o) gerente|fala com o gerente|gerente)$/, () => ({ type: 'talk-to-manager' })],
   [/^esconde o chat$/, () => ({ type: 'workspace', action: 'hide-chat' })],
   [/^mostra o chat$/, () => ({ type: 'workspace', action: 'show-chat' })],
   [/^mostra (o diff|as mudancas)$/, () => ({ type: 'workspace', action: 'show-diff' })],
-  [/^abre o arquivo (.+)$/, (match, raw) => ({ type: 'workspace', action: 'open-file', file: rawTail(raw, match[1]) })],
+  // Only a bare name (up to 4 words, no connective): "abre o arquivo X e me
+  // explica…" is a prompt for the chat.
+  [/^abre o arquivo (.+)$/, (match, raw) => {
+    const words = match[1].split(' ');
+    if (words.length > 4 || words.some((word) => NOT_A_NAME.has(word))) return null;
+    return { type: 'workspace', action: 'open-file', file: rawTail(raw, match[1]) };
+  }],
   [/^(para|cala( a boca)?|silencio|chega|pode parar)$/, () => ({ type: 'stop' })],
-  [/^(vou ditar|modo ditado)$/, () => ({ type: 'dictate' })],
+  // "ditar" is the word every model missed on the user's voice ("vou de
+  // tentar", "vou de ter", "vou editar"): those count too.
+  [/^(vou|vo|voo) (ditar|de tar|de ter|de terra|de tentar|editar|de ditar)$|^(modo )?ditado$/, () => ({ type: 'dictate' })],
 ];
 
 // "não, é pty-host" — only right after an utterance, and only a name: "não é
@@ -58,7 +77,7 @@ const WHEN_CONFIRMING = [
 ];
 
 const WHEN_REPLY = [
-  [/^(le|leia) (os topicos|os itens|a lista)$/, () => ({ type: 'navigate', action: 'topics' })],
+  [/^((le|leia) (os topicos|os itens|a lista)|leus topicos)$/, () => ({ type: 'navigate', action: 'topics' })],
   [/^(o )?proximo$/, () => ({ type: 'navigate', action: 'next' })],
   [/^(volta|anterior|o anterior)$/, () => ({ type: 'navigate', action: 'previous' })],
   [/^(repete|repete isso|de novo|fala de novo)$/, () => ({ type: 'navigate', action: 'repeat' })],
@@ -80,7 +99,7 @@ function rawTail(raw, normalizedTail) {
 
 function firstMatch(rules, text, raw) {
   for (const [pattern, build] of rules) {
-    const match = text.match(pattern);
+    const match = pattern instanceof RegExp ? text.match(pattern) : pattern.test(text) ? [text] : null;
     const intent = match && build(match, raw);
     if (intent) return intent;
   }

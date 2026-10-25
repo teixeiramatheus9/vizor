@@ -14,3 +14,34 @@ export function otherRecorders(dump, ownPids) {
   }
   return [...new Set(names)];
 }
+
+// pw-dump may print more than one JSON array (updates appended after the
+// first): read the first complete value, strings and nesting respected.
+export function parsePwDump(text) {
+  const source = String(text ?? '');
+  const start = source.indexOf('[');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  for (let index = start; index < source.length; index++) {
+    const char = source[index];
+    if (inString) {
+      if (char === '\\') index++;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '[' || char === '{') depth++;
+    else if (char === ']' || char === '}') {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(source.slice(start, index + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}

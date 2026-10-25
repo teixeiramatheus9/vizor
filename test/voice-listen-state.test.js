@@ -3,7 +3,8 @@ import { createListenState } from '../src/main/voice/listen-state.js';
 
 function setup() {
   let time = 0;
-  const machine = createListenState({ now: () => time });
+  // Explicit timings: these tests pin the machine, not the defaults.
+  const machine = createListenState({ now: () => time, timings: { completeMs: 400, trailingMs: 1700, graceMs: 1500 } });
   const events = [];
   for (const name of ['ack', 'echo', 'utterance', 'cancelled', 'sleep', 'barge'])
     machine.on(name, (payload) => events.push([name, payload ?? null]));
@@ -179,7 +180,7 @@ describe('listen state', () => {
 describe('listen state — final review fixes', () => {
   function setupReview() {
     let time = 0;
-    const machine = createListenState({ now: () => time });
+    const machine = createListenState({ now: () => time, timings: { completeMs: 400, trailingMs: 1700, graceMs: 1500 } });
     const events = [];
     for (const name of ['ack', 'echo', 'utterance', 'cancelled', 'sleep', 'barge']) machine.on(name, (payload) => events.push([name, payload ?? null]));
     return { machine, events, advance: (ms) => ((time += ms), machine.tick()) };
@@ -246,5 +247,87 @@ describe('listen state — final review fixes', () => {
     machine.speakingStarted();
     advance(1500);
     expect(events.at(-1)).toEqual(['utterance', { text: 'roda os testes' }]);
+  });
+});
+
+describe('listen state — the whole utterance, transcribed at once (live test)', () => {
+  function setupFull() {
+    let time = 0;
+    const machine = createListenState({ now: () => time, fullTranscript: true });
+    const events = [];
+    for (const name of ['ack', 'echo', 'utterance', 'cancelled']) machine.on(name, (payload) => events.push([name, payload ?? null]));
+    return { machine, events, advance: (ms) => ((time += ms), machine.tick()) };
+  }
+
+  it('waits longer by default before the beep: ~1.4 s of silence in all', () => {
+    const { machine, events, advance } = setupFull();
+    machine.wake();
+    machine.speechStart();
+    machine.speechEnd();
+    machine.partial('eu acho que a gente precisa');
+    advance(899);
+    expect(events).toEqual([]);
+    advance(1);
+    expect(events[0][0]).toBe('ack');
+  });
+
+  it('the full transcript wins over the parts, and the ack names the parts to transcribe', () => {
+    const { machine, events, advance } = setupFull();
+    machine.wake();
+    machine.speechStart();
+    const a = machine.speechEnd();
+    machine.partial('troca o bicrypt', a);
+    advance(300);
+    machine.speechStart();
+    const b = machine.speechEnd();
+    machine.partial('pelo argon', b);
+    advance(900);
+    const ack = events.find(([name]) => name === 'ack');
+    expect(ack[1]).toEqual({ parts: [a, b] });
+    machine.final('troca o bcrypt pelo argon2', [a, b].join(','));
+    advance(1500);
+    expect(events.at(-1)).toEqual(['utterance', { text: 'troca o bcrypt pelo argon2' }]);
+  });
+
+  it('a stale full transcript (the user went on) is ignored; the newer one counts', () => {
+    const { machine, events, advance } = setupFull();
+    machine.wake();
+    machine.speechStart();
+    const a = machine.speechEnd();
+    machine.partial('primeira parte', a);
+    advance(900);
+    machine.speechStart();
+    const b = machine.speechEnd();
+    machine.final('primeira parte', a);
+    machine.partial('segunda parte', b);
+    advance(900);
+    machine.final('primeira parte segunda parte', [a, b].join(','));
+    advance(1500);
+    expect(events.at(-1)).toEqual(['utterance', { text: 'primeira parte segunda parte' }]);
+  });
+
+  it('a full transcript that never comes falls back to the parts', () => {
+    const { machine, events, advance } = setupFull();
+    machine.wake();
+    machine.speechStart();
+    machine.speechEnd();
+    machine.partial('roda os testes');
+    advance(900 + 1500);
+    expect(events.at(-1)[0]).not.toBe('utterance');
+    advance(2500);
+    expect(events.at(-1)).toEqual(['utterance', { text: 'roda os testes' }]);
+  });
+
+  it('dictation: "manda" is dropped from the full transcript too', () => {
+    const { machine, events, advance } = setupFull();
+    machine.wake();
+    machine.dictation(true);
+    machine.speechStart();
+    const a = machine.speechEnd();
+    machine.partial('primeiro ponto é isso, manda', a);
+    advance(900);
+    machine.final('Primeiro ponto, é isso. Manda.', a);
+    advance(1500);
+    expect(events.at(-1)).toEqual(['utterance', { text: 'Primeiro ponto, é isso' }]);
   });
 });

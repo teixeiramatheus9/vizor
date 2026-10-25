@@ -87,6 +87,23 @@ describe('voice engine', () => {
     expect(events).toEqual([['wake', null], ['speech-start', null], ['speech-end', 1024]]);
   });
 
+  it('Parakeet is a NeMo transducer, not a Whisper', () => {
+    const configs = [];
+    const { sherpa } = fakeSherpa();
+    const Recognizer = sherpa.OfflineRecognizer;
+    sherpa.OfflineRecognizer = class extends Recognizer {
+      constructor(config) {
+        super(config);
+        configs.push(config);
+      }
+    };
+    const engine = createVoiceEngine({ sherpa, paths: { ...PATHS, asr: { dir: '/m/pk', prefix: null, kind: 'parakeet' } }, normalize: false });
+    engine.transcribe(new Float32Array(10));
+    expect(configs[0].modelConfig.modelType).toBe('nemo_transducer');
+    expect(configs[0].modelConfig.transducer.encoder).toBe('/m/pk/encoder.int8.onnx');
+    expect(configs[0].modelConfig.whisper).toBeUndefined();
+  });
+
   it('transcribes with the recognizer and trims the text', () => {
     const { engine, calls } = setup();
     expect(engine.transcribe(new Float32Array(16000))).toBe('abre o pty host');

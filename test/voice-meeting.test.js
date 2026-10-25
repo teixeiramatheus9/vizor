@@ -21,3 +21,13 @@ describe('otherRecorders', () => {
     expect(otherRecorders('x', new Set())).toEqual([]);
   });
 });
+
+describe('parsePwDump', () => {
+  it('reads the first JSON array even when more output follows (live bug: "non-whitespace after JSON")', async () => {
+    const { parsePwDump } = await import('../src/main/voice/meeting.js');
+    const first = JSON.stringify([node({ 'media.class': 'Stream/Input/Audio', 'application.name': 'Meet', 'application.process.id': '7' })]);
+    expect(otherRecorders(parsePwDump(`${first}\n[\n  {"id": 3, "info": {}}\n]\n`), new Set())).toEqual(['Meet']);
+    expect(parsePwDump('not json')).toBeNull();
+    expect(parsePwDump('[{"a": "]"}] trailing')).toEqual([{ a: ']' }]);
+  });
+});

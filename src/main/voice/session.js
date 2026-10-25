@@ -182,6 +182,11 @@ export function createVoiceSession(deps) {
         pendingChoice: Boolean(pendingChoice),
         canCorrect: Boolean(lastHeard) && now() - lastHeardAt < CORRECTION_WINDOW_MS,
       });
+      // Only the wake word ("Vizor" … and a pause): nothing to do yet.
+      if ((intent.type === 'prompt' || intent.type === 'ask-manager') && !intent.text.trim()) {
+        deps.keepListening?.();
+        return;
+      }
       if (intent.type !== 'confirm' && intent.type !== 'correct') pendingConfirm = null;
       if (intent.type !== 'choose' && intent.type !== 'resume-task') pendingChoice = null;
       await act(intent, heard);
