@@ -27,6 +27,15 @@ export const ICONS = {
   writing: svg('<path d="M8 2l2 2-5.5 5.5H2.5V7.5z"/>'),
   skipped: svg('<circle cx="6" cy="6" r="4.5"/><path d="M3 9l6-6"/>'),
   command: svg('<path d="M2 3.5l3 2.5-3 2.5M6.5 9h3.5"/>'),
+  chevron: svg('<path d="M4.5 3l3 3-3 3"/>'),
+  claude: svg('<path d="M2.5 3.5h7v4.5h-4l-2.5 2v-2h-.5z"/>'),
+  resume: svg('<path d="M2.5 6a3.5 3.5 0 1 0 1-2.5M2.5 1.8v1.9h1.9"/>'),
+  // Inspector width (#153): the frame is the window, the bar the panel, the
+  // arrow where its edge goes.
+  panelWiden: svg('<rect x="1" y="2" width="10" height="8" rx="1"/><path d="M7.5 2v8M5.5 4.5L4 6l1.5 1.5"/>'),
+  panelNarrow: svg('<rect x="1" y="2" width="10" height="8" rx="1"/><path d="M4.5 2v8M6.5 4.5L8 6 6.5 7.5"/>'),
+  panelHide: svg('<rect x="1" y="2" width="10" height="8" rx="1"/><path d="M7.5 2v8M8.8 4.5L10.2 6 8.8 7.5"/>'),
+  panelShow: svg('<rect x="1" y="2" width="10" height="8" rx="1"/><path d="M7.5 2v8M5 4.5L3.5 6 5 7.5"/>'),
 };
 
 const STATUS_LABEL = {
@@ -63,38 +72,88 @@ function renderFile(file, worktreePath) {
   }<span class="file-name">${escapeHtml(relativeTo(worktreePath, file.filePath))}</span><span class="count">${countLabel(file)}</span></li>`;
 }
 
-function renderSession(session, worktreePath, selectedId) {
+// --- folding (#152): a busy project must not take the whole sidebar ---------
+// `folds` holds only the user's own choices (key → open?); everything else
+// takes its default: projects and worktrees open, a session's files open up
+// to FILES_OPEN_BY_DEFAULT.
+const FILES_OPEN_BY_DEFAULT = 3;
+
+function isOpen(folds, key, fallback) {
+  return typeof folds?.[key] === 'boolean' ? folds[key] : fallback;
+}
+
+const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+
+const foldToggle = (key, open, label) =>
+  `<button class="fold" data-fold="${escapeHtml(key)}" aria-expanded="${open}" title="${
+    open ? 'Recolher' : 'Expandir'
+  } ${label}">${ICONS.chevron}</button>`;
+
+// What a folded group hides, in one line: so nothing that needs you disappears.
+function foldSummary(sessions) {
+  const files = sessions.reduce((sum, session) => sum + session.files.length, 0);
+  const alert = sessions.some((session) => ['waiting', 'permission'].includes(statusKey(session)))
+    ? '<span class="fold-alert" title="tem sessão esperando você"></span>'
+    : '';
+  return `<span class="fold-summary">${plural(sessions.length, 'sessão', 'sessões')} · ${plural(
+    files,
+    'arquivo',
+    'arquivos',
+  )}</span>${alert}`;
+}
+
+function renderSession(session, worktreePath, selectedId, folds) {
   const key = statusKey(session);
   const where = session.inside ? 'inside' : 'outside';
-  const files = session.files.length
-    ? `<ul class="files">${session.files.map((file) => renderFile(file, worktreePath)).join('')}</ul>`
+  const filesOpen = isOpen(folds, `s:${session.id}`, session.files.length <= FILES_OPEN_BY_DEFAULT);
+  const filesToggle = session.files.length
+    ? `<button class="fold files-fold" data-fold="s:${escapeHtml(session.id)}" aria-expanded="${filesOpen}" title="${
+        filesOpen ? 'Esconder' : 'Mostrar'
+      } os arquivos">${ICONS.chevron}${plural(session.files.length, 'arquivo', 'arquivos')}</button>`
     : '';
+  const files =
+    session.files.length && filesOpen
+      ? `<ul class="files">${session.files.map((file) => renderFile(file, worktreePath)).join('')}</ul>`
+      : '';
   return `<li class="session status-${key}${session.unread ? ' unread' : ''}" data-session="${escapeHtml(session.id)}" aria-selected="${
     session.id === selectedId
   }"><span class="status" title="${STATUS_LABEL[key]}">${ICONS[key]}</span><span class="session-name">${escapeHtml(
     session.name,
-  )}</span><span class="where" title="${session.inside ? 'no Vizor' : 'em outro terminal'}">${ICONS[where]}</span>${files}</li>`;
+  )}</span>${filesToggle}<span class="where" title="${session.inside ? 'no Vizor' : 'em outro terminal'}">${ICONS[where]}</span>${files}</li>`;
 }
 
-function renderWorktree(worktree, selectedId, selectedWorktree) {
+function renderWorktree(worktree, selectedId, selectedWorktree, folds) {
   const branch = worktree.branch === null ? '(sem branch)' : worktree.branch;
+  const open = isOpen(folds, `w:${worktree.path}`, true);
+  const sessions = open
+    ? `<ul class="sessions">${worktree.sessions
+        .map((session) => renderSession(session, worktree.path, selectedId, folds))
+        .join('')}</ul>`
+    : '';
   return `<li class="worktree${worktree.prunable ? ' prunable' : ''}" title="${escapeHtml(worktree.path)}"><div class="worktree-head" data-worktree="${escapeHtml(worktree.path)}"${
     worktree.path === selectedWorktree ? ' aria-current="true"' : ''
-  }>${
+  }>${foldToggle(`w:${worktree.path}`, open, 'a worktree')}${
     ICONS.branch
-  }<span class="branch">${escapeHtml(branch)}</span>${worktree.prunable ? '<span class="tag">(removida)</span>' : ''}</div><ul class="sessions">${worktree.sessions
-    .map((session) => renderSession(session, worktree.path, selectedId))
-    .join('')}</ul></li>`;
+  }<span class="branch">${escapeHtml(branch)}</span>${worktree.prunable ? '<span class="tag">(removida)</span>' : ''}${
+    open || !worktree.sessions.length ? '' : foldSummary(worktree.sessions)
+  }</div>${sessions}</li>`;
 }
 
-function renderProject(project, selectedId, selectedWorktree) {
-  return `<section class="project"><header class="project-head" title="${escapeHtml(project.root)}">${
-    ICONS.folder
-  }<span class="project-name">${escapeHtml(project.name)}</span><button class="remove" data-remove-project="${escapeHtml(
+function renderProject(project, selectedId, selectedWorktree, folds) {
+  const open = isOpen(folds, `p:${project.root}`, true);
+  const all = project.worktrees.flatMap((worktree) => worktree.sessions);
+  const worktrees = open
+    ? `<ul class="worktrees">${project.worktrees
+        .map((worktree) => renderWorktree(worktree, selectedId, selectedWorktree, folds))
+        .join('')}</ul>`
+    : '';
+  return `<section class="project${open ? '' : ' folded'}"><header class="project-head" title="${escapeHtml(
     project.root,
-  )}" title="Tirar da lista">×</button></header><ul class="worktrees">${project.worktrees
-    .map((worktree) => renderWorktree(worktree, selectedId, selectedWorktree))
-    .join('')}</ul></section>`;
+  )}">${foldToggle(`p:${project.root}`, open, 'o projeto')}${ICONS.folder}<span class="project-name">${escapeHtml(
+    project.name,
+  )}</span>${open || !all.length ? '' : foldSummary(all)}<button class="remove" data-remove-project="${escapeHtml(
+    project.root,
+  )}" title="Tirar da lista">×</button></header>${worktrees}</section>`;
 }
 
 export function renderEmpty() {
@@ -103,18 +162,24 @@ export function renderEmpty() {
 
 // Sessions whose folder belongs to no project (a chat opened in ~ or /tmp):
 // never hidden, just listed apart.
-function renderUnplaced(sessions, selectedId) {
+function renderUnplaced(sessions, selectedId, folds) {
   if (!sessions?.length) return '';
-  return `<section class="project unplaced"><header class="project-head">${ICONS.outside}<span class="project-name">Fora de projetos</span></header><ul class="sessions">${sessions
-    .map((session) => renderSession(session, '', selectedId))
-    .join('')}</ul></section>`;
+  const open = isOpen(folds, 'p:', true);
+  const list = open
+    ? `<ul class="sessions">${sessions.map((session) => renderSession(session, '', selectedId, folds)).join('')}</ul>`
+    : '';
+  return `<section class="project unplaced${open ? '' : ' folded'}"><header class="project-head">${foldToggle(
+    'p:',
+    open,
+    'as sessões fora de projetos',
+  )}${ICONS.outside}<span class="project-name">Fora de projetos</span>${open ? '' : foldSummary(sessions)}</header>${list}</section>`;
 }
 
-export function renderSidebar(tree, selectedId, selectedWorktree = null) {
+export function renderSidebar(tree, selectedId, selectedWorktree = null, folds = {}) {
   const projects = tree.projects.length
-    ? tree.projects.map((project) => renderProject(project, selectedId, selectedWorktree)).join('')
+    ? tree.projects.map((project) => renderProject(project, selectedId, selectedWorktree, folds)).join('')
     : renderEmpty();
-  return projects + renderUnplaced(tree.unplacedSessions, selectedId);
+  return projects + renderUnplaced(tree.unplacedSessions, selectedId, folds);
 }
 
 export function renderTopBar(tree) {
@@ -137,12 +202,55 @@ export function renderTabs(terminals, activeId, titles) {
       )}" title="Fechar">×</span></button>`;
     })
     .join('');
-  return `${tabs}<button class="tab-new" data-new-terminal title="Novo terminal com claude">+</button>`;
+  return `${tabs}<button class="tab-new" data-new-terminal title="Novo terminal" aria-haspopup="menu">+</button>`;
 }
 
-export function renderTerminalPlaceholder(kind) {
-  if (kind === 'outside')
-    return '<p>Essa sessão roda em outro terminal.</p><button data-focus-outside>Ir pro terminal</button>';
+export function timeAgo(time, now) {
+  const minutes = Math.floor((now - time) / 60_000);
+  if (minutes < 1) return 'agora';
+  if (minutes < 60) return `há ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `há ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `há ${plural(days, 'dia', 'dias')}`;
+}
+
+// The + menu (#154). conversations: null while loading. One already running
+// somewhere is listed but cannot be picked: two processes on one history.
+export function renderNewTerminalMenu({ conversations, now }) {
+  let resume;
+  if (conversations === null) resume = '<p class="menu-note">carregando…</p>';
+  else if (!conversations.length) resume = '<p class="menu-note">nenhuma conversa salva nesta pasta</p>';
+  else
+    resume = conversations
+      .map((conversation) => {
+        const label = `<span class="menu-label">${escapeHtml(conversation.title ?? 'conversa sem título')}</span>`;
+        // Already in one of our tabs: picking it just goes there.
+        if (conversation.tab)
+          return `<button class="menu-item conversation" role="menuitem" data-go-tab="${escapeHtml(
+            conversation.tab,
+          )}" title="Ir pra aba dessa conversa">${ICONS.inside}${label}<span class="menu-meta">aberta numa aba</span></button>`;
+        return `<button class="menu-item conversation" role="menuitem" data-resume="${escapeHtml(conversation.sessionId)}"${
+          conversation.open ? ' disabled title="Essa conversa já está aberta em outro terminal"' : ''
+        }>${ICONS.resume}${label}<span class="menu-meta">${
+          conversation.open ? 'aberta em outro terminal' : timeAgo(conversation.updatedAt, now)
+        }</span></button>`;
+      })
+      .join('');
+  return `<div class="menu" role="menu"><button class="menu-item" role="menuitem" data-new-kind="shell">${ICONS.command}<span class="menu-label">Terminal</span></button><button class="menu-item" role="menuitem" data-new-kind="claude">${ICONS.claude}<span class="menu-label">Nova conversa com o Claude</span></button><div class="menu-heading">Retomar conversa</div>${resume}<button class="menu-item" role="menuitem" data-new-kind="picker"><span class="menu-label">Outra conversa… (seletor do Claude)</span></button></div>`;
+}
+
+// status: what main says about bringing an outside chat in (#156); absent
+// while it is being asked.
+export function renderTerminalPlaceholder(kind, status = null) {
+  if (kind === 'outside') {
+    const bring = status?.canBring
+      ? '<button data-bring>Trazer pro Vizor</button>'
+      : status?.why
+        ? `<p class="why">${escapeHtml(status.why)}</p>`
+        : '';
+    return `<p>Essa sessão roda em outro terminal.</p><button data-focus-outside>Ir pro terminal</button>${bring}`;
+  }
   if (kind.startsWith('unavailable:'))
     return `<p>Terminal indisponível: ${escapeHtml(kind.slice('unavailable:'.length))}</p>`;
   return '<p>Escolha uma worktree e abra um terminal com +.</p>';
@@ -297,17 +405,19 @@ export function renderFileView(file, editsById, selectedId, commentsByEdit = {})
   return `${head}${seal}${unplaced}<pre class="code filediff">${rows}</pre>`;
 }
 
+// Icon plus a word (#153): the arrows alone did not say what they do.
 export function renderInspectorHeader({ mode, width }) {
   const toggle = (value, label) =>
     `<button data-mode="${value}" aria-pressed="${mode === value}">${label}</button>`;
-  const widthTitle = width === 'wide' ? 'Mais estreito' : 'Mais largo';
-  return `<div class="modes">${toggle('arquivo', 'Arquivo')}${toggle('cards', 'Cards')}</div><span class="spacer"></span><button data-width-next title="${widthTitle}">${
-    width === 'wide' ? '⇥' : '⇤'
-  }</button><button data-collapse title="Recolher">▸</button>`;
+  const widthButton =
+    width === 'wide'
+      ? `<button class="labeled" data-width-next title="Estreitar o painel de mudanças">${ICONS.panelNarrow}Estreitar</button>`
+      : `<button class="labeled" data-width-next title="Alargar o painel de mudanças">${ICONS.panelWiden}Alargar</button>`;
+  return `<div class="modes">${toggle('arquivo', 'Arquivo')}${toggle('cards', 'Cards')}</div><span class="spacer"></span>${widthButton}<button class="labeled" data-collapse title="Ocultar o painel de mudanças (Ctrl+Shift+E)">${ICONS.panelHide}Ocultar</button>`;
 }
 
 export function renderRail({ editCount, writing }) {
-  return `<button class="rail" data-expand title="Mostrar mudanças"><span class="badge">${editCount}</span>${
+  return `<button class="rail" data-expand title="Mostrar o painel de mudanças (Ctrl+Shift+E)">${ICONS.panelShow}<span class="badge">${editCount}</span>${
     writing ? '<span class="dot writing"></span>' : ''
   }</button>`;
 }

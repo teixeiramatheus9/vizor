@@ -10,6 +10,8 @@ import {
   renderComposer,
   renderFileView,
   renderInspectorHeader,
+  renderNewTerminalMenu,
+  timeAgo,
   renderRail,
   renderTaskPicker,
   renderTimeline,
@@ -139,7 +141,7 @@ describe('renderTabs', () => {
   });
 
   it('always offers a new terminal', () => {
-    expect(renderTabs([], null, {})).toContain('data-new-terminal title="Novo terminal com claude"');
+    expect(renderTabs([], null, {})).toContain('data-new-terminal title="Novo terminal"');
   });
 });
 
@@ -248,15 +250,20 @@ describe('inspector', () => {
     const html = renderInspectorHeader({ mode: 'cards', width: 'compact', editCount: 4, writing: false });
     expect(html).toContain('data-mode="arquivo" aria-pressed="false"');
     expect(html).toContain('data-mode="cards" aria-pressed="true"');
-    expect(html).toContain('title="Mais largo"');
-    expect(html).toContain('data-collapse title="Recolher"');
-    expect(renderInspectorHeader({ mode: 'arquivo', width: 'wide', editCount: 0, writing: false })).toContain('title="Mais estreito"');
+    expect(html).toContain('Alargar');
+    expect(html).toContain('title="Alargar o painel de mudanças"');
+    expect(html).toContain('Ocultar');
+    expect(html).toContain('title="Ocultar o painel de mudanças (Ctrl+Shift+E)"');
+    const wide = renderInspectorHeader({ mode: 'arquivo', width: 'wide', editCount: 0, writing: false });
+    expect(wide).toContain('Estreitar');
+    expect(wide).toContain('title="Estreitar o painel de mudanças"');
   });
 
   it('collapsed rail shows the count and pulses while writing', () => {
     const html = renderRail({ editCount: 7, writing: true });
     expect(html).toContain('data-expand');
-    expect(html).toContain('title="Mostrar mudanças"');
+    expect(html).toContain('title="Mostrar o painel de mudanças (Ctrl+Shift+E)"');
+    expect(html).toContain('<svg');
     expect(html).toContain('>7<');
     expect(html).toContain('writing');
   });
@@ -371,5 +378,114 @@ describe('backlog fixes (#125, #139)', () => {
     const ev = { id: 'u1', seq: 4, relPath: 'a.js', reason: 'r', status: 'applied' };
     const html = renderFileView({ relPath: 'a.js', rows: [], anchors: {}, unplaced: ['u1'], note: null }, { u1: ev }, null);
     expect(html).toContain('data-comment="u1"');
+  });
+});
+
+describe('collapsible sidebar (#152)', () => {
+  const files = (n) => Array.from({ length: n }, (_, i) => ({ filePath: `/r/f${i}.js`, added: 1, removed: 0, writing: false }));
+  const twoSessions = () =>
+    tree([session('a', { files: files(5) }), session('b', { status: 'waiting', files: files(2) })]);
+
+  it('projects and worktrees are open by default, each with a fold toggle', () => {
+    const html = renderSidebar(twoSessions(), null, null, {});
+    expect(html).toContain('data-fold="p:/r" aria-expanded="true"');
+    expect(html).toContain('data-fold="w:/r" aria-expanded="true"');
+    expect(html).toContain('data-session="a"');
+  });
+
+  it('a folded project hides its worktrees and sums up what is inside', () => {
+    const html = renderSidebar(twoSessions(), null, null, { 'p:/r': false });
+    expect(html).toContain('data-fold="p:/r" aria-expanded="false"');
+    expect(html).not.toContain('data-worktree=');
+    expect(html).toContain('2 sessões · 7 arquivos');
+    expect(html).toContain('class="fold-alert"');
+  });
+
+  it('a folded worktree hides its sessions and sums them up', () => {
+    const html = renderSidebar(twoSessions(), null, null, { 'w:/r': false });
+    expect(html).toContain('data-worktree="/r"');
+    expect(html).not.toContain('data-session=');
+    expect(html).toContain('2 sessões · 7 arquivos');
+  });
+
+  it('a session lists up to 3 files open; more start folded behind a count', () => {
+    const html = renderSidebar(twoSessions(), null, null, {});
+    expect(html).toContain('data-fold="s:a" aria-expanded="false"');
+    expect(html).toContain('5 arquivos');
+    expect(html).not.toContain('f4.js');
+    expect(html).toContain('data-fold="s:b" aria-expanded="true"');
+    expect(html).toContain('f1.js');
+  });
+
+  it('the user\'s choice beats the default, both ways', () => {
+    const html = renderSidebar(twoSessions(), null, null, { 's:a': true, 's:b': false });
+    expect(html).toContain('f4.js');
+    expect(html).toContain('data-fold="s:b" aria-expanded="false"');
+  });
+
+  it('a folded project with nothing inside shows no summary', () => {
+    expect(renderSidebar(tree([]), null, null, { 'p:/r': false })).not.toContain('fold-summary');
+  });
+
+  it('singular copy', () => {
+    const html = renderSidebar(tree([session('a', { files: files(1) })]), null, null, { 'p:/r': false });
+    expect(html).toContain('1 sessão · 1 arquivo');
+  });
+});
+
+describe('new terminal menu (#154)', () => {
+  const NOW = 1_000_000_000_000;
+
+  it('offers a plain terminal, a new chat and the chats to resume', () => {
+    const html = renderNewTerminalMenu({
+      conversations: [
+        { sessionId: 'id-1', title: '<b>workspace</b>', updatedAt: NOW - 5 * 60_000, open: false },
+        { sessionId: 'id-2', title: null, updatedAt: NOW - 3 * 3_600_000, open: true },
+      ],
+      now: NOW,
+    });
+    expect(html).toContain('data-new-kind="shell"');
+    expect(html).toContain('Terminal');
+    expect(html).toContain('data-new-kind="claude"');
+    expect(html).toContain('Nova conversa com o Claude');
+    expect(html).toContain('data-resume="id-1"');
+    expect(html).toContain('&lt;b&gt;workspace&lt;/b&gt;');
+    expect(html).toContain('há 5 min');
+    expect(html).toContain('conversa sem título');
+    expect(html).toMatch(/data-resume="id-2"[^>]*disabled/);
+    expect(html).toContain('aberta em outro terminal');
+    expect(html).toContain('data-new-kind="picker"');
+  });
+
+  it('a chat already in a Vizor tab is a shortcut to that tab, not a dead entry', () => {
+    const html = renderNewTerminalMenu({
+      conversations: [{ sessionId: 'id-3', title: 'aqui', updatedAt: NOW, open: true, tab: 'p7' }],
+      now: NOW,
+    });
+    expect(html).toContain('data-go-tab="p7"');
+    expect(html).not.toContain('data-resume="id-3"');
+    expect(html).toContain('aberta numa aba');
+  });
+
+  it('says when it is loading or there is nothing to resume', () => {
+    expect(renderNewTerminalMenu({ conversations: null, now: NOW })).toContain('carregando…');
+    expect(renderNewTerminalMenu({ conversations: [], now: NOW })).toContain('nenhuma conversa salva nesta pasta');
+  });
+
+  it('timeAgo in pt-BR', () => {
+    expect(timeAgo(NOW - 10_000, NOW)).toBe('agora');
+    expect(timeAgo(NOW - 2 * 3_600_000, NOW)).toBe('há 2 h');
+    expect(timeAgo(NOW - 3 * 86_400_000, NOW)).toBe('há 3 dias');
+    expect(timeAgo(NOW - 86_400_000, NOW)).toBe('há 1 dia');
+  });
+});
+
+describe('bring an outside chat into the Vizor (#156)', () => {
+  it('offers it once its process is gone, explains why not otherwise', () => {
+    expect(renderTerminalPlaceholder('outside', { canBring: true, why: null })).toContain('data-bring');
+    const blocked = renderTerminalPlaceholder('outside', { canBring: false, why: 'ainda <aberta>' });
+    expect(blocked).not.toContain('data-bring');
+    expect(blocked).toContain('ainda &lt;aberta&gt;');
+    expect(renderTerminalPlaceholder('outside')).not.toContain('data-bring');
   });
 });

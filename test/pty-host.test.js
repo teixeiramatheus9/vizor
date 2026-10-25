@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PTY_BATCH_MS, PTY_BUFFER_CHARS, PTY_FLOW_HIGH, PTY_FLOW_LOW, createPtyHost, ptyEnv } from '../src/main/pty-host.js';
+import { PTY_BATCH_MS, PTY_BUFFER_CHARS, PTY_FLOW_HIGH, PTY_FLOW_LOW, createPtyHost, ptyEnv, withoutClaudeSession } from '../src/main/pty-host.js';
 
 function fakeSpawn() {
   const spawned = [];
@@ -68,6 +68,40 @@ describe('ptyEnv', () => {
     expect(base.VIZOR_INTERNAL).toBe('1');
   });
 
+  it('does not carry the identity of the Claude Code session that launched the Vizor (#151)', () => {
+    const fromClaude = {
+      HOME: '/home/u',
+      CLAUDECODE: '1',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_SESSION_ID: '173cc3bc',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/s.sock',
+      CLAUDE_CODE_MESSAGING_TOKEN: 't',
+      CLAUDE_CODE_SESSION_ATTENDED: '1',
+      CLAUDE_CODE_EXECPATH: '/usr/bin/claude',
+      CLAUDE_CODE_SSE_PORT: '1234',
+      CLAUDE_PID: '7727',
+      CLAUDE_EFFORT: 'high',
+      // the user's own settings stay
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      ANTHROPIC_MODEL: 'opus',
+    };
+    expect(ptyEnv(fromClaude, 'p2')).toEqual({
+      HOME: '/home/u',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      ANTHROPIC_MODEL: 'opus',
+      VIZOR_PTY_ID: 'p2',
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    });
+  });
+
+  it('withoutClaudeSession strips the same session identity from an env in place', () => {
+    const env = { PATH: '/bin', CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'x', CLAUDE_CODE_USE_VERTEX: '1' };
+    withoutClaudeSession(env);
+    expect(env).toEqual({ PATH: '/bin', CLAUDE_CODE_USE_VERTEX: '1' });
+  });
+
   it('does not carry the identity of the terminal that launched the Vizor', () => {
     const launcher = {
       TMUX: '/tmp/tmux-1000/default,1,0',
@@ -113,7 +147,7 @@ describe('createPtyHost', () => {
 
   it('types claude once the shell first speaks', () => {
     const { host, spawned } = makeHost();
-    host.open({ cwd: '/r', startClaude: true });
+    host.open({ cwd: '/r', command: 'claude' });
     expect(spawned[0].writes).toEqual([]);
     spawned[0].emitData('$ ');
     spawned[0].emitData('more');
@@ -122,9 +156,24 @@ describe('createPtyHost', () => {
     expect(spawned[0].writes).toEqual(['claude\r']);
   });
 
+  it('types any start command it is given, such as a resume', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r', command: 'claude --resume 4b706711-9840-4931-8b0f-d6d51518d6ba' });
+    spawned[0].emitData('$ ');
+    expect(spawned[0].writes).toEqual(['claude --resume 4b706711-9840-4931-8b0f-d6d51518d6ba\r']);
+  });
+
+  it('types nothing into a plain terminal', () => {
+    const { host, spawned } = makeHost();
+    host.open({ cwd: '/r' });
+    spawned[0].emitData('$ ');
+    vi.advanceTimersByTime(2000);
+    expect(spawned[0].writes).toEqual([]);
+  });
+
   it('types claude anyway after 1.5 s of silence', () => {
     const { host, spawned } = makeHost();
-    host.open({ cwd: '/r', startClaude: true });
+    host.open({ cwd: '/r', command: 'claude' });
     vi.advanceTimersByTime(1499);
     expect(spawned[0].writes).toEqual([]);
     vi.advanceTimersByTime(1);

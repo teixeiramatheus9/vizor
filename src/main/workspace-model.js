@@ -122,7 +122,14 @@ export function quitPrompt(aliveCount) {
     aliveCount === 1
       ? '1 sessão rodando no workspace vai ser encerrada.'
       : `${aliveCount} sessões rodando no workspace vão ser encerradas.`;
-  return { message, buttons: ['Encerrar mesmo assim', 'Cancelar'], defaultId: 1, cancelId: 1 };
+  // The tabs come back on the next start (#155): say so, it changes the answer.
+  return {
+    message,
+    detail: 'As abas e as conversas voltam quando você abrir o Vizor de novo.',
+    buttons: ['Encerrar mesmo assim', 'Cancelar'],
+    defaultId: 1,
+    cancelId: 1,
+  };
 }
 
 // Resize requests come from the window: integers only, and a ceiling so a bad

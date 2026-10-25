@@ -339,6 +339,13 @@ describe('transcript path convention', () => {
     );
   });
 
+  it('flattens every non-alphanumeric character, like Claude Code does', () => {
+    const file = claudeTranscriptPath('/home/u/orca-workspaces/bio/Adaptação Filgrastim', 'abc', { home: '/home/u' });
+    expect(file).toBe(
+      path.join('/home/u', '.claude', 'projects', '-home-u-orca-workspaces-bio-Adapta--o-Filgrastim', 'abc.jsonl'),
+    );
+  });
+
   it('flattens win32 drive letters and backslashes the way Claude Code does', () => {
     const file = claudeTranscriptPath('C:\\Users\\u\\dev\\proj', 'abc', { home: 'C:\\Users\\u' });
     expect(file).toContain(path.join('projects', 'C--Users-u-dev-proj'));

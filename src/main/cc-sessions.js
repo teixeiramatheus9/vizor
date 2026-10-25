@@ -171,11 +171,15 @@ export function readAdoptableSessions({
 }
 
 // Claude Code keeps transcripts under ~/.claude/projects/<flattened cwd>,
-// where slashes, backslashes, drive colons and dots all collapse to dashes
-// (C:\Users\u\dev\proj -> C--Users-u-dev-proj).
+// where every character that is not a plain letter or digit collapses to a
+// dash — slashes, dots, spaces, accents (C:\Users\u\dev\proj ->
+// C--Users-u-dev-proj, Adaptação -> Adapta--o).
+export function claudeProjectDir(cwd, { home = os.homedir() } = {}) {
+  return path.join(home, '.claude', 'projects', String(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
+}
+
 export function claudeTranscriptPath(cwd, sessionId, { home = os.homedir() } = {}) {
-  const flattened = String(cwd).replace(/[/\\:.]/g, '-');
-  return path.join(home, '.claude', 'projects', flattened, `${sessionId}.jsonl`);
+  return path.join(claudeProjectDir(cwd, { home }), `${sessionId}.jsonl`);
 }
 
 // Resolves a hook-reported sessionId to the live pid of its claude process,
