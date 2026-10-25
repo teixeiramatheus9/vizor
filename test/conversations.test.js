@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { parseConversationTitle } from '../src/main/transcript.js';
+import { describe, it, expect, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { parseConversationTitle, readConversationTitle } from '../src/main/transcript.js';
 import { listConversations } from '../src/main/conversations.js';
 
 const line = (entry) => JSON.stringify(entry);
@@ -25,6 +28,44 @@ describe('parseConversationTitle', () => {
     ].join('\n');
     expect(parseConversationTitle(text)).toBe('novo');
     expect(parseConversationTitle('')).toBe(null);
+  });
+});
+
+describe('readConversationTitle on a long chat (#157)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vizor-title-'));
+  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // ~600 KB of chat: well past the tail the menu reads.
+  const filler = Array.from({ length: 300 }, (_, index) =>
+    line({ type: 'user', message: { role: 'user', content: `${index} ${'x'.repeat(2000)}` } }),
+  );
+
+  it('finds a /rename made at the start of the chat', async () => {
+    const file = path.join(dir, 'start.jsonl');
+    fs.writeFileSync(
+      file,
+      [line({ type: 'custom-title', customTitle: 'meu nome' }), ...filler, line({ type: 'ai-title', aiTitle: 'IA' })].join(
+        '\n',
+      ) + '\n',
+    );
+    expect(await readConversationTitle(file)).toBe('meu nome');
+  });
+
+  it('keeps the latest rename, also one appended after the first read', async () => {
+    const file = path.join(dir, 'later.jsonl');
+    fs.writeFileSync(file, [line({ type: 'custom-title', customTitle: 'primeiro' }), ...filler].join('\n') + '\n');
+    expect(await readConversationTitle(file)).toBe('primeiro');
+    fs.appendFileSync(file, [...filler, line({ type: 'custom-title', customTitle: 'segundo' }), ...filler].join('\n') + '\n');
+    expect(await readConversationTitle(file)).toBe('segundo');
+  });
+
+  it('is not fooled by a message that only mentions custom-title', async () => {
+    const file = path.join(dir, 'mention.jsonl');
+    const mention = line({
+      type: 'user',
+      message: { content: JSON.stringify({ type: 'custom-title', customTitle: 'falso' }) + 'y'.repeat(70000) },
+    });
+    fs.writeFileSync(file, [mention, ...filler, line({ type: 'ai-title', aiTitle: 'IA' })].join('\n') + '\n');
+    expect(await readConversationTitle(file)).toBe('IA');
   });
 });
 

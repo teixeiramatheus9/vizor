@@ -72,7 +72,77 @@ export function parseConversationTitle(jsonlText) {
 
 export async function readConversationTitle(transcriptPath) {
   try {
-    return parseConversationTitle(await readTail(transcriptPath));
+    const tail = await readTail(transcriptPath);
+    const custom = await findLastCustomTitle(transcriptPath).catch(() => null);
+    return custom ?? parseConversationTitle(tail);
+  } catch {
+    return null;
+  }
+}
+
+// A /rename can sit anywhere in a chat, the tail alone misses an early one
+// (#157). The whole file is scanned once, in chunks, and only short lines that
+// mention custom-title are parsed: memory stays bounded however long the chat
+// or its lines. Transcripts only grow, so the next scan starts where the last
+// complete line ended.
+const SCAN_CHUNK_BYTES = 1024 * 1024;
+const MAX_TITLE_LINE_BYTES = 16 * 1024;
+const MAX_SCAN_CACHE = 200;
+const customTitleScans = new Map();
+
+async function findLastCustomTitle(transcriptPath) {
+  const { size } = await stat(transcriptPath);
+  let scan = customTitleScans.get(transcriptPath);
+  if (!scan || size < scan.offset) scan = { offset: 0, custom: null };
+  if (size === scan.offset) return scan.custom;
+  const handle = await open(transcriptPath, 'r');
+  try {
+    const chunk = Buffer.alloc(SCAN_CHUNK_BYTES);
+    let position = scan.offset;
+    let pending = [];
+    let pendingBytes = 0;
+    let overflow = false;
+    while (position < size) {
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(SCAN_CHUNK_BYTES, size - position), position);
+      if (!bytesRead) break;
+      let from = 0;
+      for (let newline = chunk.indexOf(10, from); newline !== -1 && newline < bytesRead; newline = chunk.indexOf(10, from)) {
+        if (!overflow && pendingBytes + newline - from <= MAX_TITLE_LINE_BYTES) {
+          const text = Buffer.concat([...pending, chunk.subarray(from, newline)]).toString('utf8');
+          scan.custom = customTitleOf(text) ?? scan.custom;
+        }
+        pending = [];
+        pendingBytes = 0;
+        overflow = false;
+        from = newline + 1;
+        scan.offset = position + from;
+      }
+      const rest = bytesRead - from;
+      if (!overflow && pendingBytes + rest <= MAX_TITLE_LINE_BYTES) {
+        pending.push(Buffer.from(chunk.subarray(from, bytesRead)));
+        pendingBytes += rest;
+      } else {
+        pending = [];
+        pendingBytes = 0;
+        overflow = true;
+      }
+      position += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+  customTitleScans.delete(transcriptPath);
+  customTitleScans.set(transcriptPath, scan);
+  if (customTitleScans.size > MAX_SCAN_CACHE) customTitleScans.delete(customTitleScans.keys().next().value);
+  return scan.custom;
+}
+
+function customTitleOf(line) {
+  if (!line.includes('custom-title')) return null;
+  try {
+    const entry = JSON.parse(line);
+    if (entry?.type !== 'custom-title' || typeof entry.customTitle !== 'string') return null;
+    return entry.customTitle.trim() || null;
   } catch {
     return null;
   }
