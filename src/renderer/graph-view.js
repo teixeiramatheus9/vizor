@@ -146,9 +146,53 @@ export function openArea(graph, layout, moduleId) {
     const angle = (2 * Math.PI * index) / Math.max(outside.length, 1) - Math.PI / 2;
     spots[fnId] = { x: center.x + (inner + 14) * Math.cos(angle), y: center.y + (inner + 14) * Math.sin(angle), r: 2.6, own: false };
   });
-  const area = { x: center.x, y: center.y, r: inner + 26, spots };
+  const area = { x: center.x, y: center.y, r: inner + 26, spots, moved: moveAside(layout, moduleId, center, inner + 26) };
   if (layout.openAreas) layout.openAreas[moduleId] = area;
   return area;
+}
+
+// The files the backdrop would cover go to its rim, in the direction they
+// were, spread so none touches another — still drawn, still clickable (live
+// test: an opened file hid its neighbour). A full ring starts another.
+function moveAside(layout, openId, center, radius) {
+  const under = Object.entries(layout.modules)
+    .filter(([id, node]) => id !== openId && Math.hypot(node.x - center.x, node.y - center.y) < radius + node.r)
+    .map(([id, node]) => ({ id, r: node.r, angle: Math.atan2(node.y - center.y, node.x - center.x) }))
+    .sort((a, b) => a.angle - b.angle || a.id.localeCompare(b.id));
+  const moved = {};
+  if (!under.length) return moved;
+  const biggest = Math.max(...under.map((node) => node.r));
+  let ring = radius + biggest + 3;
+  let previous = null;
+  let first = null;
+  for (const node of under) {
+    let angle = node.angle;
+    if (previous) angle = Math.max(angle, previous.angle + (previous.r + node.r + GAP * 2) / ring);
+    // No room left on this ring before reaching the first one again: next ring out.
+    if (first && angle + (node.r + first.r + GAP * 2) / ring > first.angle + 2 * Math.PI) {
+      ring += 2 * biggest + 4;
+      angle = node.angle;
+      first = null;
+      previous = null;
+    }
+    moved[node.id] = { x: center.x + ring * Math.cos(angle), y: center.y + ring * Math.sin(angle), r: node.r, angle, distance: ring };
+    previous = { angle, r: node.r };
+    first ??= { angle, r: node.r };
+  }
+  // A moved file landing on one just past the rim keeps going out along its
+  // own direction until it touches nothing.
+  const still = Object.entries(layout.modules).filter(([id]) => id !== openId && !moved[id]).map(([, node]) => node);
+  const clear = (id, spot) =>
+    still.every((other) => Math.hypot(other.x - spot.x, other.y - spot.y) >= other.r + spot.r + GAP) &&
+    Object.entries(moved).every(([otherId, other]) => otherId === id || Math.hypot(other.x - spot.x, other.y - spot.y) >= other.r + spot.r + GAP);
+  for (const [id, spot] of Object.entries(moved)) {
+    for (let step = 0; step < 400 && !clear(id, spot); step++) {
+      spot.distance += 2;
+      spot.x = center.x + spot.distance * Math.cos(spot.angle);
+      spot.y = center.y + spot.distance * Math.sin(spot.angle);
+    }
+  }
+  return Object.fromEntries(Object.entries(moved).map(([id, { x, y, r }]) => [id, { x, y, r }]));
 }
 
 // One state per item: any músico's touch wins over any plan.
@@ -206,7 +250,7 @@ function openModule(graph, layout, impacts, critical, moduleId, scale) {
     })
     .join('');
   const backdrop = `<circle class="open-backdrop" cx="${area.x}" cy="${area.y}" r="${area.r}"/>`;
-  return { svg: `<g class="open-module">${backdrop}${edges}${nodes}</g>`, placed };
+  return { backdrop, svg: `<g class="open-module">${edges}${nodes}</g>`, placed, moved: area.moved };
 }
 
 // The name of what was clicked, on a plate so it reads over anything.
@@ -221,6 +265,9 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
   if (graph.unavailable) return `<div class="graph-unavailable">grafo indisponível: ${escapeHtml(graph.unavailable)}</div>`;
   const { scale, x, y, open, selected = null } = view;
   const critical = criticalOf(graph);
+  const opened = open && layout.modules[open] ? openModule(graph, layout, impacts, critical, open, scale) : { backdrop: '', svg: '', placed: {}, moved: {} };
+  // Where each file is drawn: in its place, or on the rim of an opened one.
+  const at = (id) => opened.moved[id] ?? layout.modules[id];
   const font = LABEL / scale;
   const groups = Object.entries(layout.groups)
     .map(
@@ -233,8 +280,8 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
   const lit = [];
   const faint = [];
   for (const { from, to } of graph.moduleEdges) {
-    const a = layout.modules[from];
-    const b = layout.modules[to];
+    const a = at(from);
+    const b = at(to);
     if (!a || !b) continue;
     const light = lightOf(impacts, 'modules', from) ?? lightOf(impacts, 'modules', to);
     if (!light) {
@@ -249,7 +296,7 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
   const groupOf = Object.fromEntries(graph.modules.map((module) => [module.id, layout.groups[module.group]?.color ?? GROUP_COLORS[0]]));
   const modules = graph.modules
     .map((module) => {
-      const node = layout.modules[module.id];
+      const node = at(module.id);
       const isCritical = critical.modules.has(module.id);
       const classes = [module.id === open && 'opened', isCritical && 'critical'].filter(Boolean).join(' ');
       const outline = isCritical ? ` stroke="${DANGER}" stroke-width="${1.5 / scale}"` : '';
@@ -262,16 +309,15 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
       )}`;
     })
     .join('');
-  const opened = open && layout.modules[open] ? openModule(graph, layout, impacts, critical, open, scale) : { svg: '', placed: {} };
   let label = '';
   if (selected && layout.modules[selected]) {
-    label = selectedLabel(selected, layout.modules[selected].x, layout.modules[selected].y - layout.modules[selected].r, scale);
+    label = selectedLabel(selected, at(selected).x, at(selected).y - at(selected).r, scale);
   } else if (selected && opened.placed[selected]) {
     const fn = graph.functions[selected];
     label = selectedLabel(`${shortName(fn.module)} · ${fn.name} (${fn.startLine}–${fn.endLine})`, opened.placed[selected].x, opened.placed[selected].y - 4, scale);
   }
   const truncated = graph.truncated ? '<text x="10" y="24" class="graph-note">projeto grande: só os primeiros 3000 arquivos</text>' : '';
-  return `<svg class="graph" viewBox="0 0 ${SIZE} ${SIZE}" preserveAspectRatio="xMidYMid meet">${truncated}<g transform="translate(${x} ${y}) scale(${scale})">${groups}${faint.join('')}${lit.join('')}${modules}${opened.svg}${label}</g></svg>`;
+  return `<svg class="graph" viewBox="0 0 ${SIZE} ${SIZE}" preserveAspectRatio="xMidYMid meet">${truncated}<g transform="translate(${x} ${y}) scale(${scale})">${groups}${faint.join('')}${lit.join('')}${opened.backdrop}${modules}${opened.svg}${label}</g></svg>`;
 }
 
 // px, py in the drawing's units (0..1000), as the view shows them.
@@ -279,10 +325,14 @@ export function moduleAt(layout, view, px, py) {
   const gx = (px - view.x) / view.scale;
   const gy = (py - view.y) / view.scale;
   const area = view.open ? layout.openAreas?.[view.open] : null;
+  const moved = area?.moved ?? {};
+  // A file moved to the rim is found where it is drawn, before anything else.
+  for (const [id, node] of Object.entries(moved)) if (Math.hypot(node.x - gx, node.y - gy) <= node.r + 4 / view.scale) return id;
   if (area && Math.hypot(gx - area.x, gy - area.y) <= area.r) return null;
   let best = null;
   let bestDistance = Infinity;
   for (const [id, node] of Object.entries(layout.modules)) {
+    if (moved[id]) continue;
     const distance = Math.hypot(node.x - gx, node.y - gy);
     if (distance <= node.r + 4 / view.scale && distance < bestDistance) {
       best = id;

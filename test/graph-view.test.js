@@ -219,3 +219,69 @@ describe('the layout never piles nodes up (live test: "um em cima do outro")', a
     expect(moduleAt(layout, { scale: 1, x: 0, y: 0, open }, area.x + area.r * 0.5, area.y)).toBeNull();
   });
 });
+
+describe('an opened file never hides its neighbours (live test: "cobre o outro")', async () => {
+  const { openArea } = await import('../src/renderer/graph-view.js');
+  // One folder, a big file with many functions and three small neighbours.
+  const tight = linkGraph(
+    new Map([
+      ['src/a/big.js', extractFile(Array.from({ length: 40 }, (_, index) => `export function f${index}() {}`).join('\n'), 'src/a/big.js')],
+      ['src/a/n1.js', extractFile("import { f1 } from './big.js';\nexport function n() { f1(); }", 'src/a/n1.js')],
+      ['src/a/n2.js', extractFile('export function n() {}', 'src/a/n2.js')],
+      ['src/a/n3.js', extractFile('export function n() {}', 'src/a/n3.js')],
+    ]),
+  );
+  const layout = layoutGraph(tight, { width: 1000, height: 1000 });
+  const open = 'src/a/big.js';
+  const view = { scale: 3, x: 0, y: 0, open };
+  const svg = renderGraph({ graph: tight, layout, view, impacts: [] });
+  const area = openArea(tight, layout, open);
+  const shown = (id) => {
+    const match = svg.match(new RegExp(`data-module="${id.replace(/[/.]/g, (char) => `\\${char}`)}"[^>]*cx="([\\d.]+)" cy="([\\d.]+)" r="([\\d.]+)"`));
+    return { x: +match[1], y: +match[2], r: +match[3] };
+  };
+
+  it('the files under the backdrop move to its rim, still drawn', () => {
+    for (const id of ['src/a/n1.js', 'src/a/n2.js', 'src/a/n3.js']) {
+      const node = shown(id);
+      expect(Math.hypot(node.x - area.x, node.y - area.y) - node.r).toBeGreaterThanOrEqual(area.r);
+    }
+  });
+
+  it('moved files never overlap each other', () => {
+    const nodes = ['src/a/n1.js', 'src/a/n2.js', 'src/a/n3.js'].map(shown);
+    for (let i = 0; i < nodes.length; i++)
+      for (let j = i + 1; j < nodes.length; j++) expect(Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y)).toBeGreaterThanOrEqual(nodes[i].r + nodes[j].r);
+  });
+
+  it('a click on a moved file finds it where it is drawn', () => {
+    const node = shown('src/a/n2.js');
+    expect(moduleAt(layout, { ...view, scale: 1 }, node.x, node.y)).toBe('src/a/n2.js');
+  });
+
+  it('closed again, every file is back in its place', () => {
+    const closed = renderGraph({ graph: tight, layout, view: { scale: 1, x: 0, y: 0, open: null }, impacts: [] });
+    const node = layout.modules['src/a/n2.js'];
+    expect(closed).toContain(`data-module="src/a/n2.js" cx="${node.x}" cy="${node.y}"`);
+  });
+});
+
+describe('opening a file in a crowded folder', async () => {
+  const { openArea } = await import('../src/renderer/graph-view.js');
+  it('no file moved to the rim touches any other file', () => {
+    const crowded = linkGraph(
+      new Map([
+        ['src/m/hub.js', extractFile(Array.from({ length: 150 }, (_, index) => `export function f${index}() {}`).join('\n'), 'src/m/hub.js')],
+        ...Array.from({ length: 70 }, (_, index) => [`src/m/n${index}.js`, extractFile(Array.from({ length: index % 9 }, (_, f) => `export function g${f}() {}`).join('\n'), `src/m/n${index}.js`)]),
+      ]),
+    );
+    const layout = layoutGraph(crowded, { width: 1000, height: 1000 });
+    const area = openArea(crowded, layout, 'src/m/hub.js');
+    const shown = Object.entries(layout.modules)
+      .filter(([id]) => id !== 'src/m/hub.js')
+      .map(([id, node]) => area.moved[id] ?? node);
+    expect(Object.keys(area.moved).length).toBeGreaterThan(10);
+    for (let i = 0; i < shown.length; i++)
+      for (let j = i + 1; j < shown.length; j++) expect(Math.hypot(shown[i].x - shown[j].x, shown[i].y - shown[j].y)).toBeGreaterThanOrEqual(shown[i].r + shown[j].r - 0.01);
+  });
+});
