@@ -38,7 +38,7 @@ export const ICONS = {
   panelShow: svg('<rect x="1" y="2" width="10" height="8" rx="1"/><path d="M7.5 2v8M5 4.5L3.5 6 5 7.5"/>'),
 };
 
-const STATUS_LABEL = {
+export const STATUS_LABEL = {
   permission: 'pedindo permissão',
   waiting: 'esperando você',
   done: 'pronto',
