@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand, installGuardScript } from './guard-runtime.js';
-import { createGuardAsks } from './guard-asks.js';
+import { createGuardAsks, isGuardChoice } from './guard-asks.js';
 import { createRulesStore } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
@@ -381,7 +381,16 @@ const guardAsks = createGuardAsks({
     sendState();
     updateNotificationHalo();
   },
+  // An equal ask freed by "liberar nesta sessão" on another one.
+  onReleased: (request) => recordGuardOutcome({ ...request, summary: guardSummary(request) }, 'liberado (sessão)'),
 });
+
+// Guard state read by guardStatus(), which sendState() calls: declared here,
+// before anything can send state, instead of next to the guard code at the
+// end of the file (a let read before its line throws).
+let guardOffline = false;
+let guardInstalled = false;
+let rulesUnreadable = false;
 
 function recordGuardOutcome(request, outcome) {
   try {
@@ -408,6 +417,9 @@ function onGuardMessage(message, reply) {
     recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
     return;
   }
+  // The same question already waiting (parallel calls): one card per answer
+  // is enough, and saying it twice is noise.
+  if (result.duplicate) return;
   const ask = guardAsks.pending().find((candidate) => candidate.id === result.id);
   if (!ask) return;
   // The balloon announces; the choices live in the panel and the workspace.
@@ -427,7 +439,7 @@ function guardSummary(message) {
 
 const GUARD_OUTCOMES = { liberar: 'liberado', 'liberar-sessao': 'liberado nesta sessão', barrar: 'barrado' };
 ipcMain.handle('guard:answer', (_event, { id, choice } = {}) => {
-  if (!GUARD_OUTCOMES[choice]) return false;
+  if (!isGuardChoice(choice) || !Object.hasOwn(GUARD_OUTCOMES, choice)) return false;
   const ask = guardAsks.pending().find((candidate) => candidate.id === id);
   const request = guardAsks.answer(id, choice);
   if (request) recordGuardOutcome({ ...request, summary: ask?.summary ?? guardSummary(request) }, GUARD_OUTCOMES[choice]);
@@ -2803,10 +2815,8 @@ function ensureHooksInstalled() {
 }
 
 // The rule guard (#160) lives in its own hook, copied to a stable path so it
-// keeps working with the app closed (an AppImage mount vanishes on quit).
-let guardOffline = false;
-let guardInstalled = false;
-
+// keeps working with the app closed (an AppImage mount vanishes on quit). Its
+// state flags (guardInstalled, guardOffline, rulesUnreadable) sit near the top.
 function approvedRuleCount() {
   const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
   if (!rules) return 0;
@@ -2879,8 +2889,6 @@ function removeGuardIfOnlineOnly() {
     log(`removeGuardIfOnlineOnly failed: ${error}`);
   }
 }
-
-let rulesUnreadable = false;
 
 function guardStatus() {
   const snapshot = rulesStore.snapshot();
@@ -3355,6 +3363,9 @@ app.on('before-quit', () => {
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
   removeGuardIfOnlineOnly();
+  // A question still on screen would end in a deny when the socket closes;
+  // "offline" sends it to the terminal's own permission prompt instead.
+  guardAsks.releaseAll('offline');
   tts.stopSpeaking();
   killPendingClaude();
   stopSocketServer(socketServer, socketPath);

@@ -563,7 +563,8 @@ function askVizor(request, waitMs) {
       if (newline === -1) return;
       try {
         const { answer } = JSON.parse(buffer.slice(0, newline));
-        finish(answer === 'liberar' || answer === 'barrar' ? answer : 'timeout');
+        // offline: the Vizor is quitting with the question open.
+        finish(answer === 'liberar' || answer === 'barrar' || answer === 'offline' ? answer : 'timeout');
       } catch {
         finish('timeout');
       }

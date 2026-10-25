@@ -5,6 +5,11 @@ import { randomUUID } from 'node:crypto';
 // which carry the answer back to the waiting hook.
 const SUMMARY_CHARS = 200;
 
+// The only answers the screens can give. Anything else leaves the ask open:
+// a typo or a prototype key must never count as "liberar" (#165).
+export const GUARD_CHOICES = ['liberar', 'liberar-sessao', 'barrar'];
+export const isGuardChoice = (choice) => GUARD_CHOICES.includes(choice);
+
 function summaryOf(request) {
   const input = request.input ?? {};
   const text =
@@ -15,27 +20,33 @@ function summaryOf(request) {
 }
 
 const grantKey = (sessionId, ruleId, target) => JSON.stringify([sessionId, ruleId, target]);
+const keyOf = (request) => grantKey(request.sessionId, request.ruleId, request.target);
 
-export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange = () => {} } = {}) {
+// onReleased(request): an ask answered by a grant made on another ask, for the
+// history.
+export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange = () => {}, onReleased = () => {} } = {}) {
   const asks = new Map(); // id → { ask, request, reply }
   const grants = new Set();
 
-  function settle(id, answer) {
+  function settle(id, answer, { quiet = false } = {}) {
     const entry = asks.get(id);
     if (!entry) return null;
     asks.delete(id);
     if (answer) entry.reply(answer);
     else entry.reply.end?.();
-    onChange();
+    if (!quiet) onChange();
     return entry.request;
   }
 
   return {
+    // duplicate: an equal ask (same session, rule and target) is already
+    // waiting, so the caller should not announce this one again.
     add(request, reply) {
-      if (!request.irreversible && grants.has(grantKey(request.sessionId, request.ruleId, request.target))) {
+      if (!request.irreversible && grants.has(keyOf(request))) {
         reply({ answer: 'liberar' });
         return { answered: 'liberar' };
       }
+      const duplicate = [...asks.values()].some((entry) => keyOf(entry.request) === keyOf(request));
       const id = newId();
       const ask = {
         id,
@@ -54,16 +65,31 @@ export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange =
         if (asks.delete(id)) onChange();
       });
       onChange();
-      return { id };
+      return { id, duplicate };
     },
 
     answer(id, choice) {
+      if (!isGuardChoice(choice)) return null;
       const entry = asks.get(id);
       if (!entry) return null;
       const { request } = entry;
-      if (choice === 'liberar-sessao' && !request.irreversible)
-        grants.add(grantKey(request.sessionId, request.ruleId, request.target));
-      return settle(id, { answer: choice === 'barrar' ? 'barrar' : 'liberar' });
+      const granting = choice === 'liberar-sessao' && !request.irreversible;
+      if (granting) grants.add(keyOf(request));
+      const answered = settle(id, { answer: choice === 'barrar' ? 'barrar' : 'liberar' });
+      if (granting) {
+        for (const [otherId, other] of [...asks]) {
+          if (other.request.irreversible || keyOf(other.request) !== keyOf(request)) continue;
+          onReleased(settle(otherId, { answer: 'liberar' }));
+        }
+      }
+      return answered;
+    },
+
+    // Every waiting ask gets the same answer at once (the app is quitting).
+    releaseAll(answer) {
+      if (asks.size === 0) return;
+      for (const id of [...asks.keys()]) settle(id, { answer }, { quiet: true });
+      onChange();
     },
 
     dropSession(sessionId) {

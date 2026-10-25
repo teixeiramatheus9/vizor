@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createGuardAsks } from '../src/main/guard-asks.js';
+import { GUARD_CHOICES, createGuardAsks, isGuardChoice } from '../src/main/guard-asks.js';
 
 let counter = 0;
 const request = (overrides = {}) => ({
@@ -75,6 +75,55 @@ describe('guard asks', () => {
     fn.onClose = (callback) => (onClose = callback);
     asks.add(request(), fn);
     onClose();
+    expect(asks.pending()).toEqual([]);
+  });
+
+  it('only the three choices answer; anything else (prototype keys too) leaves the ask open (#165)', () => {
+    const { asks, replies, reply } = setup();
+    const { id } = asks.add(request(), reply());
+    for (const choice of ['toString', '__proto__', 'constructor', 'LIBERAR', undefined, 1])
+      expect(asks.answer(id, choice)).toBeNull();
+    expect(replies).toEqual([]);
+    expect(asks.pending()).toHaveLength(1);
+    expect(GUARD_CHOICES).toEqual(['liberar', 'liberar-sessao', 'barrar']);
+    expect(isGuardChoice('toString')).toBe(false);
+    expect(isGuardChoice('barrar')).toBe(true);
+  });
+
+  it('an ask equal to one already waiting is marked a duplicate, so it is not announced again (#165)', () => {
+    const { asks, reply } = setup();
+    expect(asks.add(request(), reply()).duplicate).toBe(false);
+    expect(asks.add(request(), reply()).duplicate).toBe(true);
+    expect(asks.add(request({ target: 'outro prod' }), reply()).duplicate).toBe(false);
+  });
+
+  it('"liberar nesta sessão" also frees the equal asks already waiting (#165)', () => {
+    const released = [];
+    const asks = createGuardAsks({ newId: () => `b${++counter}`, onReleased: (request) => released.push(request) });
+    const replies = [];
+    const reply = (tag) => {
+      const fn = (answer) => replies.push([tag, answer]);
+      fn.onClose = () => {};
+      return fn;
+    };
+    const { id } = asks.add(request(), reply('first'));
+    asks.add(request(), reply('second'));
+    asks.add(request({ target: 'outro prod' }), reply('other'));
+    asks.answer(id, 'liberar-sessao');
+    expect(replies).toEqual([
+      ['first', { answer: 'liberar' }],
+      ['second', { answer: 'liberar' }],
+    ]);
+    expect(released).toHaveLength(1);
+    expect(asks.pending().map((ask) => ask.summary)).toEqual(['kubectl --context prod apply']);
+  });
+
+  it('releaseAll answers every waiting ask (the app is quitting: the guard falls back to the terminal) (#165)', () => {
+    const { asks, replies, reply } = setup();
+    asks.add(request(), reply());
+    asks.add(request({ sessionId: 's2' }), reply());
+    asks.releaseAll('offline');
+    expect(replies).toEqual([{ answer: 'offline' }, { answer: 'offline' }]);
     expect(asks.pending()).toEqual([]);
   });
 

@@ -199,6 +199,15 @@ describe('rule-guard script', () => {
     expect(decision(hangUp.stdout)).toBe('deny');
   });
 
+  it('a Vizor that quits with the question open answers offline: the terminal asks, no deny (#165)', async () => {
+    const socketPath = path.join(home, 'v.sock');
+    server = net
+      .createServer((socket) => socket.once('data', () => socket.end(`${JSON.stringify({ answer: 'offline' })}\n`)))
+      .listen(socketPath);
+    const result = await guard(event('echo prod'), { VIZOR_SOCKET: socketPath, CLAUDE_CODE_ENTRYPOINT: 'cli' });
+    expect(decision(result.stdout)).toBe('ask');
+  });
+
   it('a Vizor answer of liberar prints no decision', async () => {
     const socketPath = path.join(home, 'v.sock');
     server = net
