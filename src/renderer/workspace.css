@@ -1158,3 +1158,12 @@ svg.graph .open-backdrop {
   stroke-width: 1px;
   vector-effect: non-scaling-stroke;
 }
+/* links: folders far away, files near; picked and lit always */
+svg.graph line.folder-link {
+  opacity: 0.55;
+  stroke-linecap: round;
+}
+svg.graph line.folder-link.lit,
+svg.graph line.import.picked {
+  opacity: 1;
+}

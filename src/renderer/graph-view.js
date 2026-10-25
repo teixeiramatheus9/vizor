@@ -9,6 +9,9 @@ import { escapeHtml } from './workspace-view.js';
 export const ZOOM_OPEN = 2.2;
 export const ZOOM_STEP = 1.35; // per wheel notch: a few turns reach the functions
 export const ZOOM_MAX = 30;
+// Far away the folders are linked (one line per pair); from this zoom on, the
+// files (live test: the hundreds of file lines were a blur).
+export const FILE_LINKS_ZOOM = 1.6;
 const SIZE = 1000; // the drawing's own units; the SVG scales to the column
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
 const LABEL = 22; // label size at zoom 1, in drawing units (~13 px in the column)
@@ -275,24 +278,53 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
         `<g class="group"><circle cx="${group.x}" cy="${group.y}" r="${group.r}" class="group-area" stroke="${group.color}"/><text class="group-label" x="${group.x}" y="${group.y - group.r - 6 / scale}" font-size="${font}" text-anchor="middle" fill="${group.color}">${escapeHtml(name)}</text></g>`,
     )
     .join('');
-  // Links of a touched node light up in the músico's color; red when one end
-  // is critical. The rest stay faint.
+  // File links: a músico's are lit in its color (red when one end is
+  // critical), a selected file's in the accent, in and out, at any zoom; the
+  // rest only once zoomed in. Far away, folders carry the links instead.
   const lit = [];
   const faint = [];
+  const pairs = new Map(); // "a~b" folders → { count, light, danger }
+  const groupIdOf = Object.fromEntries(graph.modules.map((module) => [module.id, module.group]));
+  const near = scale >= FILE_LINKS_ZOOM;
   for (const { from, to } of graph.moduleEdges) {
     const a = at(from);
     const b = at(to);
     if (!a || !b) continue;
     const light = lightOf(impacts, 'modules', from) ?? lightOf(impacts, 'modules', to);
-    if (!light) {
-      faint.push(`<line class="import" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke-width="${0.6 / scale}"/>`);
-      continue;
+    const danger = Boolean(light) && (critical.modules.has(from) || critical.modules.has(to));
+    const [ga, gb] = [groupIdOf[from], groupIdOf[to]].sort();
+    if (ga !== gb) {
+      const key = `${ga}~${gb}`;
+      const pair = pairs.get(key) ?? { count: 0, light: null, danger: false, ga, gb };
+      pair.count += 1;
+      pair.light ??= light;
+      pair.danger ||= danger;
+      pairs.set(key, pair);
     }
-    const danger = critical.modules.has(from) || critical.modules.has(to);
-    lit.push(
-      `<line class="import lit${danger ? ' danger' : ''}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${escapeHtml(danger ? DANGER : light.color)}" stroke-width="${2.5 / scale}"${light.state === 'planned' ? ` stroke-dasharray="${6 / scale} ${4 / scale}"` : ''}/>`,
-    );
+    const line = `x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"`;
+    if (light) {
+      lit.push(
+        `<line class="import lit${danger ? ' danger' : ''}" ${line} stroke="${escapeHtml(danger ? DANGER : light.color)}" stroke-width="${2.5 / scale}"${light.state === 'planned' ? ` stroke-dasharray="${6 / scale} ${4 / scale}"` : ''}/>`,
+      );
+    } else if (selected && (from === selected || to === selected)) {
+      lit.push(`<line class="import picked" ${line} stroke="var(--accent)" stroke-width="${2 / scale}"/>`);
+    } else if (near || from === open || to === open) {
+      faint.push(`<line class="import" ${line} stroke-width="${0.8 / scale}"/>`);
+    }
   }
+  const folderLinks = near
+    ? ''
+    : [...pairs]
+        .map(([key, pair]) => {
+          const a = layout.groups[pair.ga];
+          const b = layout.groups[pair.gb];
+          const stroke = pair.danger ? DANGER : pair.light ? pair.light.color : 'var(--graph-link, #81a1c1)';
+          const kind = pair.light ? ` lit${pair.danger ? ' danger' : ''}` : '';
+          return `<line class="folder-link${kind}" data-link="${escapeHtml(key)}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${escapeHtml(stroke)}" stroke-width="${(1.5 + 1.8 * Math.log2(pair.count)) / scale}"><title>${escapeHtml(
+            `${pair.ga} ↔ ${pair.gb}: ${pair.count} ${pair.count === 1 ? 'import' : 'imports'}`,
+          )}</title></line>`;
+        })
+        .join('');
   const groupOf = Object.fromEntries(graph.modules.map((module) => [module.id, layout.groups[module.group]?.color ?? GROUP_COLORS[0]]));
   const modules = graph.modules
     .map((module) => {
@@ -317,7 +349,7 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
     label = selectedLabel(`${shortName(fn.module)} · ${fn.name} (${fn.startLine}–${fn.endLine})`, opened.placed[selected].x, opened.placed[selected].y - 4, scale);
   }
   const truncated = graph.truncated ? '<text x="10" y="24" class="graph-note">projeto grande: só os primeiros 3000 arquivos</text>' : '';
-  return `<svg class="graph" viewBox="0 0 ${SIZE} ${SIZE}" preserveAspectRatio="xMidYMid meet">${truncated}<g transform="translate(${x} ${y}) scale(${scale})">${groups}${faint.join('')}${lit.join('')}${opened.backdrop}${modules}${opened.svg}${label}</g></svg>`;
+  return `<svg class="graph" viewBox="0 0 ${SIZE} ${SIZE}" preserveAspectRatio="xMidYMid meet">${truncated}<g transform="translate(${x} ${y}) scale(${scale})">${folderLinks}${groups}${faint.join('')}${lit.join('')}${opened.backdrop}${modules}${opened.svg}${label}</g></svg>`;
 }
 
 // px, py in the drawing's units (0..1000), as the view shows them.

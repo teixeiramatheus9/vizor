@@ -285,3 +285,44 @@ describe('opening a file in a crowded folder', async () => {
       for (let j = i + 1; j < shown.length; j++) expect(Math.hypot(shown[i].x - shown[j].x, shown[i].y - shown[j].y)).toBeGreaterThanOrEqual(shown[i].r + shown[j].r - 0.01);
   });
 });
+
+describe('links between modules, readable at every zoom', async () => {
+  const { FILE_LINKS_ZOOM } = await import('../src/renderer/graph-view.js');
+  // ui imports core 3 times, core imports util once, util imports nothing.
+  const linked = linkGraph(
+    new Map([
+      ['ui/a.js', extractFile("import { c } from '../core/c.js';", 'ui/a.js')],
+      ['ui/b.js', extractFile("import { c } from '../core/c.js';", 'ui/b.js')],
+      ['ui/d.js', extractFile("import { e } from '../core/e.js';", 'ui/d.js')],
+      ['core/c.js', extractFile("import { u } from '../util/u.js';\nexport function c() {}", 'core/c.js')],
+      ['core/e.js', extractFile('export function e() {}', 'core/e.js')],
+      ['util/u.js', extractFile('export function u() {}', 'util/u.js')],
+    ]),
+  );
+  const layout = layoutGraph(linked, { width: 1000, height: 1000 });
+  const far = { scale: 1, x: 0, y: 0, open: null };
+  const width = (svg, from, to) => Number(svg.match(new RegExp(`class="folder-link[^"]*" data-link="${from}~${to}"[^>]*stroke-width="([\\d.]+)"`))?.[1]);
+
+  it('far away: one line per pair of folders, thicker with more imports; no file lines', () => {
+    const svg = renderGraph({ graph: linked, layout, view: far, impacts: [] });
+    expect(svg.match(/class="folder-link/g)).toHaveLength(2);
+    expect(width(svg, 'core', 'ui')).toBeGreaterThan(width(svg, 'core', 'util'));
+    expect(svg).not.toMatch(/class="import"/);
+  });
+
+  it('zoomed in: the file lines show', () => {
+    const svg = renderGraph({ graph: linked, layout, view: { ...far, scale: FILE_LINKS_ZOOM }, impacts: [] });
+    expect(svg.match(/class="import"/g)).toHaveLength(4);
+  });
+
+  it("a selected file's links light up at any zoom, in and out", () => {
+    const svg = renderGraph({ graph: linked, layout, view: { ...far, selected: 'core/c.js' }, impacts: [] });
+    expect(svg.match(/class="import picked"/g)).toHaveLength(3); // a→c, b→c, c→u
+  });
+
+  it("a músico's links stay lit far away too", () => {
+    const svg = renderGraph({ graph: linked, layout, view: far, impacts: [{ color: '#ebcb8b', modules: { 'util/u.js': 'touched' }, functions: {} }] });
+    expect(svg).toMatch(/class="import lit"[^>]*stroke="#ebcb8b"/);
+    expect(svg).toMatch(/class="folder-link lit" data-link="core~util"[^>]*stroke="#ebcb8b"/);
+  });
+});
