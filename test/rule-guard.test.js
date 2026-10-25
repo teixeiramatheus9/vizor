@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { contextFor, decide, loadRules } from '../src/hook/rule-guard.js';
 
 const GUARD = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'hook', 'rule-guard.js');
@@ -235,5 +235,13 @@ describe('rule-guard script entrypoints (I9)', () => {
     expect(await decisionWith('claude-vscode')).toBe('ask');
     expect(await decisionWith('sdk-cli')).toBe('deny');
     expect(await decisionWith('sdk-ts')).toBe('deny');
+  });
+});
+
+describe('rule-guard as a module of the packaged app', () => {
+  it('importing it with a flag as argv[1] does not throw (packaged Electron boot)', () => {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `process.argv[1] = '--no-sandbox'; await import(${JSON.stringify(pathToFileURL(GUARD).href)}); console.log('ok');`], { encoding: 'utf8' });
+    expect(result.stderr).toBe('');
+    expect(result.stdout.trim()).toBe('ok');
   });
 });

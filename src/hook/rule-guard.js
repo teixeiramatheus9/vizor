@@ -648,7 +648,17 @@ async function main(raw) {
   return context?.output ?? null;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+// Also imported by the app's main process, where argv[1] is a flag
+// (--no-sandbox) or nothing: only a real path to this very file runs it.
+function runAsScript() {
+  try {
+    return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+}
+
+if (runAsScript()) {
   const waitMs = Number(process.env.VIZOR_GUARD_ASK_MS) || ASK_WAIT_MS;
   setTimeout(() => process.exit(0), waitMs + 20000);
   let raw = '';
