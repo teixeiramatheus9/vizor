@@ -195,3 +195,11 @@ describe('routeUtterance — Maestro', () => {
     expect(routeUtterance('cancela')).not.toMatchObject({ type: 'order' });
   });
 });
+
+describe('routeUtterance — Maestro, live test', () => {
+  it('"ativar modo maestro" without the article turns it on too', () => {
+    expect(routeUtterance('Weiser, ativar modo maestro.')).toEqual({ type: 'maestro', on: true });
+    expect(routeUtterance('ative modo maestro')).toEqual({ type: 'maestro', on: true });
+    expect(routeUtterance('desativar modo maestro')).toEqual({ type: 'maestro', on: false });
+  });
+});

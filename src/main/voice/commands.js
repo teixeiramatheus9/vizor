@@ -48,7 +48,7 @@ const ALWAYS = [
   // "para"; the mode only turns on when asked for by name.
   [/^(interrompa|interrompe|interromper) a (task|tarefa|issue) (numero )?(\d+)$/, (match) => ({ type: 'interrupt', number: Number(match[4]) })],
   [/^(vai (pra|para) (a )?|foca na )(task |tarefa |issue )?(\d+)$/, (match) => ({ type: 'focus', number: Number(match[5]) })],
-  [/^(ative|ativa|ativar) o modo maestro$/, () => ({ type: 'maestro', on: true })],
+  [/^(ative|ativa|ativar) (o )?modo maestro$/, () => ({ type: 'maestro', on: true })],
   [/^(desative|desativa|desativar|sai do) (o )?modo maestro$/, () => ({ type: 'maestro', on: false })],
   [/^(para|cala( a boca)?|silencio|chega|pode parar)$/, () => ({ type: 'stop' })],
   // "ditar" is the word every model missed on the user's voice ("vou de
