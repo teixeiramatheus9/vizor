@@ -77,3 +77,36 @@ describe('createReplyCursor', () => {
     expect(cursor.detail(5)).toBe('Só tem 2 tópicos.');
   });
 });
+
+describe('in English, for an English voice', () => {
+  const summarize = async () => 'Argon2id is the pick.';
+
+  it('a list: count, labels, the recommendation and the offer', async () => {
+    const english = `Three options:\n\n- **argon2id**: newest.\n- **bcrypt**: mature.\n- **scrypt**: fine.\n\nI recommend argon2id.`;
+    const reply = await spokenReply(analyzeReply(english), { summarize, lang: 'en' });
+    expect(reply.speech).toBe('three options: argon2id, bcrypt and scrypt. I recommend argon2id. Want me to read the topics?');
+    // A Portuguese recommendation is not read with the English voice.
+    expect((await spokenReply(analyzeReply(LIST), { summarize, lang: 'en' })).speech).toBe('three options: argon2id, bcrypt and scrypt. Want me to read the topics?');
+  });
+
+  it('a short Portuguese answer goes through the summarizer, which speaks English', async () => {
+    const reply = await spokenReply(analyzeReply('Feito, o teste passou.'), { summarize, lang: 'en' });
+    expect(reply.speech).toBe('Argon2id is the pick.');
+  });
+
+  it('economy mode or a failing summarizer: the answer is on screen', async () => {
+    expect((await spokenReply(analyzeReply('Feito.'), { summarize, lang: 'en', economy: true })).speech).toBe('Done, the answer is on screen.');
+    const failing = async () => { throw new Error('x'); };
+    expect((await spokenReply(analyzeReply('Feito.'), { summarize: failing, lang: 'en' })).speech).toBe('Done, the answer is on screen.');
+  });
+
+  it('code on screen, and the topics walked in English', async () => {
+    const reply = await spokenReply(analyzeReply('Pronto:\n```js\nx()\n```'), { summarize, lang: 'en' });
+    expect(reply.speech).toBe("Argon2id is the pick. There's code on screen.");
+    const cursor = createReplyCursor(['a', 'b'], 'en');
+    expect(cursor.topics()).toBe('First: a');
+    expect(cursor.next()).toBe('Second: b');
+    expect(cursor.next()).toBe("That's all the topics.");
+    expect(cursor.detail(5)).toBe('There are only 2 topics.');
+  });
+});

@@ -90,7 +90,7 @@ import { fallbackMessage } from './manager-voice.js';
 import { loadConfig, saveConfig } from './config-store.js';
 import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
-import { VOICES } from './sherpa-installer.js';
+import { VOICES, speechLang } from './sherpa-installer.js';
 import { THEMES, PALETTES, backgroundFor } from './themes.js';
 import { PANEL_SCALE, clampScale, panelSizeForScale } from './panel-size.js';
 import {
@@ -120,7 +120,7 @@ import {
   PROJECT_RULES_FILE,
 } from './paths.js';
 import {
-  UPDATE_DONE_PHRASE,
+  updateDonePhrase,
   shouldAnnounce,
   shouldAutoApply,
   updateAnnouncement,
@@ -202,10 +202,15 @@ function autoSetupBridgeOnWayland() {
     .then((result) => {
       cachedDriver = null; // pick the bridge up on the next focus click
       if (!result.ran) return;
+      const english = spokenLang() === 'en';
       speakAsManager(
         result.active
-          ? 'Instalei a ponte do GNOME! Agora eu te levo direto pra aba do teu chat.'
-          : 'Instalei a ponte do GNOME! Sai e entra da sessão que aí eu alcanço teu terminal.',
+          ? english
+            ? 'I installed the GNOME bridge! Now I take you straight to your chat tab.'
+            : 'Instalei a ponte do GNOME! Agora eu te levo direto pra aba do teu chat.'
+          : english
+            ? 'I installed the GNOME bridge! Log out and back in so I can reach your terminal.'
+            : 'Instalei a ponte do GNOME! Sai e entra da sessão que aí eu alcanço teu terminal.',
       );
       sendToRenderer('tooltip', {
         projectName: 'Vizor',
@@ -437,13 +442,13 @@ function onGuardMessage(message, reply) {
   if (!ask) return;
   // The balloon announces; the choices live in the panel and the workspace.
   // In voice mode the session speaks it (priority 2) and takes the answer.
-  if (voiceSession) voiceSession.onGuardAsk({ speech: guardSpeech(ask) });
+  if (voiceSession) voiceSession.onGuardAsk({ speech: guardSpeech(ask, spokenLang()) });
   sendToRenderer('tooltip', {
     projectName: path.basename(ask.cwd ?? '') || 'Claude',
     text: ask.summary,
     kind: 'guard',
     sessionId: null,
-    speech: voiceSession ? null : guardSpeech(ask),
+    speech: voiceSession ? null : guardSpeech(ask, spokenLang()),
   });
   showTooltip();
 }
@@ -543,6 +548,11 @@ function sendState() {
   pushWorkspaceState();
 }
 
+// What the Vizor says follows the chosen voice's language (#161).
+function spokenLang() {
+  return speechLang(managerConfig.voice);
+}
+
 function speakAsManager(text) {
   if (!managerConfig.ttsEnabled) return;
   // In voice mode one arbiter decides who speaks when (#161).
@@ -578,7 +588,7 @@ function onUpdateStatus(status) {
     setFloatAboveEverything(!status.installing);
     if (status.installing) hideOverlay();
   }
-  const phrase = updateAnnouncement(previous, status, managerConfig.autoUpdate);
+  const phrase = updateAnnouncement(previous, status, managerConfig.autoUpdate, spokenLang());
   if (phrase) speakAsManager(phrase);
   const version = status.ready ?? status.available;
   if (version && announcedUpdateVersion !== version) {
@@ -1076,7 +1086,8 @@ function applyShortcuts() {
       voiceListener.mute(muting);
       // Muted means the microphone is off, OS indicator included.
       micWindow?.webContents.send('mic:control', muting ? 'stop' : 'start');
-      voiceArbiter?.say({ text: muting ? 'Microfone mudo.' : 'Microfone de volta.', priority: 1 });
+      const lines = spokenLang() === 'en' ? ['Mic muted.', 'Mic back on.'] : ['Microfone mudo.', 'Microfone de volta.'];
+      voiceArbiter?.say({ text: muting ? lines[0] : lines[1], priority: 1 });
     },
   };
   shortcutFailures = [];
@@ -1344,11 +1355,12 @@ async function generateVoiceForStop(session) {
   // Mid-conversation, another chat finishing is a short fixed line: no
   // Haiku tokens for an alert that only interrupts (#161).
   if (isEconomyMode() || voiceArbiter?.inConversation()) {
-    voice = fallbackMessage(displayNameOf(session));
+    voice = fallbackMessage(displayNameOf(session), Math.random, spokenLang());
   } else {
     voice = await generateManagerMessage({
       projectName: displayNameOf(session),
       lastAssistantMessage: snapshot.lastAssistantMessage,
+      lang: spokenLang(),
     });
     tokenBudget.add(voice.tokensUsed);
   }
@@ -2228,7 +2240,7 @@ function onHookEvent(event, reply) {
     event = {
       ...event,
       permissionAsk: isPermissionAsk(event.message),
-      message: humanizeNotification(event.message),
+      message: humanizeNotification(event.message, Math.random, spokenLang()),
     };
   }
   // Task boundaries ride the same per-session chain as the edits, so an
@@ -2377,7 +2389,7 @@ ipcMain.handle('config:get', () => ({
     value,
     label: spec.label,
   })),
-  voices: Object.entries(VOICES).map(([value, spec]) => ({ value, label: spec.label })),
+  voices: Object.entries(VOICES).map(([value, spec]) => ({ value, label: spec.label, lang: spec.lang })),
   themes: Object.entries(THEMES).map(([value, spec]) => ({ value, label: spec.label })),
   palettes: Object.entries(PALETTES).map(([value, spec]) => ({ value, label: spec.label })),
   panelScaleRange: PANEL_SCALE,
@@ -2440,7 +2452,8 @@ ipcMain.handle('config:set', (_event, partial) => {
   if (allowed.panelScale && overlayMode === 'panel') showOverlay('panel', { focus: true });
   if (allowed.panelScale && settingsVisible()) openSettingsWindow();
   // Speaking the sample also pulls the model when it is not there yet.
-  if (allowed.voice) tts.speak('Voz trocada. Agora eu falo assim!', { voice: allowed.voice });
+  if (allowed.voice)
+    tts.speak(speechLang(allowed.voice) === 'en' ? 'Voice switched. This is how I sound now!' : 'Voz trocada. Agora eu falo assim!', { voice: allowed.voice });
   if (allowed.shortcuts) {
     applyShortcuts();
     sendState(); // failures are only known after the re-register
@@ -2503,7 +2516,7 @@ function sessionFocusTarget(session) {
 let lastHint = null;
 
 function announceHint(hint) {
-  const parts = hintAnnouncement(hint);
+  const parts = hintAnnouncement(hint, spokenLang());
   if (!parts) return;
   lastHint = { key: hint.key, title: hint.title, body: hint.body };
   sendToRenderer('tooltip', parts.tooltip);
@@ -3280,7 +3293,7 @@ function onVoiceUtterance(text) {
   log(`voice: "${text}"`);
   voiceSession?.onUtterance(text).catch((error) => {
     log(`voice failed: ${error?.stack ?? error}`);
-    voiceArbiter?.say({ text: 'Deu erro aqui; olha o log.', priority: 1 });
+    voiceArbiter?.say({ text: spokenLang() === 'en' ? 'Something went wrong here; check the log.' : 'Deu erro aqui; olha o log.', priority: 1 });
   });
 }
 
@@ -3352,11 +3365,12 @@ function refreshVocabulary(root) {
 
 async function voiceGhDigest() {
   const root = voiceRoot();
-  if (!root) return { speech: 'Abra um projeto no workspace primeiro.', lines: [] };
+  const english = spokenLang() === 'en';
+  if (!root) return { speech: english ? 'Open a project in the workspace first.' : 'Abra um projeto no workspace primeiro.', lines: [] };
   try {
     const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
     const repo = githubRepoOf(remote);
-    if (!repo) return { speech: 'Esse projeto não está no GitHub.', lines: [] };
+    if (!repo) return { speech: english ? "This project isn't on GitHub." : 'Esse projeto não está no GitHub.', lines: [] };
     let defaultBranch = 'main';
     try {
       defaultBranch = (await runText('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: root })).trim().replace(/^[^/]+\//, '') || 'main';
@@ -3369,11 +3383,11 @@ async function voiceGhDigest() {
         results[key] = JSON.parse(await runText('gh', args, { cwd: root }));
       }),
     );
-    lastGhDigest = buildDigest(results);
+    lastGhDigest = buildDigest(results, spokenLang());
     lastGhDigestAt = Date.now();
   } catch (error) {
     log(`gh digest failed: ${error}`);
-    lastGhDigest = buildDigest({ error: String(error) });
+    lastGhDigest = buildDigest({ error: String(error) }, spokenLang());
   }
   return lastGhDigest;
 }
@@ -3461,7 +3475,7 @@ async function voiceAskManager(text) {
   const github = lastGhDigest
     ? `\n\n(Estado do GitHub do projeto agora — use pra responder: ${lastGhDigest.speech}${lastGhDigest.lines.length ? ` Detalhes: ${lastGhDigest.lines.slice(0, 20).join('; ')}` : ''})`
     : '';
-  const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}` });
+  const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}`, lang: spokenLang() });
   tokenBudget.add(tokensUsed);
   return reply;
 }
@@ -3469,7 +3483,10 @@ async function voiceAskManager(text) {
 async function voiceSummarize(plain) {
   if (isEconomyMode()) return null;
   const result = await runClaude({
-    prompt: `Resuma em no máximo duas frases curtas, em pt-BR, pra ser falado em voz alta, sem markdown e sem código:\n\n${plain.slice(0, 4000)}`,
+    prompt:
+      spokenLang() === 'en'
+        ? `Summarize in at most two short sentences, in American English, to be spoken aloud, no markdown and no code. The text may be in Portuguese:\n\n${plain.slice(0, 4000)}`
+        : `Resuma em no máximo duas frases curtas, em pt-BR, pra ser falado em voz alta, sem markdown e sem código:\n\n${plain.slice(0, 4000)}`,
     timeoutMs: 15000,
   });
   tokenBudget.add(result?.tokens ?? 0);
@@ -3553,6 +3570,7 @@ function createVoiceSessionForApp() {
     keepListening: () => voiceListener?.wake(),
     projectRoot: () => voiceRoot(),
     settings: () => ({ narration: managerConfig.voiceNarration !== false, summary: managerConfig.voiceSummary ?? 'always' }),
+    lang: spokenLang,
   });
 }
 
@@ -3697,6 +3715,7 @@ function startVoice() {
   });
   voiceListener = createListener({ worker });
   voiceArbiter = createSpeechArbiter({
+    lang: spokenLang,
     speak: (text, item) =>
       new Promise((resolve) => {
         // The short "ok" does not pause listening, but its own echo must not
@@ -3817,7 +3836,7 @@ function announceUpdateIfJustInstalled() {
     return;
   }
   if (!shouldAnnounce(mark, app.getVersion())) return;
-  speakAsManager(UPDATE_DONE_PHRASE);
+  speakAsManager(updateDonePhrase(spokenLang()));
 }
 
 function hydrateRegistry() {

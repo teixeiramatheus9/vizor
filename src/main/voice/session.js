@@ -7,17 +7,72 @@ import { closestPhrase } from './vocabulary.js';
 // chat), what each utterance does, and what comes back spoken. Every side
 // effect is an injected dep, so the whole scene is tested with fakes.
 const SAY_MAX = 160;
-const PROPOSAL = /quer que eu retome a (?:task |tarefa |issue )?#?(\d+)/i;
-const GUARD_SAID = { liberar: 'Liberado.', 'liberar-sessao': 'Liberado nesta sessão.', barrar: 'Barrado.' };
+// The gerente's offer to resume a task, in either language it speaks.
+const PROPOSAL = /(?:quer que eu retome a|want me to (?:resume|pick up)) (?:task |tarefa |issue )?#?(\d+)/i;
+// What the voice says back follows the voice's language; the commands the
+// user speaks stay Portuguese either way.
+const LINES = {
+  pt: {
+    guard: { liberar: 'Liberado.', 'liberar-sessao': 'Liberado nesta sessão.', barrar: 'Barrado.' },
+    ordinals: ['a primeira', 'a segunda', 'a terceira', 'a quarta', 'a quinta'],
+    and: 'e',
+    opened: (number, title, where) => `Abri a ${number}${title ? `, ${title}` : ''}.${where}`,
+    candidates: (count, number, list) => `Achei ${count} conversas da ${number}: ${list}. Qual?`,
+    noChat: (number) => `Não achei conversa da ${number}. Abro um chat novo pra ela?`,
+    okay: 'Beleza.',
+    newChatFailed: 'Não consegui abrir o chat novo.',
+    newChat: (number) => `Abri um chat novo pra ${number}.`,
+    saved: 'Salvo.',
+    noOption: 'Não tem essa opção.',
+    noSuchChat: 'Não achei esse chat.',
+    talkingTo: (title) => `Falando com o chat ${title}.`,
+    backToManager: 'Voltei pro gerente.',
+    dictate: 'Pode ditar. Diga "manda" quando terminar.',
+    nothingToCorrect: 'Não sei o que corrigir.',
+    learnAsk: (heard, meant) => `Salvo que "${heard}" é ${meant}?`,
+    hold: 'Ele ainda tá trabalhando; mando quando terminar.',
+    sendFailed: 'Não consegui mandar pro chat.',
+    economy: 'No modo economia eu só entendo os comandos.',
+    done: 'Terminei.',
+    chatClosed: (number) => `O chat ${number ? `da ${number}` : 'ligado'} fechou; voltei pro gerente.`,
+  },
+  en: {
+    guard: { liberar: 'Allowed.', 'liberar-sessao': 'Allowed for this session.', barrar: 'Blocked.' },
+    ordinals: ['the first', 'the second', 'the third', 'the fourth', 'the fifth'],
+    and: 'and',
+    // The chat's last message is Portuguese: an English voice leaves it on screen.
+    opened: (number, title) => `Opened ${number}${title ? `, ${title}` : ''}.`,
+    candidates: (count, number, list) => `I found ${count} chats for ${number}: ${list}. Which one?`,
+    noChat: (number) => `I didn't find a chat for ${number}. Should I open a new one?`,
+    okay: 'Okay.',
+    newChatFailed: "I couldn't open the new chat.",
+    newChat: (number) => `Opened a new chat for ${number}.`,
+    saved: 'Saved.',
+    noOption: "There's no such option.",
+    noSuchChat: "I didn't find that chat.",
+    talkingTo: (title) => `Now talking to the chat ${title}.`,
+    backToManager: 'Back to the manager.',
+    dictate: 'Go ahead and dictate. Say "manda" when you\'re done.',
+    nothingToCorrect: "I don't know what to correct.",
+    learnAsk: (heard, meant) => `Save "${heard}" as ${meant}?`,
+    hold: "It's still working; I'll send it when it's done.",
+    sendFailed: "I couldn't send it to the chat.",
+    economy: 'In economy mode I only understand commands.',
+    done: 'Done.',
+    chatClosed: (number) => `The ${number ? `chat for ${number}` : 'bound chat'} closed; back to the manager.`,
+  },
+};
 
 const firstSentence = (text) => {
   const sentence = (String(text ?? '').match(/^[^.!?\n]*[.!?]?/) ?? [''])[0].trim();
   return sentence.length > SAY_MAX ? `${sentence.slice(0, SAY_MAX).replace(/\s+\S*$/, '')}…` : sentence;
 };
-const joinNames = (names) => (names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} e ${names.at(-1)}`);
-
 export function createVoiceSession(deps) {
-  const narrator = createNarrator();
+  const lang = () => (LINES[deps.lang?.()] ? deps.lang() : 'pt');
+  const lines = () => LINES[lang()];
+  // One narrator per language: the voice can change mid-session.
+  const narrators = {};
+  const narrator = () => (narrators[lang()] ??= createNarrator({ lang: lang() }));
   // narration on/off; summary 'always' | 'short' (long ones stay on screen) | 'off'
   const settings = () => ({ narration: true, summary: 'always', ...(deps.settings?.() ?? {}) });
   let target = { kind: 'manager' };
@@ -31,7 +86,7 @@ export function createVoiceSession(deps) {
   let queuedPrompt = null;
   const now = deps.now ?? Date.now;
   const CORRECTION_WINDOW_MS = 15000;
-  const ORDINAL = ['a primeira', 'a segunda', 'a terceira', 'a quarta', 'a quinta'];
+  const MAX_CANDIDATES = 5;
 
   // A voice reads emoji out loud ("rosto suando"): they never reach it.
   const speakable = (text) => String(text ?? '').replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '').replace(/\s{2,}/g, ' ').trim();
@@ -54,7 +109,7 @@ export function createVoiceSession(deps) {
     bind(sessionId, number);
     const info = deps.sessionInfo(sessionId) ?? {};
     const where = info.lastMessage ? ` ${firstSentence(info.lastMessage)}` : '';
-    say(`Abri a ${number}${info.title ? `, ${info.title}` : ''}.${where}`);
+    say(lines().opened(number, info.title, where));
   }
 
   async function resumeTask(number) {
@@ -64,35 +119,36 @@ export function createVoiceSession(deps) {
       return;
     }
     if (found.candidates) {
-      const candidates = found.candidates.slice(0, ORDINAL.length);
+      const candidates = found.candidates.slice(0, MAX_CANDIDATES);
       pendingChoice = { number, candidates };
       deps.showLines(candidates.map((item, index) => `${index + 1}. ${item.title}`));
-      say(`Achei ${candidates.length} conversas da ${number}: ${candidates.map((item, index) => `${ORDINAL[index]}, ${item.title}`).join('; ')}. Qual?`);
+      const list = candidates.map((item, index) => `${lines().ordinals[index]}, ${item.title}`).join('; ');
+      say(lines().candidates(candidates.length, number, list));
       return;
     }
     pendingConfirm = { kind: 'new-chat', number, cwd: found.cwd ?? deps.projectRoot() };
-    say(`Não achei conversa da ${number}. Abro um chat novo pra ela?`);
+    say(lines().noChat(number));
   }
 
   async function confirm(yes) {
     const pending = pendingConfirm;
     pendingConfirm = null;
     if (!yes) {
-      say('Beleza.');
+      say(lines().okay);
       return;
     }
     if (pending.kind === 'new-chat') {
       const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
       if (!opened?.sessionId) {
-        say('Não consegui abrir o chat novo.');
+        say(lines().newChatFailed);
         return;
       }
       deps.linkTask(pending.number, opened.sessionId);
       bind(opened.sessionId, pending.number);
-      say(`Abri um chat novo pra ${pending.number}.`);
+      say(lines().newChat(pending.number));
     } else if (pending.kind === 'learn') {
       deps.learn({ heard: pending.heard, meant: pending.meant });
-      say('Salvo.');
+      say(lines().saved);
     } else if (pending.kind === 'intent') {
       await act(pending.intent, '');
     }
@@ -110,20 +166,20 @@ export function createVoiceSession(deps) {
         return resumeTask(intent.number);
       case 'choose': {
         const choice = pendingChoice?.candidates[intent.index - 1];
-        if (!choice) return say('Não tem essa opção.');
+        if (!choice) return say(lines().noOption);
         const { number } = pendingChoice;
         pendingChoice = null;
         return openFound(number, choice);
       }
       case 'talk-to-chat': {
         const sessionId = deps.findChat(intent.query);
-        if (!sessionId) return say('Não achei esse chat.');
+        if (!sessionId) return say(lines().noSuchChat);
         bind(sessionId);
-        return say(`Falando com o chat ${deps.sessionInfo(sessionId)?.title ?? intent.query}.`);
+        return say(lines().talkingTo(deps.sessionInfo(sessionId)?.title ?? intent.query));
       }
       case 'talk-to-manager':
         target = { kind: 'manager' };
-        return say('Voltei pro gerente.');
+        return say(lines().backToManager);
       case 'workspace':
         return deps.workspace(intent.action, intent.file);
       case 'navigate': {
@@ -135,30 +191,30 @@ export function createVoiceSession(deps) {
         return deps.flushSpeech();
       case 'guard':
         pendingAsk = false;
-        if (deps.answerGuard(intent.choice)) say(GUARD_SAID[intent.choice]);
+        if (deps.answerGuard(intent.choice)) say(lines().guard[intent.choice]);
         return;
       case 'dictate':
         deps.dictation(true);
-        return say('Pode ditar. Diga "manda" quando terminar.');
+        return say(lines().dictate);
       case 'confirm':
         return confirm(intent.yes);
       case 'correct': {
         const heard = lastHeard ? closestPhrase(lastHeard, intent.meant) : null;
-        if (!heard) return say('Não sei o que corrigir.');
+        if (!heard) return say(lines().nothingToCorrect);
         pendingConfirm = { kind: 'learn', heard, meant: intent.meant };
-        return say(`Salvo que "${heard}" é ${intent.meant}?`);
+        return say(lines().learnAsk(heard, intent.meant));
       }
       case 'prompt': {
         const outcome = await deps.deliverPrompt(target.sessionId, intent.text);
         if (outcome === 'hold') {
           queuedPrompt = intent.text;
-          return say('Ele ainda tá trabalhando; mando quando terminar.');
+          return say(lines().hold);
         }
-        if (outcome !== 'sent') say('Não consegui mandar pro chat.');
+        if (outcome !== 'sent') say(lines().sendFailed);
         return;
       }
       case 'ask-manager': {
-        if (deps.economy()) return say('No modo economia eu só entendo os comandos.');
+        if (deps.economy()) return say(lines().economy);
         const reply = await deps.askManager(intent.text);
         const proposal = String(reply ?? '').match(PROPOSAL);
         if (proposal) pendingConfirm = { kind: 'intent', intent: { type: 'resume-task', number: Number(proposal[1]) } };
@@ -204,10 +260,10 @@ export function createVoiceSession(deps) {
       const { summary } = settings();
       if (summary === 'off') {
         cursor = null;
-        say('Terminei.', 3, { source: session.id });
+        say(lines().done, 3, { source: session.id });
       } else {
-        const reply = await spokenReply(analysis, { summarize: deps.summarize, economy: deps.economy() || summary === 'short' });
-        cursor = analysis.items ? createReplyCursor(analysis.items) : null;
+        const reply = await spokenReply(analysis, { summarize: deps.summarize, economy: deps.economy() || summary === 'short', lang: lang() });
+        cursor = analysis.items ? createReplyCursor(analysis.items, lang()) : null;
         say(reply.speech, 3, { source: session.id });
       }
       if (queuedPrompt) {
@@ -220,7 +276,7 @@ export function createVoiceSession(deps) {
 
     onToolEvent(event) {
       if (!settings().narration || target.kind !== 'chat' || event?.session_id !== target.sessionId) return;
-      const line = narrator.narrate(event);
+      const line = narrator().narrate(event);
       if (line) say(line.text, 3, { replaceKey: `${target.sessionId}:${line.replaceKey}`, source: target.sessionId });
     },
 
@@ -235,11 +291,11 @@ export function createVoiceSession(deps) {
 
     onSessionEnded(sessionId) {
       if (target.kind !== 'chat' || target.sessionId !== sessionId) return;
-      const label = boundTask ? `da ${boundTask}` : 'ligado';
+      const number = boundTask;
       target = { kind: 'manager' };
       cursor = null;
       queuedPrompt = null;
-      say(`O chat ${label} fechou; voltei pro gerente.`);
+      say(lines().chatClosed(number));
     },
   };
 }

@@ -139,3 +139,18 @@ describe('isPermissionAsk', () => {
     expect(isPermissionAsk(undefined)).toBe(false);
   });
 });
+
+describe('in English, for an English voice', () => {
+  it('the prompt asks for the message in casual American English; the title stays pt-BR (it names the chat on screen)', () => {
+    const prompt = buildPrompt('vizor', 'Fiz o login.', 'en');
+    expect(prompt).toContain('"message": 1 to 2 sentences in casual American English');
+    expect(prompt).toContain('"title": máximo 6 palavras, em pt-BR');
+    expect(buildPrompt('vizor', 'x')).not.toContain('American English');
+  });
+
+  it('fallbacks and waiting lines in English', () => {
+    expect(fallbackMessage('vizor', () => 0, 'en').message).toBe("Hey, that task in 'vizor' is done, take a look!");
+    expect(humanizeNotification('Claude is waiting for your input', () => 0, 'en')).toBe('Take a look here and tell me how to go on!');
+    expect(humanizeNotification('Claude needs your permission to use Bash', () => 0, 'en')).toBe('It wants your permission to use Bash, allow it?');
+  });
+});

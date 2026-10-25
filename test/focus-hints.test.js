@@ -141,3 +141,13 @@ describe('hintAnnouncement', () => {
     expect(hintAnnouncement(null)).toBeNull();
   });
 });
+
+describe('hintAnnouncement for an English voice', () => {
+  it('speaks a short English line; the screen keeps the pt-BR how-to', () => {
+    const hint = { key: 'k', title: 'T', body: 'Instala o xdotool.', speech: 'Preciso do xdotool!' };
+    const parts = hintAnnouncement(hint, 'en');
+    expect(parts.speech).toBe("I need a quick setup tweak from you. The details are on screen.");
+    expect(parts.tooltip.text).toBe('Instala o xdotool.');
+    expect(hintAnnouncement(hint).speech).toBe('Preciso do xdotool!');
+  });
+});

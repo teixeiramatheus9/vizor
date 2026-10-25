@@ -24,8 +24,31 @@ const ciBroken = (pr) =>
   (pr.statusCheckRollup ?? []).some((check) => FAILED.has(String(check.conclusion ?? check.state ?? '').toUpperCase()));
 const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 
-export function buildDigest(results) {
-  if (!results || results.error) return { speech: 'Não consegui falar com o GitHub.', lines: [] };
+// The speech follows the voice's language; the lines are for the screen.
+const SPEECH = {
+  pt: {
+    unreachable: 'Não consegui falar com o GitHub.',
+    clear: 'Nada aberto no GitHub, tudo limpo.',
+    prs: (count) => plural(count, 'PR aberta', 'PRs abertas'),
+    waiting: (count) => `${count} esperando sua revisão`,
+    noPrs: 'Nenhuma PR aberta.',
+    ciBroke: (where) => `O CI da ${where} quebrou.`,
+    issues: (count) => `${plural(count, 'issue', 'issues')} com você.`,
+  },
+  en: {
+    unreachable: "I couldn't reach GitHub.",
+    clear: 'Nothing open on GitHub, all clear.',
+    prs: (count) => plural(count, 'open PR', 'open PRs'),
+    waiting: (count) => `${count} waiting for your review`,
+    noPrs: 'No open PRs.',
+    ciBroke: (where) => `The CI on ${where} broke.`,
+    issues: (count) => `${plural(count, 'issue', 'issues')} on you.`,
+  },
+};
+
+export function buildDigest(results, lang = 'pt') {
+  const say = SPEECH[lang] ?? SPEECH.pt;
+  if (!results || results.error) return { speech: say.unreachable, lines: [] };
   const prs = results.prs ?? [];
   const waiting = new Set((results.reviewRequested ?? []).map((pr) => pr.number));
   const issues = results.issues ?? [];
@@ -42,16 +65,14 @@ export function buildDigest(results) {
     ...(mainBroken ? [`CI da ${mainRun.headBranch} quebrado`] : []),
   ];
 
-  if (!prs.length && !issues.length && !mainBroken) return { speech: 'Nada aberto no GitHub, tudo limpo.', lines };
-  const counts = prs.length
-    ? `${plural(prs.length, 'PR aberta', 'PRs abertas')}${waiting.size ? `, ${waiting.size} esperando sua revisão` : ''}.`
-    : 'Nenhuma PR aberta.';
+  if (!prs.length && !issues.length && !mainBroken) return { speech: say.clear, lines };
+  const counts = prs.length ? `${say.prs(prs.length)}${waiting.size ? `, ${say.waiting(waiting.size)}` : ''}.` : say.noPrs;
   const urgent = brokenPr
-    ? `O CI da ${brokenPr.number} quebrou.`
+    ? say.ciBroke(brokenPr.number)
     : mainBroken
-      ? `O CI da ${mainRun.headBranch} quebrou.`
+      ? say.ciBroke(mainRun.headBranch)
       : !prs.length && issues.length
-        ? `${plural(issues.length, 'issue', 'issues')} com você.`
+        ? say.issues(issues.length)
         : '';
   return { speech: [counts, urgent].filter(Boolean).join(' '), lines };
 }

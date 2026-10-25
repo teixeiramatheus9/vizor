@@ -74,6 +74,12 @@ function supertonic(label, sid, lang = 'pt') {
 
 export const DEFAULT_VOICE = 'clara';
 
+// What the Vizor speaks follows the voice (#161): an English voice hears
+// English back while the user keeps speaking Portuguese.
+export function speechLang(voiceId) {
+  return (VOICES[voiceId] ?? VOICES[DEFAULT_VOICE]).lang;
+}
+
 export function runtimeName(platform = process.platform, arch = process.arch, version = VOICES[DEFAULT_VOICE].runtime) {
   return RUNTIMES[`${platform}-${arch}`]?.(version) ?? null;
 }

@@ -48,3 +48,11 @@ describe('guardSpeech', () => {
     );
   });
 });
+
+describe('guardSpeech in English, for an English voice', () => {
+  it('a command and a file edit', () => {
+    expect(guardSpeech({ cwd: '/r/vizor', tool: 'Bash', summary: 'git push --force' }, 'en')).toBe('A Claude in vizor wants to run git push --force. Can I go ahead?');
+    expect(guardSpeech({ cwd: '/r/vizor', tool: 'Edit', summary: 'Edit /r/vizor/.env' }, 'en')).toBe('A Claude in vizor wants to edit .env. Can I go ahead?');
+    expect(guardSpeech({ cwd: '', tool: 'Bash', summary: 'rm x' }, 'en')).toBe('A Claude in a project wants to run rm x. Can I go ahead?');
+  });
+});

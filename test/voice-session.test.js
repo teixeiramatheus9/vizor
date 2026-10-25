@@ -205,3 +205,60 @@ describe('voice session — edges', () => {
     expect(calls).toEqual(expect.arrayContaining([['flush'], ['dictation', true], ['workspace', 'hide-chat', null]]));
   });
 });
+
+describe('voice session — an English voice (hear English, speak Portuguese)', () => {
+  const english = (overrides = {}) => setup({ lang: () => 'en', summarize: async () => 'Short summary.', ...overrides });
+
+  it('the commands stay Portuguese; what comes back is English', async () => {
+    const { session, texts, calls } = english();
+    await session.onUtterance('retoma a task 22');
+    expect(texts().at(-1)).toBe('Opened 22, Login com senha.');
+    await session.onSessionStop({ id: 's22', lastMessage: 'Feito.' });
+    expect(texts().at(-1)).toBe('Short summary.');
+    await session.onUtterance('volta pro gerente');
+    expect(texts().at(-1)).toBe('Back to the manager.');
+    await session.onUtterance('vou ditar');
+    expect(texts().at(-1)).toBe('Go ahead and dictate. Say "manda" when you\'re done.');
+    expect(calls).toContainEqual(['dictation', true]);
+  });
+
+  it('candidates, a new chat, and a busy chat', async () => {
+    const two = english({ resolveTask: async () => ({ candidates: [{ sessionId: 'a', title: 'Login', cwd: '/r' }, { sessionId: 'b', title: 'Senha', cwd: '/r' }] }) });
+    await two.session.onUtterance('retoma a task 22');
+    expect(two.texts().at(-1)).toBe('I found 2 chats for 22: the first, Login; the second, Senha. Which one?');
+
+    const none = english({ resolveTask: async () => ({ none: true, cwd: '/r' }) });
+    await none.session.onUtterance('retoma a task 22');
+    expect(none.texts().at(-1)).toBe("I didn't find a chat for 22. Should I open a new one?");
+    await none.session.onUtterance('sim');
+    expect(none.texts().at(-1)).toBe('Opened a new chat for 22.');
+
+    const busy = english({ deliverPrompt: async () => 'hold' });
+    await busy.session.onUtterance('retoma a task 22');
+    await busy.session.onUtterance('agora roda os testes');
+    expect(busy.texts().at(-1)).toBe("It's still working; I'll send it when it's done.");
+    busy.session.onSessionEnded('s22');
+    expect(busy.texts().at(-1)).toBe('The chat for 22 closed; back to the manager.');
+  });
+
+  it('economy mode, the trava, a gerente proposal in English, and narration', async () => {
+    const economy = english({ economy: () => true });
+    await economy.session.onUtterance('qual a melhor forma de fazer isso?');
+    expect(economy.texts().at(-1)).toBe('In economy mode I only understand commands.');
+
+    const guard = english();
+    guard.session.onGuardAsk({ speech: 'A Claude wants to run rm. Can I go ahead?' });
+    await guard.session.onUtterance('libera');
+    expect(guard.texts().at(-1)).toBe('Allowed.');
+
+    const proposal = english({ askManager: async () => '22 stalled yesterday. Want me to resume task 22?' });
+    await proposal.session.onUtterance('o que ficou parado?');
+    await proposal.session.onUtterance('sim');
+    expect(proposal.calls).toContainEqual(['open', { sessionId: 's22', cwd: '/r' }]);
+
+    const narrated = english();
+    await narrated.session.onUtterance('retoma a task 22');
+    narrated.session.onToolEvent({ session_id: 's22', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } });
+    expect(narrated.texts().at(-1)).toBe('running the tests');
+  });
+});

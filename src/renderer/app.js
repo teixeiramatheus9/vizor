@@ -451,7 +451,7 @@ bridgeInstallButton.addEventListener('click', async () => {
   try {
     const result = await window.manager.bridgeInstall();
     if (result.installed && !result.active && ttsEnabled && !muted) {
-      speakSample('Instalei a ponte! Sai e entra da sessão que aí eu alcanço teu terminal.');
+      speakSample(spoken('bridge'));
     }
   } finally {
     bridgeInstallButton.disabled = false;
@@ -482,7 +482,7 @@ volumeInput.addEventListener('change', () => {
 voiceVolumeInput.addEventListener('change', () => {
   voiceVolume = Number(voiceVolumeInput.value);
   window.manager.setConfig({ voiceVolume });
-  speakSample('Volume da voz do gerente.');
+  speakSample(spoken('volume'));
 });
 timbreSelect.addEventListener('change', () => {
   soundTimbre = timbreSelect.value;
@@ -509,8 +509,28 @@ ttsCheckbox.addEventListener('change', () => {
   ttsEnabled = ttsCheckbox.checked;
   window.manager.setConfig({ ttsEnabled });
   renderTtsState();
-  if (ttsEnabled) speakSample('Notificação por voz ativada.');
+  if (ttsEnabled) speakSample(spoken('ttsOn'));
 });
+
+// What the Vizor says follows the voice's language (#161): an English voice
+// speaks English. The screen stays pt-BR.
+let voiceLang = 'pt';
+let voiceLangs = {}; // voice id → its language, from the config
+const SPOKEN = {
+  pt: {
+    bridge: 'Instalei a ponte! Sai e entra da sessão que aí eu alcanço teu terminal.',
+    volume: 'Volume da voz do gerente.',
+    ttsOn: 'Notificação por voz ativada.',
+    test: 'Testando a voz do gerente.',
+  },
+  en: {
+    bridge: 'I installed the bridge! Log out and back in so I can reach your terminal.',
+    volume: "The manager's voice volume.",
+    ttsOn: 'Voice notifications on.',
+    test: "Testing the manager's voice.",
+  },
+};
+const spoken = (key) => (SPOKEN[voiceLang] ?? SPOKEN.pt)[key];
 
 // The manager's voice answers to its own slider and to the master volume.
 function speakSample(text) {
@@ -518,7 +538,7 @@ function speakSample(text) {
 }
 
 document.getElementById('voice-test').addEventListener('click', () => {
-  speakSample('Testando a voz do gerente.');
+  speakSample(spoken('test'));
 });
 
 // Sliders paint their own fill and print the value beside them.
@@ -933,6 +953,8 @@ window.manager.getConfig().then((config) => {
     );
   }
   voiceSelect.value = config.voice;
+  voiceLangs = Object.fromEntries((config.voices ?? []).map(({ value, lang }) => [value, lang ?? 'pt']));
+  voiceLang = voiceLangs[config.voice] ?? 'pt';
   if (Array.isArray(config.themes) && config.themes.length) {
     themeSelect.replaceChildren(
       ...config.themes.map(({ value, label }) => new Option(label, value)),
@@ -966,6 +988,7 @@ terminalSelect.addEventListener('change', () => {
 });
 
 voiceSelect.addEventListener('change', () => {
+  voiceLang = voiceLangs[voiceSelect.value] ?? 'pt';
   window.manager.setConfig({ voice: voiceSelect.value });
 });
 
@@ -1057,12 +1080,22 @@ window.manager.onChime(({ kind }) => {
 // Spoken notifications stay short and instantly understandable — the full
 // message lives in the tooltip/panel.
 const TTS_PHRASES = {
-  done: (projectName) => `Tarefa concluída no ${projectName}.`,
-  question: (projectName, optionsCount) =>
-    optionsCount > 0
-      ? `Tem uma pergunta no ${projectName} com ${optionsCount} ${optionsCount === 1 ? 'opção' : 'opções'} pra escolher.`
-      : `Tem uma pergunta no ${projectName}.`,
-  waiting: (projectName) => `O chat ${projectName} espera você.`,
+  pt: {
+    done: (projectName) => `Tarefa concluída no ${projectName}.`,
+    question: (projectName, optionsCount) =>
+      optionsCount > 0
+        ? `Tem uma pergunta no ${projectName} com ${optionsCount} ${optionsCount === 1 ? 'opção' : 'opções'} pra escolher.`
+        : `Tem uma pergunta no ${projectName}.`,
+    waiting: (projectName) => `O chat ${projectName} espera você.`,
+  },
+  en: {
+    done: (projectName) => `Task done in ${projectName}.`,
+    question: (projectName, optionsCount) =>
+      optionsCount > 0
+        ? `There's a question in ${projectName} with ${optionsCount} ${optionsCount === 1 ? 'option' : 'options'} to pick from.`
+        : `There's a question in ${projectName}.`,
+    waiting: (projectName) => `The ${projectName} chat is waiting for you.`,
+  },
 };
 
 const toastMark = document.getElementById('toast-mark');
@@ -1094,7 +1127,8 @@ window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId, sp
   if (view === 'bubble' && kind !== 'hint') {
     chime(kind === 'guard' ? 'question' : kind);
     if (ttsEnabled && !muted) {
-      const phrase = TTS_PHRASES[kind] ?? TTS_PHRASES.waiting;
+      const phrases = TTS_PHRASES[voiceLang] ?? TTS_PHRASES.pt;
+      const phrase = phrases[kind] ?? phrases.waiting;
       // A guard card in voice mode is spoken by main (speech is null then).
       if (kind !== 'guard' || speech) speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
     }

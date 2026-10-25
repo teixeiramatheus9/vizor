@@ -2,7 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_VOICE, VOICES, installVoice, isVoiceInstalled, runtimeName, voicePaths } from './sherpa-installer.js';
+import { DEFAULT_VOICE, VOICES, installVoice, isVoiceInstalled, runtimeName, speechLang, voicePaths } from './sherpa-installer.js';
 import { encodeAnsiArgvText, psQuote, readAnsiCodepage } from './win32-native.js';
 import { applyGain } from './wav-gain.js';
 import { configDir } from './paths.js';
@@ -173,7 +173,7 @@ function ensureVoiceInBackground(voiceId) {
       downloading.delete(voiceId);
       onDownloadStatus(null);
       fs.rmSync(legacyPiperDir, { recursive: true, force: true });
-      speakNeural('Voz instalada. Agora eu falo assim!', voiceId);
+      speakNeural(speechLang(voiceId) === 'en' ? 'Voice installed. This is how I sound now!' : 'Voz instalada. Agora eu falo assim!', voiceId);
     })
     .catch((error) => {
       downloading.delete(voiceId); // allow a retry on the next speak

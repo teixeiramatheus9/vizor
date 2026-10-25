@@ -43,14 +43,21 @@ export function findMentionedSession(sessions, userMessage) {
   );
 }
 
-export function buildChatPrompt({ digest, history = [], userMessage, transcriptExcerpt = null }) {
+// An English voice (#161) hears the gerente in English; the user still speaks
+// Portuguese. The offer to resume a task has a fixed shape the voice detects.
+const LANGUAGE_RULE = {
+  pt: 'Responda em pt-BR informal, DIRETO e CURTO (até 3 frases, a menos que ele peça detalhe).',
+  en: 'Reply in casual American English, SHORT and DIRECT (up to 3 sentences unless asked for detail), even though the user writes in Portuguese. Your reply is spoken by an English voice. To offer resuming a task, ask exactly "Want me to resume task N?".',
+};
+
+export function buildChatPrompt({ digest, history = [], userMessage, transcriptExcerpt = null, lang = 'pt' }) {
   const historyText = history
     .slice(-HISTORY_LIMIT)
     .map((entry) => `${entry.role === 'user' ? 'Usuário' : 'Gerente'}: ${truncate(entry.text, HISTORY_ENTRY_CHARS)}`)
     .join('\n');
   return [
     'Você é o "Gerente", assistente descontraído que acompanha as sessões do Claude Code do usuário.',
-    'Responda em pt-BR informal, DIRETO e CURTO (até 3 frases, a menos que ele peça detalhe).',
+    LANGUAGE_RULE[lang] ?? LANGUAGE_RULE.pt,
     'Nada de markdown. Você não executa nada — só informa e orienta com base no estado abaixo.',
     '',
     'Estado atual das sessões:',
@@ -75,16 +82,18 @@ export async function askManager({
   timeoutMs = 30000,
   spawnFn,
   now = Date.now(),
+  lang = 'pt',
 }) {
   const prompt = buildChatPrompt({
     digest: buildSessionsDigest(sessions, now),
     history,
     userMessage,
     transcriptExcerpt,
+    lang,
   });
   const result = await runClaude({ prompt, timeoutMs, ...(spawnFn ? { spawnFn } : {}) });
   return {
-    reply: result?.text?.trim() || 'Xii, travei aqui tentando responder 😅 tenta de novo?',
+    reply: result?.text?.trim() || (lang === 'en' ? 'Oops, I got stuck trying to answer. Try again?' : 'Xii, travei aqui tentando responder 😅 tenta de novo?'),
     tokensUsed: result?.tokens ?? 0,
   };
 }

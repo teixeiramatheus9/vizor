@@ -74,6 +74,14 @@ describe('runtime and voice resolution', () => {
     expect(VOICES.santa.lang).toBe('pt');
   });
 
+  it('speechLang: the language the Vizor speaks with a voice', async () => {
+    const { speechLang } = await import('../src/main/sherpa-installer.js');
+    expect(speechLang('en-5')).toBe('en');
+    expect(speechLang('clara')).toBe('pt');
+    expect(speechLang('santa')).toBe('pt');
+    expect(speechLang('faber')).toBe('pt'); // a dropped voice speaks as the default
+  });
+
   it('Clara is the default and Faber is gone (#161: the user rejected it)', () => {
     expect(DEFAULT_VOICE).toBe('clara');
     expect(VOICES.faber).toBeUndefined();

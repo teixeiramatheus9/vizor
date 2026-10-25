@@ -146,3 +146,15 @@ describe('speech arbiter — final review fixes', () => {
     expect(withoutWakeWord('o visor do carro')).toBe('o projeto do carro');
   });
 });
+
+describe('withoutWakeWord for an English voice', () => {
+  it('the name becomes "project", in English', async () => {
+    expect(withoutWakeWord('A quick update on the Vizor repo.', 'en')).toBe('A quick update on the project repo.');
+    expect(withoutWakeWord('O Vizor terminou.')).toBe('O projeto terminou.');
+    const spoken = [];
+    const arbiter = createSpeechArbiter({ speak: (text) => (spoken.push(text), Promise.resolve()), stop: () => {}, lang: () => 'en' });
+    arbiter.say({ text: 'Vizor here.', priority: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(spoken).toEqual(['project here.']);
+  });
+});

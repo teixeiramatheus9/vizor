@@ -65,3 +65,30 @@ describe('resolveProject', () => {
     expect(resolveProject({ focusedCwd: '/home/u/vizorx', boundCwd: null, projects })).toEqual({ ask: true });
   });
 });
+
+describe('buildDigest in English, for an English voice', () => {
+  it('says the counts and the urgent bit in English; the screen lines stay as they are', () => {
+    const digest = buildDigest(
+      {
+        prs: [
+          { number: 7, title: 'auth', statusCheckRollup: [{ conclusion: 'FAILURE' }] },
+          { number: 8, title: 'ui', statusCheckRollup: [] },
+        ],
+        reviewRequested: [{ number: 8 }],
+        issues: [],
+        runs: [],
+      },
+      'en',
+    );
+    expect(digest.speech).toBe('2 open PRs, 1 waiting for your review. The CI on 7 broke.');
+    expect(digest.lines[0]).toBe('#7 auth — CI quebrado');
+  });
+
+  it('nothing open, one PR, issues only, a broken main, and no GitHub', () => {
+    expect(buildDigest({ prs: [], issues: [], runs: [] }, 'en').speech).toBe('Nothing open on GitHub, all clear.');
+    expect(buildDigest({ prs: [{ number: 1, title: 'x' }], issues: [], runs: [] }, 'en').speech).toBe('1 open PR.');
+    expect(buildDigest({ prs: [], issues: [{ number: 3, title: 'y' }, { number: 4, title: 'z' }], runs: [] }, 'en').speech).toBe('No open PRs. 2 issues on you.');
+    expect(buildDigest({ prs: [], issues: [], runs: [{ conclusion: 'failure', headBranch: 'main' }] }, 'en').speech).toBe('No open PRs. The CI on main broke.');
+    expect(buildDigest({ error: 'x' }, 'en').speech).toBe("I couldn't reach GitHub.");
+  });
+});

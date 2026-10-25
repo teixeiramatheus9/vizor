@@ -53,4 +53,20 @@ describe('narration', () => {
     expect(narrate(post('Bash', { command: 'cat README.md' }, 'error handling section'))).toBeNull();
     expect(narrate(pre('Read', { file_path: '/r/a.js' }))).toBeNull();
   });
+
+  it('in English, for an English voice', () => {
+    let time = 100000;
+    const { narrate } = createNarrator({ now: () => time, lang: 'en' });
+    expect(narrate(pre('Edit', { file_path: '/r/src/auth.js' }))).toEqual({ text: 'editing auth.js', replaceKey: 'edit' });
+    expect(narrate(pre('Bash', { command: 'npm test' }))).toEqual({ text: 'running the tests', replaceKey: 'tests' });
+    expect(narrate(post('Bash', { command: 'npm test' }, ' Tests  3 failed | 10 passed'))).toEqual({ text: '3 tests failed', replaceKey: 'tests' });
+    expect(narrate(post('Bash', { command: 'npm test' }, 'FAIL src/a.test.js'))).toEqual({ text: 'the tests failed', replaceKey: 'tests' });
+    expect(narrate(post('Bash', { command: 'npm test' }, ' Tests  10 passed (10)'))).toEqual({ text: 'the tests passed', replaceKey: 'tests' });
+    expect(narrate(post('Bash', { command: 'git commit -m x' }))).toEqual({ text: 'committed', replaceKey: 'git' });
+    expect(narrate(post('Bash', { command: 'git push' }))).toEqual({ text: 'pushed the branch', replaceKey: 'git' });
+    expect(narrate(post('Bash', { command: 'npm run build' }, 'ERR! failed'))).toEqual({ text: 'the build failed', replaceKey: 'build' });
+    expect(narrate(pre('Agent', { description: 'Review the diff' }))).toEqual({ text: 'called an agent to review the diff', replaceKey: 'agent' });
+    expect(narrate(pre('Agent', {}))).toEqual({ text: 'called an agent', replaceKey: 'agent' });
+    time += 0;
+  });
 });

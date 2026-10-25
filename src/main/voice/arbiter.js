@@ -10,11 +10,12 @@ const CUTTABLE = 4;
 // The spotter hears "Vizor" in the Vizor's own speech (tts respells it
 // "Váizor", one of the wake spellings) and would wake itself: spoken lines
 // never carry the name, nor its sound-alikes.
-export function withoutWakeWord(text) {
-  return String(text ?? '').replace(/\bv[aá]?i?[sz]or\b/gi, 'projeto');
+export function withoutWakeWord(text, lang = 'pt') {
+  return String(text ?? '').replace(/\bv[aá]?i?[sz]or\b/gi, lang === 'en' ? 'project' : 'projeto');
 }
 
-export function createSpeechArbiter({ now = Date.now, speak, stop, conversationWindowMs = 120000 }) {
+// lang: the voice's language, read per line (the voice can change mid-session).
+export function createSpeechArbiter({ now = Date.now, speak, stop, conversationWindowMs = 120000, lang = () => 'pt' }) {
   const arbiter = new EventEmitter();
   let queue = [];
   let current = null;
@@ -34,7 +35,7 @@ export function createSpeechArbiter({ now = Date.now, speak, stop, conversationW
     current = item;
     arbiter.speaking = true;
     if (wasQuiet) arbiter.emit('speaking');
-    Promise.resolve(speak(withoutWakeWord(item.text), item))
+    Promise.resolve(speak(withoutWakeWord(item.text, lang()), item))
       .catch(() => {})
       .then(() => {
         current = null;

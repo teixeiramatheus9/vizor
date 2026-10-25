@@ -132,3 +132,13 @@ describe('aliases in the digest and mentions (issue #63)', () => {
     expect(findMentionedSession([aliased], 'e o chat da pasta vizor ali?')?.id).toBe('s1');
   });
 });
+
+describe('the gerente in English, for an English voice', () => {
+  it('asks for a casual American English answer; the default stays pt-BR', () => {
+    const english = buildChatPrompt({ digest: '-', userMessage: 'o que tá rolando?', lang: 'en' });
+    expect(english).toContain('Reply in casual American English');
+    expect(english).toContain('Want me to resume task N?');
+    expect(english).not.toContain('Responda em pt-BR');
+    expect(buildChatPrompt({ digest: '-', userMessage: 'oi' })).toContain('Responda em pt-BR');
+  });
+});
