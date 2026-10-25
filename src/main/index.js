@@ -1149,7 +1149,18 @@ async function enrichNotification(session) {
   }
 }
 
+// Edit-tool hooks feed the workspace's edit tracking, never the session
+// registry: they say nothing about whether the session is waiting or done.
+function onToolEvent(event) {
+  const target = event.tool_input?.file_path ?? event.tool_input?.notebook_path ?? '-';
+  log(`edit hook: ${event.hook_event_name} ${event.tool_name} ${target} id=${event.tool_use_id ?? '-'}`);
+}
+
 function onHookEvent(event) {
+  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
+    onToolEvent(event);
+    return;
+  }
   if (event?.hook_event_name === 'Notification') {
     event = {
       ...event,

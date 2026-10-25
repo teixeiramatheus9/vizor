@@ -79,6 +79,40 @@ describe('install-hooks', () => {
       .map((hook) => hook.command);
     expect(commands).toEqual(['ferramenta-de-terceiro']);
   });
+
+  const TOOL_GROUP = {
+    matcher: 'Edit|Write|MultiEdit|NotebookEdit',
+    hooks: [{ type: 'command', command: COMMAND, async: true }],
+  };
+
+  it('adds the edit-tool events with the matcher and async', () => {
+    const result = addHooks({}, COMMAND);
+    expect(result.hooks.PreToolUse).toEqual([TOOL_GROUP]);
+    expect(result.hooks.PostToolUse).toEqual([TOOL_GROUP]);
+  });
+
+  it('tool events are idempotent too', () => {
+    expect(addHooks(addHooks({}, COMMAND), COMMAND).hooks.PostToolUse).toHaveLength(1);
+  });
+
+  it('ensureHooks rewrites our tool hook when its matcher or async drifted', () => {
+    const settings = {
+      hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: COMMAND }] }] },
+    };
+    expect(ensureHooks(settings, COMMAND).hooks.PostToolUse).toEqual([TOOL_GROUP]);
+  });
+
+  it("keeps other tools' PreToolUse hooks", () => {
+    const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'lint.sh' }] };
+    const result = ensureHooks({ hooks: { PreToolUse: [other] } }, COMMAND);
+    expect(result.hooks.PreToolUse).toEqual([other, TOOL_GROUP]);
+  });
+
+  it('removeAppHooks strips the tool events as well', () => {
+    const result = removeAppHooks(addHooks({}, COMMAND));
+    expect(result.hooks.PreToolUse).toBeUndefined();
+    expect(result.hooks.PostToolUse).toBeUndefined();
+  });
 });
 
 describe('buildHookCommand', () => {

@@ -6,26 +6,50 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification'];
 
+// The workspace tracks every file the AI edits. These fire on each tool call,
+// so the matcher keeps them off Read/Bash/Grep, and async keeps Claude Code
+// from waiting even for the hook's spawn.
+export const TOOL_HOOK_EVENTS = ['PreToolUse', 'PostToolUse'];
+export const EDIT_TOOL_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit';
+const ALL_EVENTS = [...HOOK_EVENTS, ...TOOL_HOOK_EVENTS];
+
+function isCanonicalToolHook(group, hook, command) {
+  return group.matcher === EDIT_TOOL_MATCHER && hook.command === command && hook.async === true;
+}
+
 export function addHooks(settings, command) {
   const next = { ...settings, hooks: { ...(settings.hooks ?? {}) } };
-  for (const eventName of HOOK_EVENTS) {
+  for (const eventName of ALL_EVENTS) {
+    const isToolEvent = TOOL_HOOK_EVENTS.includes(eventName);
     const groups = [...(next.hooks[eventName] ?? [])];
     const alreadyInstalled = groups.some((group) =>
-      (group.hooks ?? []).some((hook) => hook.command === command),
+      (group.hooks ?? []).some((hook) =>
+        isToolEvent ? isCanonicalToolHook(group, hook, command) : hook.command === command,
+      ),
     );
-    if (!alreadyInstalled) groups.push({ hooks: [{ type: 'command', command }] });
+    if (!alreadyInstalled) {
+      groups.push(
+        isToolEvent
+          ? { matcher: EDIT_TOOL_MATCHER, hooks: [{ type: 'command', command, async: true }] }
+          : { hooks: [{ type: 'command', command }] },
+      );
+    }
     next.hooks[eventName] = groups;
   }
   return next;
 }
 
+// shouldRemove(command, group, hook, eventName) — the extra arguments let
+// ensureHooks judge the shape of a tool hook, not only its command.
 function removeMatching(settings, shouldRemove) {
   const next = { ...settings, hooks: { ...(settings.hooks ?? {}) } };
-  for (const eventName of HOOK_EVENTS) {
+  for (const eventName of ALL_EVENTS) {
     const groups = (next.hooks[eventName] ?? [])
       .map((group) => ({
         ...group,
-        hooks: (group.hooks ?? []).filter((hook) => !shouldRemove(hook.command ?? '')),
+        hooks: (group.hooks ?? []).filter(
+          (hook) => !shouldRemove(hook.command ?? '', group, hook, eventName),
+        ),
       }))
       .filter((group) => group.hooks.length > 0);
     if (groups.length > 0) next.hooks[eventName] = groups;
@@ -67,10 +91,13 @@ export function removeAppHooks(settings) {
 }
 
 export function ensureHooks(settings, command) {
-  const cleaned = removeMatching(
-    settings,
-    (candidate) => candidate.includes(HOOK_MARKER) && candidate !== command,
-  );
+  const cleaned = removeMatching(settings, (candidate, group, hook, eventName) => {
+    if (!candidate.includes(HOOK_MARKER)) return false;
+    if (candidate !== command) return true;
+    // Same command, but a tool hook without the matcher or async would run on
+    // every tool call, or make Claude Code wait on it.
+    return TOOL_HOOK_EVENTS.includes(eventName) && !isCanonicalToolHook(group, hook, command);
+  });
   return addHooks(cleaned, command);
 }
 
