@@ -224,6 +224,10 @@ export function createVocabularyStore({ dir, readFile, writeFile, rename }) {
   return {
     load,
     save: (root, { terms, scannedAt }) => write(root, { ...load(root), terms, scannedAt }),
+    unlearn: (root, heard) => {
+      const data = load(root);
+      write(root, { ...data, learned: data.learned.filter((item) => item.heard !== heard) });
+    },
     learn: (root, pair) => {
       const data = load(root);
       const learned = [...data.learned.filter((item) => phoneticKey(item.heard) !== phoneticKey(pair.heard)), pair];

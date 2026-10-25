@@ -106,6 +106,8 @@ describe('vocabulary store', () => {
     store.learn('/r', { heard: 'rubik guard', meant: 'rule-guard' });
     expect(store.load('/r')).toMatchObject({ terms: [{ text: 'x-y' }], learned: [{ heard: 'rubik guard', meant: 'rule-guard' }] });
     expect(store.load('/other')).toEqual({ terms: [], learned: [], scannedAt: 0 });
+    store.unlearn('/r', 'rubik guard');
+    expect(store.load('/r').learned).toEqual([]);
     expect(Object.keys(files).some((name) => name.endsWith('.tmp'))).toBe(false);
   });
 });

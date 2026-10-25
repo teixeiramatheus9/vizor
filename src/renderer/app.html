@@ -720,6 +720,31 @@
         line-height: 1.55;
         color: var(--text-2);
       }
+      #voice-badge {
+        margin-left: 8px;
+        color: var(--accent);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      #voice-learned {
+        margin: 4px 0 6px;
+        padding: 0;
+        list-style: none;
+        font-size: 11px;
+      }
+      #voice-learned li {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--text-2);
+      }
+      #voice-learned button {
+        background: none;
+        border: none;
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
+      }
       .question-text {
         color: var(--text-2);
       }
@@ -1468,6 +1493,7 @@
         </svg>
         <h1 title="Vizor">vzr</h1>
         <span id="header-path">~/.claude/sessions</span>
+        <span id="voice-badge" class="hidden"></span>
         <button id="close" title="Fechar">✕</button>
       </header>
       <button id="update-banner" class="hidden"></button>
@@ -1527,6 +1553,7 @@
           <button class="nav-item" data-section="resposta">resposta rápida</button>
           <button class="nav-item" data-section="limites">limites</button>
           <button class="nav-item" data-section="regras">regras</button>
+          <button class="nav-item voice-only" data-section="voz">voz</button>
           <button class="nav-item" data-section="sistema">sistema</button>
         </nav>
         <div id="settings-content">
@@ -1626,6 +1653,14 @@
               <span>abrir o chat do gerente</span>
               <input class="shortcut-input" data-shortcut="chat" readonly placeholder="clique e tecle" />
             </label>
+            <label class="setting-row voice-only">
+              <span>falar com o Vizor (sem dizer o nome)</span>
+              <input class="shortcut-input" data-shortcut="voiceTalk" readonly placeholder="clique e tecle" />
+            </label>
+            <label class="setting-row voice-only">
+              <span>mudo do microfone</span>
+              <input class="shortcut-input" data-shortcut="voiceMute" readonly placeholder="clique e tecle" />
+            </label>
             <div class="setting-hint" id="shortcuts-hint">backspace limpa o atalho</div>
           </section>
           <section class="settings-section" data-section="terminal-voz">
@@ -1691,6 +1726,44 @@
               <span class="prompt">❯</span>
               <button id="open-rules">[abrir regras]</button>
             </div>
+          </section>
+          <section class="settings-section" data-section="voz">
+            <div class="setting-subtitle"># voz</div>
+            <div class="setting-hint" id="voice-mode-status"></div>
+            <label class="setting-row wide-label">
+              <span>conversar por voz (diga "Vizor")</span>
+              <input id="voice-enabled" type="checkbox" /><span class="switch"></span>
+              <span id="voice-enabled-state">[off]</span>
+            </label>
+            <div class="setting-hint" id="voice-download"># os modelos (~230 MB) baixam ao ligar; nada de áudio sai da máquina</div>
+            <label class="setting-row">
+              <span>transcrição</span>
+              <span class="sel"><select id="voice-model">
+                <option value="base">rápida (base)</option>
+                <option value="small">precisa (small, ~2x mais lenta)</option>
+              </select></span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>narrar os passos do chat</span>
+              <input id="voice-narration" type="checkbox" /><span class="switch"></span>
+              <span id="voice-narration-state">[on]</span>
+            </label>
+            <label class="setting-row">
+              <span>no fim da resposta</span>
+              <span class="sel"><select id="voice-summary">
+                <option value="always">resumo falado</option>
+                <option value="short">só respostas curtas</option>
+                <option value="off">só avisar que terminou</option>
+              </select></span>
+            </label>
+            <div class="setting-subtitle"># vocabulário do projeto</div>
+            <div class="setting-hint" id="voice-vocab"></div>
+            <ul id="voice-learned"></ul>
+            <div class="setting-actions">
+              <span class="prompt">❯</span>
+              <button id="voice-rescan">[reexplorar o projeto]</button>
+            </div>
+            <div class="setting-hint"># atalhos de voz ficam em "atalhos"</div>
           </section>
           <section class="settings-section" data-section="sistema">
             <div class="setting-subtitle"># sistema</div>

@@ -810,6 +810,77 @@ guardCheckbox.addEventListener('change', () => {
 });
 document.getElementById('open-rules').addEventListener('click', () => window.manager.openRules());
 
+// Settings › voz (#161). Linux only: elsewhere the section and its
+// shortcuts are hidden.
+const VOICE_STATE_TEXT = {
+  off: 'desligada',
+  sleeping: 'esperando "Vizor"',
+  listening: 'ouvindo',
+  closing: 'ouvindo',
+  grace: 'entendi',
+  'paused-speaking': 'falando',
+  muted: 'mudo',
+  meeting: 'pausada: outro app usando o microfone',
+  'sem-modelos': 'baixando os modelos',
+};
+const voiceEnabledBox = document.getElementById('voice-enabled');
+const voiceNarrationBox = document.getElementById('voice-narration');
+const voiceModelSelect = document.getElementById('voice-model');
+const voiceSummarySelect = document.getElementById('voice-summary');
+
+function renderVoice(voice) {
+  if (!voice) return;
+  for (const element of document.querySelectorAll('.voice-only')) element.classList.toggle('hidden', !voice.available);
+  voiceEnabledBox.checked = voice.enabled;
+  document.getElementById('voice-enabled-state').textContent = voice.enabled ? '[on]' : '[off]';
+  voiceNarrationBox.checked = voice.narration;
+  document.getElementById('voice-narration-state').textContent = voice.narration ? '[on]' : '[off]';
+  if (document.activeElement !== voiceModelSelect) voiceModelSelect.value = voice.model;
+  if (document.activeElement !== voiceSummarySelect) voiceSummarySelect.value = voice.summary;
+  document.getElementById('voice-mode-status').textContent = `# ${VOICE_STATE_TEXT[voice.state] ?? voice.state}${voice.target ? ` · falando com ${voice.target}` : ''}`;
+  document.getElementById('voice-download').textContent = voice.download?.error
+    ? `# não consegui baixar os modelos: ${voice.download.error}`
+    : voice.download
+      ? `# baixando os modelos… ${voice.download.percent}%`
+      : '# os modelos (~230 MB) baixam ao ligar; nada de áudio sai da máquina';
+  const badge = document.getElementById('voice-badge');
+  badge.classList.toggle('hidden', !voice.enabled);
+  badge.textContent = voice.enabled ? `🎙 ${VOICE_STATE_TEXT[voice.state] ?? voice.state}` : '';
+}
+
+async function renderVocabulary() {
+  const vocabulary = await window.manager.voiceVocabulary();
+  document.getElementById('voice-vocab').textContent = vocabulary.root
+    ? `# ${vocabulary.terms} nomes de ${vocabulary.project}${vocabulary.scanning ? ' (explorando…)' : ''}`
+    : '# abra um projeto no workspace pra ter vocabulário';
+  const list = document.getElementById('voice-learned');
+  list.replaceChildren(
+    ...vocabulary.learned.map(({ heard, meant }) => {
+      const item = document.createElement('li');
+      const text = document.createElement('span');
+      text.textContent = `"${heard}" → ${meant}`;
+      const forget = document.createElement('button');
+      forget.textContent = '[esquecer]';
+      forget.addEventListener('click', async () => {
+        await window.manager.voiceUnlearn(heard);
+        renderVocabulary();
+      });
+      item.append(text, forget);
+      return item;
+    }),
+  );
+}
+
+voiceEnabledBox.addEventListener('change', () => window.manager.setConfig({ voiceEnabled: voiceEnabledBox.checked }));
+voiceNarrationBox.addEventListener('change', () => window.manager.setConfig({ voiceNarration: voiceNarrationBox.checked }));
+voiceModelSelect.addEventListener('change', () => window.manager.setConfig({ voiceModel: voiceModelSelect.value }));
+voiceSummarySelect.addEventListener('change', () => window.manager.setConfig({ voiceSummary: voiceSummarySelect.value }));
+document.getElementById('voice-rescan').addEventListener('click', async () => {
+  await window.manager.voiceRescan();
+  renderVocabulary();
+});
+document.querySelector('[data-section="voz"].nav-item')?.addEventListener('click', renderVocabulary);
+
 const autoUpdateCheckbox = document.getElementById('auto-update');
 const autoUpdateState = document.getElementById('auto-update-state');
 
@@ -1464,6 +1535,7 @@ window.manager.onState((state) => {
   renderTrayStatus(state.trayNeedsRelogin);
   renderUsage(state.tokens);
   renderGuardStatus(state.guard);
+  renderVoice(state.voice);
   renderBadge(state.sessions);
   lastUnreadCount = state.unread;
 

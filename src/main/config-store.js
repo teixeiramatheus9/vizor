@@ -29,6 +29,8 @@ export const DEFAULT_CONFIG = {
   guardEnabled: true,
   voiceEnabled: false,
   voiceModel: 'base',
+  voiceNarration: true,
+  voiceSummary: 'always',
 };
 
 const stringList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);

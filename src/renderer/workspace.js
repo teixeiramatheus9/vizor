@@ -35,6 +35,9 @@ const placeholder = document.getElementById('term-placeholder');
 const newMenu = document.getElementById('new-menu');
 
 let lastTree = null;
+// The voice mode (#161): the chat can fold away so the code takes the screen.
+let chatHidden = false;
+let voiceInfo = null;
 let terminals = [];
 let selectedId = null; // selected session
 let selectedWorktree = null;
@@ -285,7 +288,7 @@ async function renderTerminalArea() {
 
 function render() {
   if (!lastTree) return;
-  topbar.innerHTML = renderTopBar(lastTree);
+  topbar.innerHTML = renderTopBar(lastTree, { chatHidden, voice: voiceInfo });
   sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds);
   renderTerminalArea();
 }
@@ -521,8 +524,9 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks }) => {
+window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice }) => {
   renderGuardAsks(guardAsks);
+  voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;
@@ -584,8 +588,36 @@ window.vizor.onTerminalExit(() => renderTerminalArea());
 
 new ResizeObserver(() => fitActive()).observe(termHost);
 
+function setChatHidden(hidden) {
+  chatHidden = hidden;
+  document.body.dataset.chatHidden = String(hidden);
+  // The code needs the room: an inspector folded away opens wide.
+  if (hidden && prefs.width === 'collapsed') savePrefs({ width: 'wide' });
+  render();
+  if (!hidden) requestAnimationFrame(fitActive);
+}
+
+// What the voice asked of the workspace (main sends it, #161).
+window.vizor.onVoice(({ action, file }) => {
+  if (action === 'hide-chat') setChatHidden(true);
+  else if (action === 'show-chat') setChatHidden(false);
+  else if (action === 'show-diff') {
+    if (prefs.width === 'collapsed') savePrefs({ width: 'compact' });
+  } else if (action === 'open-file' && file) {
+    const wanted = String(file).toLowerCase();
+    const card = [...document.querySelectorAll('[data-card], [data-banner], [data-file]')].find((element) =>
+      (element.dataset.file ?? element.textContent ?? '').toLowerCase().includes(wanted),
+    );
+    card?.click();
+  }
+});
+
 document.addEventListener('click', async (event) => {
   const target = event.target;
+  if (target.closest('[data-toggle-chat]')) {
+    setChatHidden(!chatHidden);
+    return;
+  }
   if (!newMenu.hidden && !target.closest('#new-menu') && !target.closest('[data-new-terminal]')) closeMenu();
   const newKind = target.closest('[data-new-kind]');
   if (newKind) {

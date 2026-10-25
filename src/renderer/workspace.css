@@ -849,3 +849,24 @@ body[data-inspector-width='collapsed'] #rail {
 #guard-asks[hidden] {
   display: none;
 }
+
+/* Voice mode (#161): the chat folds away and the code takes the screen. */
+body[data-chat-hidden='true'] #columns {
+  grid-template-columns: 240px 0 1fr;
+}
+body[data-chat-hidden='true'] #terminal-pane {
+  overflow: hidden;
+  visibility: hidden;
+}
+#topbar .toggle-chat {
+  margin-right: 8px;
+}
+#topbar .voice-state {
+  margin-left: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+#topbar .voice-state[data-voice='meeting'],
+#topbar .voice-state[data-voice='muted'] {
+  color: var(--muted);
+}

@@ -18,6 +18,8 @@ const joinNames = (names) => (names.length <= 1 ? names.join('') : `${names.slic
 
 export function createVoiceSession(deps) {
   const narrator = createNarrator();
+  // narration on/off; summary 'always' | 'short' (long ones stay on screen) | 'off'
+  const settings = () => ({ narration: true, summary: 'always', ...(deps.settings?.() ?? {}) });
   let target = { kind: 'manager' };
   let boundTask = null; // the task number the bound chat was opened for
   let cursor = null;
@@ -165,9 +167,15 @@ export function createVoiceSession(deps) {
     async onSessionStop(session) {
       if (target.kind !== 'chat' || session.id !== target.sessionId) return false;
       const analysis = analyzeReply(session.lastMessage ?? '');
-      const reply = await spokenReply(analysis, { summarize: deps.summarize, economy: deps.economy() });
-      cursor = analysis.items ? createReplyCursor(analysis.items) : null;
-      say(reply.speech, 3, { source: session.id });
+      const { summary } = settings();
+      if (summary === 'off') {
+        cursor = null;
+        say('Terminei.', 3, { source: session.id });
+      } else {
+        const reply = await spokenReply(analysis, { summarize: deps.summarize, economy: deps.economy() || summary === 'short' });
+        cursor = analysis.items ? createReplyCursor(analysis.items) : null;
+        say(reply.speech, 3, { source: session.id });
+      }
       if (queuedPrompt) {
         const text = queuedPrompt;
         queuedPrompt = null;
@@ -177,7 +185,7 @@ export function createVoiceSession(deps) {
     },
 
     onToolEvent(event) {
-      if (target.kind !== 'chat' || event?.session_id !== target.sessionId) return;
+      if (!settings().narration || target.kind !== 'chat' || event?.session_id !== target.sessionId) return;
       const line = narrator.narrate(event);
       if (line) say(line.text, 3, { replaceKey: `${target.sessionId}:${line.replaceKey}`, source: target.sessionId });
     },

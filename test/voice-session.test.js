@@ -122,6 +122,26 @@ describe('voice session — edges', () => {
     expect(texts().at(-1)).toBe('Terminei, a resposta tá na tela.');
   });
 
+  it('narration off: tool events say nothing', async () => {
+    const { session, said } = setup({ settings: () => ({ narration: false, summary: 'always' }) });
+    await session.onUtterance('retoma a task 22');
+    const before = said.length;
+    session.onToolEvent({ session_id: 's22', hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: '/r/a.js' } });
+    expect(said).toHaveLength(before);
+  });
+
+  it('summary "short": long answers stay on screen; "off": only that it finished', async () => {
+    const long = 'texto longo. '.repeat(40);
+    const short = setup({ settings: () => ({ narration: true, summary: 'short' }), summarize: async () => 'resumo' });
+    await short.session.onUtterance('retoma a task 22');
+    await short.session.onSessionStop({ id: 's22', lastMessage: long });
+    expect(short.texts().at(-1)).toBe('Terminei, a resposta tá na tela.');
+    const off = setup({ settings: () => ({ narration: true, summary: 'off' }) });
+    await off.session.onUtterance('retoma a task 22');
+    await off.session.onSessionStop({ id: 's22', lastMessage: 'Feito, troquei.' });
+    expect(off.texts().at(-1)).toBe('Terminei.');
+  });
+
   it('never speaks emoji', async () => {
     const { session, texts } = setup({ askManager: async () => 'Xii, travei aqui 😅 tenta de novo?' });
     await session.onUtterance('como tá a vida?');

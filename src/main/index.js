@@ -33,7 +33,8 @@ import { buildDigest, ghQueries, githubRepoOf, resolveProject } from './voice/gh
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
 import { runClaude } from './claude-cli.js';
-import { missingVoiceModels, voiceModelPaths } from './voice/models.js';
+import { ASR_MODELS, KWS_MODEL, VAD_MODEL, installVoiceModels, missingVoiceModels, voiceModelPaths } from './voice/models.js';
+import { otherRecorders } from './voice/meeting.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
@@ -385,6 +386,8 @@ let voiceArbiter = null;
 let voiceSession = null;
 let micWindow = null;
 let voiceState = 'off';
+let voiceDownload = null; // { percent } | { error } while the models come down
+let meetingTimer = null;
 
 const rulesStore = createRulesStore({
   dir: rulesDir,
@@ -508,7 +511,7 @@ function sendState() {
     sessions: listWithDisplayNames(),
     guardAsks: guardAsks.pending(),
     guard: guardStatus(),
-    voice: { available: voiceAvailable(), enabled: Boolean(managerConfig.voiceEnabled), state: voiceState },
+    voice: voiceStatus(),
     unread: registry.unreadCount(),
     update: updateStatus,
     hint: lastHint,
@@ -1064,6 +1067,14 @@ function applyShortcuts() {
       openPanel();
       sendToRenderer('ui:open-chat');
     },
+    // Electron sees a press, never a release: press to talk, silence closes.
+    voiceTalk: () => voiceListener?.wake(),
+    voiceMute: () => {
+      if (!voiceListener) return;
+      const muting = voiceState !== 'muted';
+      voiceListener.mute(muting);
+      voiceArbiter?.say({ text: muting ? 'Microfone mudo.' : 'Microfone de volta.', priority: 1 });
+    },
   };
   shortcutFailures = [];
   for (const [id, accelerator] of Object.entries(managerConfig.shortcuts ?? {})) {
@@ -1486,6 +1497,7 @@ function pushWorkspaceStateNow() {
     terminals: ptyHost?.list() ?? [],
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
+    voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2394,6 +2406,12 @@ ipcMain.handle('config:set', (_event, partial) => {
   if (partial?.shortcuts && typeof partial.shortcuts === 'object') {
     allowed.shortcuts = sanitizeShortcuts(partial.shortcuts, managerConfig.shortcuts);
   }
+  if (typeof partial?.voiceEnabled === 'boolean') allowed.voiceEnabled = partial.voiceEnabled;
+  if (partial?.voiceModel === 'base' || partial?.voiceModel === 'small') allowed.voiceModel = partial.voiceModel;
+  if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
+  if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
+  const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
+    ('voiceModel' in allowed && allowed.voiceModel !== managerConfig.voiceModel);
   // Not config state: the OS holds the truth, so the flag is applied and
   // re-read instead of saved.
   if (typeof partial?.autostart === 'boolean') {
@@ -2408,6 +2426,10 @@ ipcMain.handle('config:set', (_event, partial) => {
     saveConfig(configFile, managerConfig);
   } catch (error) {
     log(`config save failed: ${error}`);
+  }
+  if (voiceRestart) {
+    stopVoice();
+    if (managerConfig.voiceEnabled) enableVoice();
   }
   sendState();
   if (allowed.panelScale && overlayMode === 'panel') showOverlay('panel', { focus: true });
@@ -3496,8 +3518,101 @@ function createVoiceSessionForApp() {
     findChat: voiceFindChat,
     dictation: (on) => voiceListener?.dictation(on),
     projectRoot: () => voiceRoot(),
+    settings: () => ({ narration: managerConfig.voiceNarration !== false, summary: managerConfig.voiceSummary ?? 'always' }),
   });
 }
+
+function voiceStatus() {
+  const target = voiceSession?.target();
+  const title = target?.kind === 'chat' ? voiceSessionInfo(target.sessionId).title : null;
+  return {
+    available: voiceAvailable(),
+    enabled: Boolean(managerConfig.voiceEnabled),
+    state: voiceState,
+    model: managerConfig.voiceModel ?? 'base',
+    narration: managerConfig.voiceNarration !== false,
+    summary: managerConfig.voiceSummary ?? 'always',
+    download: voiceDownload,
+    target: target?.kind === 'chat' ? `chat ${title ? title.slice(0, 40) : ''}`.trim() : voiceListener ? 'gerente' : null,
+  };
+}
+
+// Turned on: the models come down first (with progress), then it listens.
+function enableVoice() {
+  if (!voiceAvailable() || !managerConfig.voiceEnabled) return;
+  const model = managerConfig.voiceModel ?? 'base';
+  if (!missingVoiceModels(voiceSherpaDir, model).length) {
+    startVoice();
+    return;
+  }
+  if (voiceDownload && !voiceDownload.error) return;
+  const sizes = { kws: KWS_MODEL.approxMB, vad: VAD_MODEL.approxMB, [ASR_MODELS[model].id]: ASR_MODELS[model].approxMB };
+  const total = Object.values(sizes).reduce((sum, size) => sum + size, 0);
+  const received = {};
+  voiceDownload = { percent: 0 };
+  sendState();
+  let lastPush = 0;
+  installVoiceModels(voiceSherpaDir, model, {
+    onProgress: ({ id, received: bytes, total: size }) => {
+      received[id] = size ? (bytes / size) * (sizes[id] ?? 0) : 0;
+      voiceDownload = { percent: Math.min(99, Math.round((100 * Object.values(received).reduce((sum, mb) => sum + mb, 0)) / total)) };
+      if (Date.now() - lastPush > 500) {
+        lastPush = Date.now();
+        sendState();
+      }
+    },
+  })
+    .then(() => {
+      voiceDownload = null;
+      log('voice: models installed');
+      startVoice();
+      sendState();
+    })
+    .catch((error) => {
+      voiceDownload = { error: String(error?.message ?? error) };
+      log(`voice models failed: ${error}`);
+      sendState();
+    });
+}
+
+// Another app recording the mic (a call) pauses listening (#161).
+async function checkMeeting() {
+  if (!voiceListener) return;
+  try {
+    const dump = JSON.parse(await runText('pw-dump', []));
+    const ours = new Set(app.getAppMetrics().map((metric) => metric.pid));
+    const others = otherRecorders(dump, ours);
+    const inMeeting = others.length > 0;
+    if (inMeeting !== (voiceState === 'meeting')) {
+      log(`voice: ${inMeeting ? `paused, ${others.join(', ')} is recording` : 'back from the meeting'}`);
+      voiceListener.meeting(inMeeting);
+    }
+  } catch (error) {
+    // no pw-dump: no meeting detection on this machine
+    clearInterval(meetingTimer);
+    meetingTimer = null;
+    log(`voice: meeting detection off (${error?.message ?? error})`);
+  }
+}
+
+ipcMain.handle('voice:vocabulary', () => {
+  const root = voiceRoot();
+  if (!root) return { root: null, terms: 0, learned: [] };
+  const data = vocabularyStore.load(root);
+  return { root, project: path.basename(root), terms: data.terms.length, learned: data.learned, scanning: voiceScanning.has(root) };
+});
+ipcMain.handle('voice:unlearn', (_event, heard) => {
+  const root = voiceRoot();
+  if (root && typeof heard === 'string') vocabularyStore.unlearn(root, heard);
+  return true;
+});
+ipcMain.handle('voice:rescan', () => {
+  const root = voiceRoot();
+  if (!root) return false;
+  vocabularyStore.save(root, { terms: vocabularyStore.load(root).terms, scannedAt: 0 });
+  refreshVocabulary(root);
+  return true;
+});
 
 function createMicWindow() {
   micWindow = new BrowserWindow({
@@ -3517,6 +3632,7 @@ function startVoice() {
   if (missing.length) {
     voiceState = 'sem-modelos';
     log(`voice: models missing (${missing.join(', ')})`);
+    enableVoice();
     return;
   }
   const worker = new Worker(new URL('./voice/worker.js', import.meta.url), {
@@ -3544,6 +3660,10 @@ function startVoice() {
     voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing');
     sendState();
   });
+  voiceListener.on('echo', ({ text }) => {
+    sendToRenderer('tooltip', { projectName: 'você disse', text, kind: 'hint', sessionId: null });
+    showTooltip();
+  });
   voiceListener.on('ack', () => {
     voiceArbiter?.say({ text: 'ok', priority: 1, kind: 'ack' });
     voiceListener?.ignoreSpeech(700);
@@ -3560,9 +3680,12 @@ function startVoice() {
   refreshVocabulary(voiceRoot());
   voiceState = 'sleeping';
   createMicWindow();
+  meetingTimer = setInterval(checkMeeting, 3000);
 }
 
 function stopVoice() {
+  clearInterval(meetingTimer);
+  meetingTimer = null;
   voiceSession = null;
   voiceArbiter?.flush();
   voiceArbiter = null;
