@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds } from '../src/main/workspace-tabs.js';
+import { createQuitFreeze, linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds } from '../src/main/workspace-tabs.js';
 
 const ID = '4b706711-9840-4931-8b0f-d6d51518d6ba';
 
@@ -172,5 +172,58 @@ describe('linkTerminals', () => {
     const out = linkTerminals([session], ['p1', 'p2'], new Map([['p2', ID]]));
     expect(out[0].term.VIZOR_PTY_ID).toBe('p1');
     expect(out[0]).toBe(session);
+  });
+});
+
+describe('createQuitFreeze (#157)', () => {
+  const setup = () => {
+    const log = [];
+    const timers = new Map();
+    let next = 1;
+    const freeze = createQuitFreeze({
+      freeze: () => log.push('freeze'),
+      thaw: () => log.push('thaw'),
+      setTimer: (fn, ms) => {
+        const id = next++;
+        timers.set(id, { fn, ms });
+        return id;
+      },
+      clearTimer: (id) => timers.delete(id),
+      graceMs: 10000,
+    });
+    const fire = () => {
+      for (const [id, { fn }] of [...timers]) {
+        timers.delete(id);
+        fn();
+      }
+    };
+    return { freeze, log, timers, fire };
+  };
+
+  it('freezes the tabs when the quit starts and keeps them frozen once it goes through', () => {
+    const { freeze, log, timers, fire } = setup();
+    freeze.beforeQuit();
+    expect(log).toEqual(['freeze']);
+    freeze.willQuit();
+    expect(timers.size).toBe(0);
+    fire();
+    expect(log).toEqual(['freeze']);
+  });
+
+  it('thaws the tabs when the quit never reaches will-quit (it was cancelled)', () => {
+    const { freeze, log, timers, fire } = setup();
+    freeze.beforeQuit();
+    expect([...timers.values()][0].ms).toBe(10000);
+    fire();
+    expect(log).toEqual(['freeze', 'thaw']);
+  });
+
+  it('a second quit attempt restarts the grace period', () => {
+    const { freeze, log, timers, fire } = setup();
+    freeze.beforeQuit();
+    freeze.beforeQuit();
+    expect(timers.size).toBe(1);
+    fire();
+    expect(log).toEqual(['freeze', 'freeze', 'thaw']);
   });
 });

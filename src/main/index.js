@@ -56,7 +56,7 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost, withoutClaudeSession } from './pty-host.js';
-import { linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
+import { createQuitFreeze, linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
 import { listConversations } from './conversations.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
@@ -1685,6 +1685,16 @@ function freezeWorkspaceTabs() {
   saveWorkspaceTabs();
   tabsFrozen = true;
 }
+
+const quitFreeze = createQuitFreeze({
+  freeze: freezeWorkspaceTabs,
+  thaw: () => {
+    if (!tabsFrozen) return;
+    log('quit did not go through: workspace tab saves resume');
+    tabsFrozen = false;
+    scheduleTabsSave();
+  },
+});
 
 function restoreWorkspaceTabs() {
   if (!workspaceWindow) return;
@@ -3318,6 +3328,7 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
+  quitFreeze.willQuit();
   globalShortcut.unregisterAll();
   ptyHost?.killAll();
   commandWatcher.stopAll();
@@ -3352,7 +3363,8 @@ async function requestQuit() {
 app.on('before-quit', () => {
   appQuitting = true;
   // Before will-quit kills the terminals: their chats are still alive here.
-  freezeWorkspaceTabs();
+  // A quit cancelled after this point thaws the saves again (#157).
+  quitFreeze.beforeQuit();
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
