@@ -293,7 +293,7 @@ function deny(reason) {
 }
 
 // gitContext is lazy: git only runs when some rule needs it.
-export async function decide({ event, rules, repoRoot, gitContext, ask, headless }) {
+export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {} }) {
   const list = applicable(rules, repoRoot);
   const call = toolCall(event);
   const needsGit = list.some((rule) => (rule.match ?? []).some((match) => match?.type === 'git'));
@@ -301,8 +301,18 @@ export async function decide({ event, rules, repoRoot, gitContext, ask, headless
   const hit = evaluate({ rules: list, call, git });
   if (!hit) return null;
   const { rule } = hit;
-  if (rule.kind === 'forbid')
+  if (rule.kind === 'forbid') {
+    const command = call.tool === 'Bash' ? String(call.input.command ?? '') : `${call.tool} ${editPath(call.input)}`.trim();
+    notify({
+      type: 'guard-event',
+      sessionId: event.session_id ?? null,
+      cwd: event.cwd ?? null,
+      ruleSource: rule.source,
+      outcome: 'barrado',
+      summary: command.slice(0, 200),
+    });
     return deny(`Barrado pela regra do usuário: "${rule.source}". ${rule.explain ?? ''} Não tente contornar.`.trim());
+  }
   const answer = await ask({
     type: 'guard-ask',
     sessionId: event.session_id ?? null,
@@ -435,6 +445,23 @@ function askVizor(request, waitMs) {
   });
 }
 
+// Fire and forget, for the Vizor's history; nobody listening is fine.
+let telling = Promise.resolve();
+function tellVizor(note) {
+  telling = new Promise((resolve) => {
+    const socket = net.connect(socketPath);
+    const done = () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve();
+    };
+    const timer = setTimeout(done, CONNECT_TIMEOUT_MS);
+    socket.on('connect', () => socket.end(`${JSON.stringify(note)}\n`));
+    socket.on('close', done);
+    socket.on('error', done);
+  });
+}
+
 function seenFile(sessionId) {
   return path.join(rulesDir, 'sessoes', String(sessionId).replace(/[^A-Za-z0-9-]/g, '') || 'sem-id');
 }
@@ -482,6 +509,7 @@ async function main(raw) {
       repoRoot,
       gitContext: () => gitContextOf(event.cwd),
       ask: (request) => askVizor(request, waitMs),
+      notify: tellVizor,
       headless: Boolean(entrypoint) && entrypoint !== 'cli',
     });
   }
@@ -498,6 +526,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
   process.stdin.on('data', (chunk) => (raw += chunk));
   process.stdin.on('error', () => process.exit(0));
   process.stdin.on('end', () => {
-    main(raw).then(print, () => process.exit(0));
+    main(raw).then(
+      (output) => telling.then(() => print(output)),
+      () => process.exit(0),
+    );
   });
 }

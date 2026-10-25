@@ -20,6 +20,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand } from './guard-runtime.js';
+import { createGuardAsks } from './guard-asks.js';
+import { createRulesStore } from './rules-store.js';
 import { loadRules } from '../hook/rule-guard.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
@@ -359,6 +361,60 @@ const registry = new SessionRegistry({
   folderAliasFor: (cwd) => managerConfig.folderAliases[cwd] ?? null,
 });
 let managerConfig = loadConfig(configFile);
+
+const rulesStore = createRulesStore({
+  dir: rulesDir,
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+// sendState and the halo are hoisted functions: safe to call from here on.
+const guardAsks = createGuardAsks({
+  onChange: () => {
+    sendState();
+    updateNotificationHalo();
+  },
+});
+
+function recordGuardOutcome(request, outcome) {
+  try {
+    rulesStore.addHistory({
+      at: Date.now(),
+      sessionId: request.sessionId ?? null,
+      cwd: request.cwd ?? null,
+      ruleSource: request.ruleSource ?? '',
+      summary: request.summary ?? '',
+      outcome,
+    });
+  } catch (error) {
+    log(`guard history failed: ${error}`);
+  }
+}
+
+function onGuardMessage(message, reply) {
+  if (message.type === 'guard-event') {
+    recordGuardOutcome(message, message.outcome ?? 'barrado');
+    return;
+  }
+  const result = guardAsks.add(message, reply);
+  if (result.answered) recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
+}
+
+function guardSummary(message) {
+  return message.tool === 'Bash' ? String(message.input?.command ?? '').slice(0, 200) : message.tool;
+}
+
+const GUARD_OUTCOMES = { liberar: 'liberado', 'liberar-sessao': 'liberado nesta sessão', barrar: 'barrado' };
+ipcMain.handle('guard:answer', (_event, { id, choice } = {}) => {
+  if (!GUARD_OUTCOMES[choice]) return false;
+  const ask = guardAsks.pending().find((candidate) => candidate.id === id);
+  const request = guardAsks.answer(id, choice);
+  if (request) recordGuardOutcome({ ...request, summary: ask?.summary ?? guardSummary(request) }, GUARD_OUTCOMES[choice]);
+  return Boolean(request);
+});
 const tokenBudget = new TokenBudget({ file: usageFile });
 const isEconomyMode = () => tokenBudget.isExceeded(managerConfig.tokenBudgetDaily);
 let mainWindow = null;
@@ -409,6 +465,7 @@ let announcedUpdateVersion = null;
 function sendState() {
   sendToRenderer('state', {
     sessions: listWithDisplayNames(),
+    guardAsks: guardAsks.pending(),
     unread: registry.unreadCount(),
     update: updateStatus,
     hint: lastHint,
@@ -868,7 +925,7 @@ async function showGentleHalo(state, generation) {
 // and whenever the bubble settles somewhere new. The find-the-bubble flash
 // borrows the window and hands it back through here.
 function updateNotificationHalo() {
-  const state = haloState(registry.list());
+  const state = guardAsks.pending().length ? 'permission' : haloState(registry.list());
   const positionable = canPositionWindows && Boolean(bubbleAnchor);
   sendToRenderer('halo', { state: positionable ? null : state });
   if (spotlightTimer) return; // a find-the-bubble flash is running — after it
@@ -1372,6 +1429,7 @@ function pushWorkspaceStateNow() {
     tree,
     terminals: ptyHost?.list() ?? [],
     activeTerminal: activeTerminalId,
+    guardAsks: guardAsks.pending(),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2069,7 +2127,11 @@ function verifiedTerm(event) {
   return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
 }
 
-function onHookEvent(event) {
+function onHookEvent(event, reply) {
+  if (event?.type === 'guard-ask' || event?.type === 'guard-event') {
+    onGuardMessage(event, reply);
+    return;
+  }
   event = verifiedTerm(event);
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
@@ -2888,6 +2950,7 @@ function reapDeadSessions() {
     if (!registry.sessions.has(sessionId)) {
       editTracker.forgetSession(sessionId);
       commentStore.forgetSession(sessionId);
+      guardAsks.dropSession(sessionId);
     }
 }
 

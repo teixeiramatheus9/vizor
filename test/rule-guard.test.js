@@ -83,6 +83,14 @@ describe('decide', () => {
     expect(output.hookSpecificOutput.permissionDecisionReason).toContain('sem terminal');
   });
 
+  it('tells the Vizor about a forbid, for the history', async () => {
+    const notes = [];
+    await decide({ event: preTool('drop table x'), rules: RULES, repoRoot: '/repo', gitContext: () => null, ask: async () => 'offline', headless: false, notify: (note) => notes.push(note) });
+    expect(notes).toEqual([
+      expect.objectContaining({ type: 'guard-event', sessionId: 's1', ruleSource: DROP.source, outcome: 'barrado', summary: 'drop table x' }),
+    ]);
+  });
+
   it('no match prints nothing', async () => {
     expect(await run(preTool('ls -la'))).toBeNull();
   });
