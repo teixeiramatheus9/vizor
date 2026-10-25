@@ -22,11 +22,27 @@ function summaryOf(request) {
 const grantKey = (sessionId, ruleId, target) => JSON.stringify([sessionId, ruleId, target]);
 const keyOf = (request) => grantKey(request.sessionId, request.ruleId, request.target);
 
-// onReleased(request): an ask answered by a grant made on another ask, for the
-// history.
-export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange = () => {}, onReleased = () => {} } = {}) {
-  const asks = new Map(); // id → { ask, request, reply }
+// Equal asks (same session, rule and target: parallel identical calls) are
+// announced once. onReleased(request, choice): a twin answered along with the
+// announced one, for the history. onPromote(ask): the announced one left
+// without settling its twins, so the next twin must be announced now.
+export function createGuardAsks({
+  now = Date.now,
+  newId = randomUUID,
+  onChange = () => {},
+  onReleased = () => {},
+  onPromote = () => {},
+} = {}) {
+  const asks = new Map(); // id → { ask, request, reply, shown }
   const grants = new Set();
+
+  function promoteTwinOf(entry) {
+    if (!entry.shown) return;
+    const twin = [...asks.values()].find((other) => keyOf(other.request) === keyOf(entry.request));
+    if (!twin) return;
+    twin.shown = true;
+    onPromote(twin.ask);
+  }
 
   function settle(id, answer, { quiet = false } = {}) {
     const entry = asks.get(id);
@@ -59,10 +75,13 @@ export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange =
         irreversible: Boolean(request.irreversible),
         at: now(),
       };
-      asks.set(id, { ask, request, reply });
+      const entry = { ask, request, reply, shown: !duplicate };
+      asks.set(id, entry);
       // The guard gave up (its own timeout) or Claude Code killed it.
       reply.onClose?.(() => {
-        if (asks.delete(id)) onChange();
+        if (!asks.delete(id)) return;
+        promoteTwinOf(entry);
+        onChange();
       });
       onChange();
       return { id, duplicate };
@@ -73,15 +92,18 @@ export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange =
       const entry = asks.get(id);
       if (!entry) return null;
       const { request } = entry;
-      const granting = choice === 'liberar-sessao' && !request.irreversible;
-      if (granting) grants.add(keyOf(request));
-      const answered = settle(id, { answer: choice === 'barrar' ? 'barrar' : 'liberar' });
-      if (granting) {
+      if (choice === 'liberar-sessao' && !request.irreversible) grants.add(keyOf(request));
+      const answer = { answer: choice === 'barrar' ? 'barrar' : 'liberar' };
+      const answered = settle(id, answer);
+      // The twins get the same answer, except that a liberar of something
+      // irreversible only ever covers the call the user saw.
+      if (choice === 'barrar' || !request.irreversible) {
         for (const [otherId, other] of [...asks]) {
-          if (other.request.irreversible || keyOf(other.request) !== keyOf(request)) continue;
-          onReleased(settle(otherId, { answer: 'liberar' }));
+          if (keyOf(other.request) !== keyOf(request)) continue;
+          onReleased(settle(otherId, answer), choice);
         }
       }
+      promoteTwinOf(entry);
       return answered;
     },
 

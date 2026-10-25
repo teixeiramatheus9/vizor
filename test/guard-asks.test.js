@@ -118,6 +118,68 @@ describe('guard asks', () => {
     expect(asks.pending().map((ask) => ask.summary)).toEqual(['kubectl --context prod apply']);
   });
 
+  function twins(options = {}) {
+    const released = [];
+    const promoted = [];
+    const closers = [];
+    const asks = createGuardAsks({
+      newId: () => `t${++counter}`,
+      onReleased: (request, choice) => released.push([request.ruleId, choice]),
+      onPromote: (ask) => promoted.push(ask.id),
+      ...options,
+    });
+    const replies = [];
+    const reply = (tag) => {
+      const fn = (answer) => replies.push([tag, answer]);
+      fn.onClose = (callback) => closers.push([tag, callback]);
+      return fn;
+    };
+    return { asks, replies, reply, released, promoted, closers };
+  }
+
+  for (const [choice, answer] of [
+    ['liberar', 'liberar'],
+    ['barrar', 'barrar'],
+  ]) {
+    it(`"${choice}" settles the equal asks waiting behind it the same way (#165)`, () => {
+      const { asks, replies, reply, released } = twins();
+      const { id } = asks.add(request(), reply('first'));
+      asks.add(request(), reply('second'));
+      asks.answer(id, choice);
+      expect(replies).toEqual([
+        ['first', { answer }],
+        ['second', { answer }],
+      ]);
+      expect(released).toEqual([['prod', choice]]);
+      expect(asks.pending()).toEqual([]);
+    });
+  }
+
+  it('an irreversible twin is barred along, but a liberar does not carry over: the twin is announced instead (#165)', () => {
+    const { asks, replies, reply, promoted } = twins();
+    const main = { irreversible: true, ruleId: 'main', target: 'main' };
+    const first = asks.add(request(main), reply('first'));
+    const second = asks.add(request(main), reply('second'));
+    asks.answer(first.id, 'liberar');
+    expect(replies).toEqual([['first', { answer: 'liberar' }]]);
+    expect(promoted).toEqual([second.id]);
+    asks.add(request(main), reply('third'));
+    asks.answer(second.id, 'barrar');
+    expect(replies.slice(1)).toEqual([
+      ['second', { answer: 'barrar' }],
+      ['third', { answer: 'barrar' }],
+    ]);
+  });
+
+  it('when the announced ask leaves unanswered, its twin is announced in its place (#165)', () => {
+    const { asks, reply, promoted, closers } = twins();
+    asks.add(request(), reply('first'));
+    const second = asks.add(request(), reply('second'));
+    closers.find(([tag]) => tag === 'first')[1]();
+    expect(promoted).toEqual([second.id]);
+    expect(asks.pending().map((ask) => ask.id)).toEqual([second.id]);
+  });
+
   it('releaseAll answers every waiting ask (the app is quitting: the guard falls back to the terminal) (#165)', () => {
     const { asks, replies, reply } = setup();
     asks.add(request(), reply());

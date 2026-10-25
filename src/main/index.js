@@ -381,8 +381,10 @@ const guardAsks = createGuardAsks({
     sendState();
     updateNotificationHalo();
   },
-  // An equal ask freed by "liberar nesta sessão" on another one.
-  onReleased: (request) => recordGuardOutcome({ ...request, summary: guardSummary(request) }, 'liberado (sessão)'),
+  // An equal ask answered along with the one the user saw.
+  onReleased: (request, choice) => recordGuardOutcome({ ...request, summary: guardSummary(request) }, GUARD_OUTCOMES[choice]),
+  // The announced ask left without settling its twin: announce the twin.
+  onPromote: (ask) => announceGuardAsk(ask),
 });
 
 // Guard state read by guardStatus(), which sendState() calls: declared here,
@@ -417,11 +419,14 @@ function onGuardMessage(message, reply) {
     recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
     return;
   }
-  // The same question already waiting (parallel calls): one card per answer
-  // is enough, and saying it twice is noise.
+  // The same question already waiting (parallel calls): its answer settles
+  // this one too, and saying it twice is noise.
   if (result.duplicate) return;
   const ask = guardAsks.pending().find((candidate) => candidate.id === result.id);
-  if (!ask) return;
+  if (ask) announceGuardAsk(ask);
+}
+
+function announceGuardAsk(ask) {
   // The balloon announces; the choices live in the panel and the workspace.
   sendToRenderer('tooltip', {
     projectName: path.basename(ask.cwd ?? '') || 'Claude',
