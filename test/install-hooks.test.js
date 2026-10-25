@@ -199,7 +199,7 @@ describe('rule guard hooks', () => {
   it('ensureGuard is idempotent and replaces an old guard command', () => {
     const once = ensureGuard({}, GUARD);
     expect(ensureGuard(once, GUARD)).toEqual(once);
-    const moved = ensureGuard(ensureGuard({}, 'node "/old/rule-guard.js"'), GUARD);
+    const moved = ensureGuard(ensureGuard({}, 'node "/old/vizor/guard/rule-guard.js"'), GUARD);
     expect(moved).toEqual(once);
   });
 
@@ -222,6 +222,25 @@ describe('rule guard hooks', () => {
     expect(all).toContain(HOOK_MARKER);
     expect(all).toContain('other-tool');
     expect(result.hooks.SessionStart).toBeUndefined();
+  });
+
+  it('removeGuard only takes the guard script, not any command naming rule-guard (#165)', () => {
+    const foreign = [
+      { type: 'command', command: '/usr/local/bin/my-rule-guard.sh' },
+      { type: 'command', command: 'node "/home/u/tools/rule-guard/index.js"' },
+    ];
+    const settings = ensureGuard({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: foreign }] } }, GUARD);
+    expect(removeGuard(settings).hooks.PreToolUse).toEqual([{ matcher: 'Bash', hooks: foreign }]);
+    const shim = '"C:\\Users\\u\\.config\\vizor\\rule-guard.cmd"';
+    const mjs = 'ELECTRON_RUN_AS_NODE=1 "/opt/Vizor/vizor" "/home/u/.config/vizor/guard/rule-guard.mjs"';
+    for (const command of [shim, mjs]) expect(removeGuard(ensureGuard({}, command)).hooks).toEqual({});
+  });
+
+  it('ensureGuard leaves a canonical guard where it is, so the boot writes settings.json once (#165)', () => {
+    // Quit drops hook-emit and keeps the guard; the next boot re-adds hook-emit
+    // after it. Moving the guard back to the end would be a second write.
+    const booted = ensureHooks(removeAppHooks(ensureGuard(ensureHooks({}, COMMAND), GUARD)), COMMAND);
+    expect(ensureGuard(booted, GUARD)).toBe(booted);
   });
 
   it('ensureHooks never touches the guard', () => {
