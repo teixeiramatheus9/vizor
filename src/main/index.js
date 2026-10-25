@@ -18,7 +18,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildHookCommand, ensureHooks, removeAppHooks } from '../../scripts/install-hooks.js';
+import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
+import { guardCommand } from './guard-runtime.js';
+import { loadRules } from '../hook/rule-guard.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
@@ -96,6 +98,8 @@ import {
   usageFile,
   updateNoticeFile,
   configDir,
+  rulesDir,
+  guardDir,
 } from './paths.js';
 import {
   UPDATE_DONE_PHRASE,
@@ -2716,6 +2720,111 @@ function ensureHooksInstalled() {
   }
 }
 
+// The rule guard (#160) lives in its own hook, copied to a stable path so it
+// keeps working with the app closed (an AppImage mount vanishes on quit).
+let guardOffline = false;
+let guardInstalled = false;
+
+function approvedRuleCount() {
+  const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
+  if (!rules) return 0;
+  return rules.global.length + Object.values(rules.repos).reduce((sum, list) => sum + list.length, 0);
+}
+
+function findNodeOnPath() {
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, 'node');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return fs.realpathSync(candidate);
+    } catch {
+      // next PATH entry
+    }
+  }
+  return null;
+}
+
+function copyGuardScript() {
+  const source = path.join(currentDir, '..', 'hook', 'rule-guard.js');
+  const target = path.join(guardDir, 'rule-guard.js');
+  const content = fs.readFileSync(source, 'utf8');
+  let current = null;
+  try {
+    current = fs.readFileSync(target, 'utf8');
+  } catch {
+    // first install
+  }
+  if (current === content) return target;
+  fs.mkdirSync(guardDir, { recursive: true });
+  const tmp = `${target}.tmp`;
+  fs.writeFileSync(tmp, content);
+  fs.renameSync(tmp, target);
+  return target;
+}
+
+function syncGuardHook() {
+  try {
+    const settings = readClaudeSettings();
+    let next;
+    if (managerConfig.guardEnabled !== false && approvedRuleCount() > 0) {
+      const { command, offline, shim } = guardCommand({
+        platform: process.platform,
+        execPath: process.execPath,
+        appImage: process.env.APPIMAGE,
+        findNode: findNodeOnPath,
+        scriptPath: copyGuardScript(),
+        shimDir: configDir,
+      });
+      if (shim) {
+        fs.mkdirSync(path.dirname(shim.path), { recursive: true });
+        fs.writeFileSync(shim.path, shim.content);
+      }
+      guardOffline = offline;
+      guardInstalled = true;
+      next = ensureGuard(settings, command);
+    } else {
+      guardInstalled = false;
+      next = removeGuard(settings);
+    }
+    if (JSON.stringify(next) === JSON.stringify(settings)) return;
+    writeClaudeSettings(next);
+    log(`rule guard ${guardInstalled ? 'installed' : 'removed'}`);
+  } catch (error) {
+    log(`syncGuardHook failed: ${error}`);
+  }
+}
+
+function removeGuardIfOnlineOnly() {
+  if (!guardInstalled || guardOffline) return;
+  try {
+    const settings = readClaudeSettings();
+    const next = removeGuard(settings);
+    if (JSON.stringify(next) !== JSON.stringify(settings)) writeClaudeSettings(next);
+    log('rule guard removed on quit (no offline runtime)');
+  } catch (error) {
+    log(`removeGuardIfOnlineOnly failed: ${error}`);
+  }
+}
+
+function guardStatus() {
+  const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
+  let unreadable = false;
+  try {
+    fs.accessSync(path.join(rulesDir, 'compiladas.json'));
+    unreadable = !rules;
+  } catch {
+    // no rules yet is not unreadable
+  }
+  return {
+    enabled: managerConfig.guardEnabled !== false,
+    installed: guardInstalled,
+    offline: guardOffline,
+    active: approvedRuleCount(),
+    unreadable,
+  };
+}
+
 // crossSessionInbound decides what a session does with the quick reply this app
 // sends. It lives in the user's Claude Code settings, so the app only ever
 // writes the user level — a repo or managed setting can still tighten it, and
@@ -2816,6 +2925,7 @@ app.whenReady().then(() => {
   announceUpdateIfJustInstalled();
   renewMacosGrantAfterUpdate();
   ensureHooksInstalled();
+  syncGuardHook();
   autoSetupBridgeOnWayland();
   hydrateRegistry();
   reapDeadSessions();
@@ -2875,6 +2985,7 @@ app.on('before-quit', () => {
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
+  removeGuardIfOnlineOnly();
   tts.stopSpeaking();
   killPendingClaude();
   stopSocketServer(socketServer, socketPath);

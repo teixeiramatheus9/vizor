@@ -26,6 +26,7 @@ export const DEFAULT_CONFIG = {
   folderAliases: {},
   workspaceProjects: [],
   workspaceDismissed: [],
+  guardEnabled: true,
 };
 
 const stringList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);

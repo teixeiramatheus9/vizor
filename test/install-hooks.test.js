@@ -6,6 +6,11 @@ import {
   ensureHooks,
   removeAppHooks,
   removeHooks,
+  GUARD_MARKER,
+  GUARD_TIMEOUT_S,
+  GUARD_TOOL_MATCHER,
+  ensureGuard,
+  removeGuard,
 } from '../scripts/install-hooks.js';
 
 const COMMAND = 'node "/home/user/Claude Manager/src/hook/hook-emit.js"';
@@ -174,5 +179,55 @@ describe('duplicated tool hooks (#103)', () => {
     const mixed = { matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: 'lint.sh' }, { type: 'command', command: COMMAND, async: true }] };
     const result = ensureHooks({ hooks: { PostToolUse: [ours, { ...ours }, mixed] } }, COMMAND);
     expect(result.hooks.PostToolUse).toEqual([ours, { ...mixed, hooks: [{ type: 'command', command: 'lint.sh' }] }]);
+  });
+});
+
+describe('rule guard hooks', () => {
+  const GUARD = 'ELECTRON_RUN_AS_NODE=1 "/opt/Vizor/vizor" "/home/u/.config/vizor/guard/rule-guard.js"';
+
+  it('ensureGuard registers PreToolUse (blocking, long timeout), SessionStart and UserPromptSubmit', () => {
+    const result = ensureGuard({}, GUARD);
+    expect(result.hooks.PreToolUse).toEqual([
+      { matcher: GUARD_TOOL_MATCHER, hooks: [{ type: 'command', command: GUARD, timeout: GUARD_TIMEOUT_S }] },
+    ]);
+    expect(result.hooks.SessionStart).toEqual([{ hooks: [{ type: 'command', command: GUARD }] }]);
+    expect(result.hooks.UserPromptSubmit).toEqual([{ hooks: [{ type: 'command', command: GUARD, timeout: 25 }] }]);
+    expect(GUARD_TOOL_MATCHER).toBe('Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*');
+    expect(GUARD_TIMEOUT_S).toBe(600);
+  });
+
+  it('ensureGuard is idempotent and replaces an old guard command', () => {
+    const once = ensureGuard({}, GUARD);
+    expect(ensureGuard(once, GUARD)).toEqual(once);
+    const moved = ensureGuard(ensureGuard({}, 'node "/old/rule-guard.js"'), GUARD);
+    expect(moved).toEqual(once);
+  });
+
+  it('quitting removes hook-emit but leaves the guard', () => {
+    const both = ensureGuard(ensureHooks({}, COMMAND), GUARD);
+    const result = removeAppHooks(both);
+    const all = JSON.stringify(result);
+    expect(all).toContain(GUARD_MARKER);
+    expect(all).not.toContain(HOOK_MARKER);
+  });
+
+  it('removeGuard leaves hook-emit and other tools alone', () => {
+    const settings = ensureGuard(
+      ensureHooks({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other-tool' }] }] } }, COMMAND),
+      GUARD,
+    );
+    const result = removeGuard(settings);
+    const all = JSON.stringify(result);
+    expect(all).not.toContain(GUARD_MARKER);
+    expect(all).toContain(HOOK_MARKER);
+    expect(all).toContain('other-tool');
+    expect(result.hooks.SessionStart).toBeUndefined();
+  });
+
+  it('ensureHooks never touches the guard', () => {
+    const settings = ensureGuard({}, GUARD);
+    const result = ensureHooks(settings, COMMAND);
+    const commands = Object.values(result.hooks).flat().flatMap((group) => group.hooks.map((hook) => hook.command));
+    expect(commands.filter((command) => command === GUARD)).toHaveLength(3);
   });
 });
