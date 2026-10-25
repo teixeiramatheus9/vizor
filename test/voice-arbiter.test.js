@@ -158,3 +158,16 @@ describe('withoutWakeWord for an English voice', () => {
     expect(spoken).toEqual(['project here.']);
   });
 });
+
+describe('a filler line ("só um momento")', () => {
+  it('is not an invitation to reply: the mic stays shut until the answer', async () => {
+    const quiet = [];
+    const arbiter = createSpeechArbiter({ speak: () => Promise.resolve(), stop: () => {} });
+    arbiter.on('quiet', (event) => quiet.push(event.followUp));
+    arbiter.say({ text: 'Só um momento.', priority: 1, kind: 'filler' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    arbiter.say({ text: 'Tem 2 PRs.', priority: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(quiet).toEqual([false, true]);
+  });
+});

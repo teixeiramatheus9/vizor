@@ -42,8 +42,9 @@ export function createSpeechArbiter({ now = Date.now, speak, stop, conversationW
         if (queue.length === 0 || userTalking) {
           arbiter.speaking = false;
           // followUp: the last line answered the user, who may reply without
-          // the wake word; an alert or narration is not an invitation.
-          arbiter.emit('quiet', { followUp: item.priority === 1 && item.kind !== 'ack' });
+          // the wake word; an alert, narration or "só um momento" is not an
+          // invitation.
+          arbiter.emit('quiet', { followUp: item.priority === 1 && item.kind !== 'ack' && item.kind !== 'filler' });
         }
         next();
       });

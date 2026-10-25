@@ -1,5 +1,5 @@
 import { routeUtterance } from './commands.js';
-import { analyzeReply, createReplyCursor, spokenReply } from './replies.js';
+import { analyzeReply, createReplyCursor, needsSummary, spokenReply } from './replies.js';
 import { createNarrator } from './narration.js';
 import { closestPhrase } from './vocabulary.js';
 
@@ -35,6 +35,7 @@ const LINES = {
     economy: 'No modo economia eu só entendo os comandos.',
     done: 'Terminei.',
     chatClosed: (number) => `O chat ${number ? `da ${number}` : 'ligado'} fechou; voltei pro gerente.`,
+    thinking: ['Tô dando uma olhada aqui.', 'Só um momento.', 'Conferindo.', 'Deixa eu ver.'],
   },
   en: {
     guard: { liberar: 'Allowed.', 'liberar-sessao': 'Allowed for this session.', barrar: 'Blocked.' },
@@ -60,6 +61,7 @@ const LINES = {
     economy: 'In economy mode I only understand commands.',
     done: 'Done.',
     chatClosed: (number) => `The ${number ? `chat for ${number}` : 'bound chat'} closed; back to the manager.`,
+    thinking: ['Let me take a look.', 'One moment.', 'Checking.', 'Let me see.'],
   },
 };
 
@@ -93,6 +95,15 @@ export function createVoiceSession(deps) {
   const say = (text, priority = 1, extra = {}) => {
     const clean = speakable(text);
     if (clean) deps.say({ text: clean, priority, ...extra });
+  };
+
+  // The AI takes seconds: a short line first, so the silence is not a doubt.
+  // The answer queues behind it and plays once it ends; kind 'filler' keeps
+  // the mic shut in between (it is not an answer to reply to).
+  const thinking = (priority = 1, extra = {}) => {
+    const options = lines().thinking;
+    const index = Math.min(options.length - 1, Math.floor((deps.random?.() ?? Math.random()) * options.length));
+    say(options[index], priority, { ...extra, kind: 'filler' });
   };
 
   function bind(sessionId, number = null) {
@@ -157,6 +168,7 @@ export function createVoiceSession(deps) {
   async function act(intent, raw) {
     switch (intent.type) {
       case 'status': {
+        thinking();
         const digest = await deps.ghDigest();
         say(digest.speech);
         deps.showLines(digest.lines);
@@ -215,6 +227,7 @@ export function createVoiceSession(deps) {
       }
       case 'ask-manager': {
         if (deps.economy()) return say(lines().economy);
+        thinking();
         const reply = await deps.askManager(intent.text);
         const proposal = String(reply ?? '').match(PROPOSAL);
         if (proposal) pendingConfirm = { kind: 'intent', intent: { type: 'resume-task', number: Number(proposal[1]) } };
@@ -262,7 +275,9 @@ export function createVoiceSession(deps) {
         cursor = null;
         say(lines().done, 3, { source: session.id });
       } else {
-        const reply = await spokenReply(analysis, { summarize: deps.summarize, economy: deps.economy() || summary === 'short', lang: lang() });
+        const options = { economy: deps.economy() || summary === 'short', lang: lang() };
+        if (needsSummary(analysis, options)) thinking(3, { source: session.id });
+        const reply = await spokenReply(analysis, { summarize: deps.summarize, ...options });
         cursor = analysis.items ? createReplyCursor(analysis.items, lang()) : null;
         say(reply.speech, 3, { source: session.id });
       }

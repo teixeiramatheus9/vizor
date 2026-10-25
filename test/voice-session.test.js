@@ -262,3 +262,37 @@ describe('voice session — an English voice (hear English, speak Portuguese)', 
     expect(narrated.texts().at(-1)).toBe('running the tests');
   });
 });
+
+describe('voice session — a short line while the AI thinks (live test: the answers took long)', () => {
+  it('the gerente: a filler first, then the answer, both direct replies', async () => {
+    const { session, said } = setup({ random: () => 0 });
+    await session.onUtterance('o que ficou parado ontem?');
+    expect(said.map((item) => [item.text, item.kind ?? null])).toEqual([
+      ['Tô dando uma olhada aqui.', 'filler'],
+      ['Tem 2 chats rodando.', null],
+    ]);
+    expect(said[0].priority).toBe(1);
+  });
+
+  it('the GitHub status and a summarized answer get one too; a short answer read as is does not', async () => {
+    const { session, said } = setup({ random: () => 0.99 });
+    await session.onUtterance('o que temos pra hoje?');
+    expect(said.slice(-2).map((item) => item.text)).toEqual(['Deixa eu ver.', '3 PRs abertas. O CI da 158 quebrou.']);
+    await session.onUtterance('retoma a task 22');
+    said.length = 0;
+    await session.onSessionStop({ id: 's22', lastMessage: 'texto longo. '.repeat(40) });
+    expect(said.map((item) => item.kind ?? null)).toEqual(['filler', null]);
+    said.length = 0;
+    await session.onSessionStop({ id: 's22', lastMessage: 'Feito.' });
+    expect(said.map((item) => item.text)).toEqual(['Feito.']);
+  });
+
+  it('in English, and never in economy mode (nothing to wait for)', async () => {
+    const english = setup({ lang: () => 'en', random: () => 0 });
+    await english.session.onUtterance('o que ficou parado?');
+    expect(english.said[0].text).toBe('Let me take a look.');
+    const economy = setup({ economy: () => true });
+    await economy.session.onUtterance('o que ficou parado?');
+    expect(economy.said.map((item) => item.kind ?? null)).toEqual([null]);
+  });
+});

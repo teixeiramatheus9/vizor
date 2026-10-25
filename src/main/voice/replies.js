@@ -66,6 +66,11 @@ const label = (item) => item.split(/:|\s—\s|\s-\s/)[0].trim();
 const listOf = (words, and) => (words.length <= 1 ? words.join('') : `${words.slice(0, -1).join(', ')} ${and} ${words.at(-1)}`);
 const withoutName = (text) => text.replace(/\b(o |a |the )?vizor\b/gi, '').replace(/\s+/g, ' ').trim();
 
+// True when the answer goes through the summarizer (the AI, a few seconds).
+export function needsSummary(analysis, { economy = false, lang = 'pt' } = {}) {
+  return !economy && !analysis.items && Boolean(analysis.long || (lang !== 'pt' && analysis.plain));
+}
+
 export async function spokenReply(analysis, { summarize, economy = false, lang = 'pt' }) {
   const lines = linesOf(lang);
   let speech;
