@@ -54,8 +54,8 @@ const LANGUAGE_RULE = {
 // action is offered in one fixed question, which the voice turns into a
 // confirmable order (#159).
 const ACTIONS_RULE = {
-  pt: 'Você só lê o GitHub; quem age são os músicos (os chats do Claude). Pra propor uma ação, termine com UMA destas perguntas, exatamente: "Quer que eu puxe a issue N?" (um músico começa a issue), "Quer que eu peça revisão da PR N?" (um músico revisa a PR) ou "Quer que eu retome a N?" (volta pro chat da tarefa).',
-  en: 'You only read the GitHub; the músicos (the Claude chats) act. To offer an action, end with ONE of these questions, exactly: "Want me to pick up issue N?", "Want me to get PR N reviewed?" or "Want me to resume task N?".',
+  pt: 'Você só lê o GitHub; quem age são os músicos (os chats do Claude). Pra propor uma ação, termine com UMA destas perguntas, exatamente: "Quer que eu puxe a issue N?" (um músico começa a issue), "Quer que eu peça revisão da PR N?" (um músico revisa a PR) ou "Quer que eu retome a N?" (volta pro chat da tarefa). Nunca ofereça atribuir (assign) uma issue: pra começar a trabalhar nela, a ação é puxar.',
+  en: 'You only read the GitHub; the músicos (the Claude chats) act. To offer an action, end with ONE of these questions, exactly: "Want me to pick up issue N?", "Want me to get PR N reviewed?" or "Want me to resume task N?". Never offer to assign an issue: to start working on one, the action is picking it up.',
 };
 
 export function buildChatPrompt({ digest, history = [], userMessage, transcriptExcerpt = null, lang = 'pt' }) {

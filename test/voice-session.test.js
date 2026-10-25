@@ -896,3 +896,20 @@ describe('voice session — routines, review fixes', async () => {
     expect(texts().at(-1)).toBe('Pra gravar, diga: grava a rotina <nome>: passo, depois passo.');
   });
 });
+
+describe('voice session — "dê ela para um músico" (live test)', () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  it('the issue last talked about, yours or the gerente\'s, is the one handed over', async () => {
+    const { session, calls } = setup({ resolveTask: async () => ({ none: true, cwd: '/r' }), askManager: async () => 'A 162 é sobre o gerente orquestrador.' });
+    await session.onUtterance('me fala da issue 162');
+    await session.onUtterance('E dê ela para um músico para que ele possa desenvolvê-la.');
+    await tick();
+    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('issue #162');
+  });
+
+  it('with no issue talked about, it asks which', async () => {
+    const { session, texts } = setup();
+    await session.onUtterance('passa essa pra um chat');
+    expect(texts().at(-1)).toBe('Qual issue? Diga, por exemplo: puxa a issue 162.');
+  });
+});

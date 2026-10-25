@@ -1,4 +1,4 @@
-import { routeUtterance } from './commands.js';
+import { ISSUE_NUMBER, routeUtterance } from './commands.js';
 import { analyzeReply, createReplyCursor, needsSummary, spokenReply } from './replies.js';
 import { createNarrator } from './narration.js';
 import { closestPhrase } from './vocabulary.js';
@@ -62,6 +62,7 @@ const LINES = {
     maestroOn: 'Modo Maestro ativado.',
     maestroOff: 'Modo Maestro desativado.',
     picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
+    whichIssue: 'Qual issue? Diga, por exemplo: puxa a issue 162.',
     // Memory (#163).
     stoppedAt: (number, where) => `Na ${number}: ${where}`,
     noTask: (number) => `Não achei conversa da ${number}.`,
@@ -138,6 +139,7 @@ const LINES = {
     maestroOn: 'Maestro mode on.',
     maestroOff: 'Maestro mode off.',
     picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
+    whichIssue: 'Which issue? Say, for example: puxa a issue 162.',
     stoppedAt: (number, where) => `On ${number}: ${where}`,
     noTask: (number) => `I didn't find a chat for ${number}.`,
     noTrace: (number) => `The chat for ${number} has no answer yet.`,
@@ -186,6 +188,12 @@ export function createVoiceSession(deps) {
   const now = deps.now ?? Date.now;
   const CORRECTION_WINDOW_MS = 15000;
   const MAX_CANDIDATES = 5;
+  let lastIssue = null; // the issue last talked about, by you or the gerente ("dê ela para um músico")
+  const noteIssue = (text) => {
+    const plain = String(text ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/#/g, ' ');
+    const found = plain.match(ISSUE_NUMBER) ?? plain.match(/\b(a|da|na)\s+(\d{2,})\b/);
+    if (found) lastIssue = Number(found[3] ?? found[2]);
+  };
 
   // A voice reads emoji out loud ("rosto suando"): they never reach it.
   const speakable = (text) => String(text ?? '').replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, '').replace(/\s{2,}/g, ' ').trim();
@@ -420,8 +428,11 @@ export function createVoiceSession(deps) {
         if (kind === 'focus') return focusMusician(choice);
         return openFound(number, choice);
       }
-      case 'pick-issue':
-        return held(ORDER.pick(intent.number), () => pickIssue(intent.number));
+      case 'pick-issue': {
+        const number = intent.number ?? lastIssue;
+        if (number === null) return say(lines().whichIssue);
+        return held(ORDER.pick(number), () => pickIssue(number));
+      }
       case 'review-pr':
         return held(ORDER.review(intent.number), () => reviewPr(intent.number));
       case 'where-stopped':
@@ -504,6 +515,7 @@ export function createVoiceSession(deps) {
         if (deps.economy()) return say(lines().economy);
         thinking();
         const reply = await deps.askManager(intent.text);
+        noteIssue(reply);
         for (const [pattern, type] of PROPOSALS) {
           const proposal = String(reply ?? '').match(pattern);
           if (!proposal) continue;
@@ -520,6 +532,7 @@ export function createVoiceSession(deps) {
   // One utterance, spoken or a routine's step (direct: no hold of its own).
   async function handleUtterance(heard, { direct = false } = {}) {
     const corrected = deps.correct(heard).text;
+    noteIssue(corrected);
     const intent = routeUtterance(corrected, {
       target: target.kind,
       pendingAsk,

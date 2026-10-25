@@ -18,6 +18,12 @@ const norm = (text) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const WORK_VERB =
+  /\b(puxa|puxar|puxe|pega|pegar|pegue|comeca|comecar|comece|desenvolve|desenvolver|desenvolva|implementa|implementar|implemente|trabalhar|trabalha|trabalhe|faz|fazer|faca|analisa|analisar|analise|resolve|resolver|resolva)\b/;
+const NOT_WORK = /\b(revis\w*|fecha\w*|atribu\w*|assign\w*)\b/;
+export const ISSUE_NUMBER = /\b(issue|task|tarefa)\s+(numero\s+)?(\d+)\b/;
+const HANDOVER = /\b(da|de|passa|passe|manda|mande|entrega|entregue)\b.*\b(ela|essa|isso|esta)\b.*\b(musico|chat|agente)\b/;
+
 const NOT_A_NAME = new Set(['e', 'me', 'pra', 'para', 'que', 'com', 'mas', 'depois', 'ai', 'entao', 've', 'olha']);
 
 const STATUS = [
@@ -75,6 +81,12 @@ const ALWAYS = [
   // "ditar" is the word every model missed on the user's voice ("vou de
   // tentar", "vou de ter", "vou editar"): those count too.
   [/^(vou|vo|voo) (ditar|de tar|de ter|de terra|de tentar|editar|de ditar)$|^(modo )?ditado$/, () => ({ type: 'dictate' })],
+  // Starting work on an issue, said any way (live test: "vamos pegar issue
+  // #162 e analisar…", "pegue a issue 162 e vamos começar a desenvolvê-la"):
+  // a work verb and "issue/task N", never a review, a close or an assign.
+  [{ test: (text) => WORK_VERB.test(text) && ISSUE_NUMBER.test(text) && !NOT_WORK.test(text) }, (match) => ({ type: 'pick-issue', number: Number(match[0].match(ISSUE_NUMBER)[3]) })],
+  // "dê ela para um músico": the issue last talked about (the session knows it).
+  [{ test: (text) => HANDOVER.test(text) && !NOT_WORK.test(text) }, () => ({ type: 'pick-issue', number: null })],
 ];
 
 // An order the Maestro holds for a few seconds ("entendi: …"): dropped or sent now.

@@ -297,3 +297,23 @@ describe('routeUtterance — routines, review fixes', () => {
     expect(routeUtterance('esquece a rotina do deploy').name).toBe('deploy');
   });
 });
+
+describe('routeUtterance — starting work on an issue, said naturally (live test)', () => {
+  it("the user's own phrases pick the issue up", () => {
+    expect(routeUtterance('Advisor, vamos pegar issue #162 e analisar para ver o que podemos fazer?')).toEqual({ type: 'pick-issue', number: 162 });
+    expect(routeUtterance('Sim, pegue a issue #162 e vamos começar a desenvolvê-la.', { pendingConfirm: true })).toEqual({ type: 'pick-issue', number: 162 });
+    expect(routeUtterance('bora implementar a task 40')).toEqual({ type: 'pick-issue', number: 40 });
+    expect(routeUtterance('quero trabalhar na issue 7')).toEqual({ type: 'pick-issue', number: 7 });
+  });
+
+  it('"dê ela para um músico" hands over the issue last talked about', () => {
+    expect(routeUtterance('E dê ela para um músico para que ele possa desenvolvê-la.')).toEqual({ type: 'pick-issue', number: null });
+    expect(routeUtterance('passa essa pra um chat')).toEqual({ type: 'pick-issue', number: null });
+  });
+
+  it('reviewing, closing or assigning is not picking up', () => {
+    expect(routeUtterance('vamos revisar a issue 162')).not.toMatchObject({ type: 'pick-issue' });
+    expect(routeUtterance('pode fechar a issue 162')).not.toMatchObject({ type: 'pick-issue' });
+    expect(routeUtterance('atribui a issue 162 pra mim')).not.toMatchObject({ type: 'pick-issue' });
+  });
+});

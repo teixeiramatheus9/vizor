@@ -155,3 +155,11 @@ describe('the gerente reads, the músicos act (#159)', () => {
     expect(en).toContain('Want me to get PR N reviewed?');
   });
 });
+
+describe('the gerente never offers to assign (live test)', () => {
+  it('to start work on an issue it offers to pick it up', () => {
+    const prompt = buildChatPrompt({ digest: '-', userMessage: 'vamos pegar a 162' });
+    expect(prompt).toContain('Nunca ofereça atribuir');
+    expect(buildChatPrompt({ digest: '-', userMessage: 'x', lang: 'en' })).toContain('Never offer to assign');
+  });
+});
