@@ -72,7 +72,9 @@ você dizer "cancela" se ele entendeu errado. À direita, o **grafo** do projeto
 arquivo se abre nas funções. Cada músico acende o que mexeu e o que planejou
 mexer, na cor dele. O gerente guarda ordens ("quando a 22 terminar, roda os
 testes e abre a PR", com até duas tentativas de correção) e chama um avaliador
-quando a mudança é grande ou mexe em algo crítico.
+quando a mudança é grande ou mexe em algo crítico. Embaixo do código, os
+bastidores do músico: sub-agentes, comandos em segundo plano com log ao vivo e
+as portas que ele abriu.
 
 Com uma voz em inglês, o Vizor **fala em inglês** — recados, modo voz, resumos,
 narração — e você continua falando com ele em português. A interface segue em
