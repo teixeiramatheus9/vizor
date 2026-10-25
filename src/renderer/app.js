@@ -1561,6 +1561,7 @@ sessionsContainer.addEventListener('click', (event) => {
 });
 
 window.manager.onState((state) => {
+  if (state.voiceLang) voiceLang = state.voiceLang;
   applyTheme(state.theme, state.palette);
   applyCrt(state.crt);
   applyShortcuts(state.shortcuts);

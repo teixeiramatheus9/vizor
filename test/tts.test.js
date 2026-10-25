@@ -276,6 +276,7 @@ describe('dev terms said the way Brazilian devs say them (#161)', () => {
     expect(speakableText('No GitHub tem 2 PRs e 1 PR, e 3 issues.', 'clara')).toBe('No GitHub tem 2 peérris e 1 PR, e 3 issues.');
     expect(speakableText('Dois bugs no frontend e no backend.', 'davi')).toBe('Dois bugs no front-êndi e no béqui-êndi.');
     expect(speakableText('Mexi no front e no back.', 'clara')).toBe('Mexi no fronti e no béqui.');
+    expect(speakableText('O front-end e o back-end.', 'clara')).toBe('O front-êndi e o béqui-êndi.');
     expect(speakableText('Fiz o review de 2 tasks e 1 task.', 'davi')).toBe('Fiz o rêvíu de 2 téskís e 1 téskí.');
   });
 
@@ -293,5 +294,23 @@ describe('dev terms said the way Brazilian devs say them (#161)', () => {
     expect(speakableText('o maintainer fez rebuild no Vizor', 'santa')).toBe('o maintainer fez rebuild no Váizor');
     expect(speakableText('PRESSA não é PR', 'santa')).toBe('PRESSA não é pê érre');
     expect(speakableText('o Vizor e o frontender', 'clara')).toBe('o Váizor e o frontender');
+  });
+});
+
+describe('the system voice speaks the chosen voice language while the model downloads', () => {
+  it('English: an en-US voice on every platform', () => {
+    expect(systemVoiceCommand('hi', 100, 'linux', true, 'en')[1]).toEqual(['-w', '-l', 'en-US', '-i', '100', '--', 'hi']);
+    expect(systemVoiceCommand('hi', 100, 'darwin', true, 'en')[1]).toEqual(['-v', 'Samantha', '--', 'hi']);
+    expect(systemVoiceCommand('hi', 100, 'win32', true, 'en')[1].at(-1)).toContain("Culture.Name -eq 'en-US'");
+    expect(systemVoiceCommand('oi', 100, 'linux')[1]).toEqual(['-w', '-l', 'pt-BR', '-i', '100', '--', 'oi']);
+  });
+
+  it('speak() hands the language to the fallback', () => {
+    const { calls, spawnFn } = recorder();
+    speak('hello', { voice: 'en-2', spawnFn, installed: false, ensureFn: () => {} });
+    const expected = systemVoiceCommand('hello', 100, process.platform, true, 'en');
+    expect(calls[0].command).toBe(expected[0]);
+    expect(calls[0].args).toEqual(expected[1]);
+    stopSpeaking();
   });
 });

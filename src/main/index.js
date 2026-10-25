@@ -522,6 +522,8 @@ function sendState() {
     update: updateStatus,
     hint: lastHint,
     voiceDownloading: tts.downloadingVoice(),
+    // The bubble speaks the alert lines: it must hear about a voice change.
+    voiceLang: speechLang(managerConfig.voice),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
     trayAvailable: Boolean(tray),

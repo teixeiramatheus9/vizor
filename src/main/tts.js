@@ -52,11 +52,19 @@ export function playerCommand(wavFile, platform = process.platform) {
   return ['aplay', ['-q', wavFile]];
 }
 
-export function systemVoiceCommand(text, volume, platform = process.platform, useVoiceFlag = true) {
+// lang: the chosen voice's language, so an English voice still downloading
+// is covered by an English system voice.
+const SYSTEM_VOICE = {
+  pt: { locale: 'pt-BR', mac: 'Luciana' },
+  en: { locale: 'en-US', mac: 'Samantha' },
+};
+
+export function systemVoiceCommand(text, volume, platform = process.platform, useVoiceFlag = true, lang = 'pt') {
+  const system = SYSTEM_VOICE[lang] ?? SYSTEM_VOICE.pt;
   if (platform === 'darwin') {
     // `say` takes the volume inline.
     const spoken = volume < 100 ? `[[volm ${(volume / 100).toFixed(2)}]]${text}` : text;
-    return ['say', useVoiceFlag ? ['-v', 'Luciana', '--', spoken] : ['--', spoken]];
+    return ['say', useVoiceFlag ? ['-v', system.mac, '--', spoken] : ['--', spoken]];
   }
   if (platform === 'win32') {
     const level = Math.max(0, Math.min(100, Math.round(volume)));
@@ -64,7 +72,7 @@ export function systemVoiceCommand(text, volume, platform = process.platform, us
       'Add-Type -AssemblyName System.Speech',
       '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer',
       `$s.Volume = ${level}`,
-      "$v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -eq 'pt-BR' } | Select-Object -First 1",
+      `$v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -eq '${system.locale}' } | Select-Object -First 1`,
       'if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }',
       `$s.Speak(${psQuote(text)})`,
     ].join('; ');
@@ -72,7 +80,7 @@ export function systemVoiceCommand(text, volume, platform = process.platform, us
   }
   // spd-say wants -100..100.
   // -w: exits only once the line was said, so onDone means silence.
-  return ['spd-say', ['-w', '-l', 'pt-BR', '-i', String(Math.round(volume * 2 - 100)), '--', text]];
+  return ['spd-say', ['-w', '-l', system.locale, '-i', String(Math.round(volume * 2 - 100)), '--', text]];
 }
 
 // The system voice covers the gap while a model downloads.
@@ -87,9 +95,9 @@ function once(callback) {
   };
 }
 
-function speakWithSystemVoice(text, spawnFn, volume = 100, useVoiceFlag = true, onDone = () => {}) {
+function speakWithSystemVoice(text, spawnFn, volume = 100, useVoiceFlag = true, onDone = () => {}, lang = 'pt') {
   const done = once(onDone);
-  const [command, args] = systemVoiceCommand(text, volume, process.platform, useVoiceFlag);
+  const [command, args] = systemVoiceCommand(text, volume, process.platform, useVoiceFlag, lang);
   const child = spawnFn(command, args, { stdio: 'ignore' });
   child.on('error', (error) => {
     log(`${command} failed: ${error}`);
@@ -97,7 +105,7 @@ function speakWithSystemVoice(text, spawnFn, volume = 100, useVoiceFlag = true, 
   });
   child.on('exit', (code, signal) => {
     if (darwin && useVoiceFlag && code !== 0 && code !== null && !signal) {
-      speakWithSystemVoice(text, spawnFn, volume, false, done);
+      speakWithSystemVoice(text, spawnFn, volume, false, done, lang);
       return;
     }
     done();
@@ -168,7 +176,8 @@ function ensureVoiceInBackground(voiceId) {
   onDownloadStatus(voiceId);
   log(`voice: downloading ${voiceId}…`);
   installVoice(sherpaDir, voiceId)
-    .then(() => {
+    .then((installed) => {
+      if (!installed) throw new Error('files missing after the install');
       log(`voice: ${voiceId} installed`);
       downloading.delete(voiceId);
       onDownloadStatus(null);
@@ -232,10 +241,10 @@ const DEV_WORDS = [
 // Supertonic says most terms right as written; these the user tuned by ear.
 const SUPERTONIC_WORDS = [
   [/\bPRs\b/g, 'peérris'],
-  [/\bfrontend\b/gi, 'front-êndi'],
-  [/\bbackend\b/gi, 'béqui-êndi'],
+  [/\bfront-?end\b/gi, 'front-êndi'],
+  [/\bback-?end\b/gi, 'béqui-êndi'],
   [/\bfront\b(?!-)/gi, 'fronti'],
-  [/\bback\b/gi, 'béqui'],
+  [/\bback\b(?!-)/gi, 'béqui'],
   [/\breview\b/gi, 'rêvíu'],
   [/\btasks\b/gi, 'téskís'],
   [/\btask\b/gi, 'téskí'],
@@ -244,6 +253,8 @@ const SUPERTONIC_TERMS =
   'github|prs?|pull requests?|issues?|push|commits?|merge|branch(?:es)?|main|rebase|build|deploy|features?|bugs?|frontend|backend|front|back|worktrees?|hotfix|ci';
 // Supertonic glues "a"/"pra" to the English word after it ("A task" came out
 // as English "a task"); a double space keeps the Portuguese word apart.
+// Words respelled in Portuguese (review, task) need no gap, so they are not
+// in the list.
 const ARTICLE_BEFORE_TERM = new RegExp(`\\b(a|pra|para) (?=(?:${SUPERTONIC_TERMS})\\b)`, 'gi');
 
 export function speakableText(text, voiceId = DEFAULT_VOICE) {
@@ -281,6 +292,6 @@ export function speak(
     speakNeural(speech, voiceId, spawnFn, volume, onDone);
     return;
   }
-  speakWithSystemVoice(speech, spawnFn, volume, true, onDone);
+  speakWithSystemVoice(speech, spawnFn, volume, true, onDone, speechLang(voiceId));
   ensureFn(voiceId);
 }

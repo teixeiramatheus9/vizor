@@ -170,8 +170,19 @@ export function extractTarBz2(archive, directory, spawnFn = spawn) {
   });
 }
 
+// Installs run one at a time: Clara, Davi and the English voices share one
+// model and one runtime, and two picks in a row would download and extract
+// the same archives at once (review). The second finds the files in place.
+let installs = Promise.resolve();
+
+export function installVoice(sherpaDir, voiceId, options = {}) {
+  const run = installs.then(() => installNow(sherpaDir, voiceId, options));
+  installs = run.catch(() => {});
+  return run;
+}
+
 // Downloads the sherpa-onnx runtime (once) and the chosen voice model.
-export async function installVoice(sherpaDir, voiceId, { fetchFn = fetch, spawnFn = spawn } = {}) {
+async function installNow(sherpaDir, voiceId, { fetchFn = fetch, spawnFn = spawn } = {}) {
   const voice = VOICES[voiceId] ?? VOICES[DEFAULT_VOICE];
   const runtime = runtimeName(process.platform, process.arch, voice.runtime);
   if (!runtime) throw new Error(`no sherpa build for ${process.platform}-${process.arch}`);
@@ -179,8 +190,8 @@ export async function installVoice(sherpaDir, voiceId, { fetchFn = fetch, spawnF
   const { binary, model } = voicePaths(sherpaDir, voiceId);
 
   for (const [target, url, name] of [
-    [binary, `${releaseBase(voice.runtime)}/${runtime}.tar.bz2`, 'runtime.tar.bz2'],
-    [model, `${MODELS_BASE}/${voice.dirName}.tar.bz2`, 'voice.tar.bz2'],
+    [binary, `${releaseBase(voice.runtime)}/${runtime}.tar.bz2`, `${runtime}.tar.bz2`],
+    [model, `${MODELS_BASE}/${voice.dirName}.tar.bz2`, `${voice.dirName}.tar.bz2`],
   ]) {
     if (fs.existsSync(target)) continue;
     const archive = path.join(sherpaDir, name);
