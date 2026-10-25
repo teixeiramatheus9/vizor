@@ -27,6 +27,8 @@ export const DEFAULT_CONFIG = {
   workspaceProjects: [],
   workspaceDismissed: [],
   guardEnabled: true,
+  voiceEnabled: false,
+  voiceModel: 'base',
 };
 
 const stringList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);

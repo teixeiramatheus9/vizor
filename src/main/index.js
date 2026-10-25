@@ -8,6 +8,7 @@ import {
   Menu,
   Notification,
   screen,
+  session,
   shell,
   systemPreferences,
   Tray,
@@ -23,6 +24,9 @@ import { guardCommand, installGuardScript } from './guard-runtime.js';
 import { createGuardAsks } from './guard-asks.js';
 import { createRulesStore } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
+import { Worker } from 'node:worker_threads';
+import { createListener } from './voice/listener.js';
+import { missingVoiceModels, voiceModelPaths } from './voice/models.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
@@ -485,6 +489,7 @@ function sendState() {
     sessions: listWithDisplayNames(),
     guardAsks: guardAsks.pending(),
     guard: guardStatus(),
+    voice: { available: voiceAvailable(), enabled: Boolean(managerConfig.voiceEnabled), state: voiceState },
     unread: registry.unreadCount(),
     update: updateStatus,
     hint: lastHint,
@@ -3190,6 +3195,88 @@ function bootSyncRules() {
   }
 }
 
+// --- Voice (#161) -------------------------------------------------------------
+// Linux only in v1. The engine runs in a worker thread; a hidden window owns
+// the microphone; nothing is recorded.
+const voiceSherpaDir = path.join(configDir, 'sherpa');
+let voiceListener = null;
+let micWindow = null;
+let voiceState = 'off';
+
+function voiceAvailable() {
+  return process.platform === 'linux';
+}
+
+function onVoiceUtterance(text) {
+  log(`voice: "${text}"`);
+}
+
+function createMicWindow() {
+  micWindow = new BrowserWindow({
+    show: false,
+    width: 200,
+    height: 100,
+    webPreferences: { preload: path.join(rendererDir, 'mic-preload.cjs'), contextIsolation: true, backgroundThrottling: false },
+  });
+  micWindow.webContents.once('did-finish-load', () => micWindow?.webContents.send('mic:control', 'start'));
+  micWindow.loadFile(path.join(rendererDir, 'mic.html'));
+}
+
+function startVoice() {
+  if (voiceListener || !voiceAvailable() || !managerConfig.voiceEnabled) return;
+  const model = managerConfig.voiceModel ?? 'base';
+  const missing = missingVoiceModels(voiceSherpaDir, model);
+  if (missing.length) {
+    voiceState = 'sem-modelos';
+    log(`voice: models missing (${missing.join(', ')})`);
+    return;
+  }
+  const worker = new Worker(new URL('./voice/worker.js', import.meta.url), {
+    workerData: { paths: voiceModelPaths(voiceSherpaDir, model) },
+  });
+  worker.on('error', (error) => log(`voice worker failed: ${error}`));
+  worker.on('message', (message) => {
+    if (message?.type === 'error') log(`voice: ${message.error}`);
+    if (message?.type === 'ready') log('voice: engine ready');
+  });
+  voiceListener = createListener({ worker });
+  voiceListener.on('state', (state) => {
+    voiceState = state;
+    sendState();
+  });
+  voiceListener.on('ack', () => log('voice: ack'));
+  voiceListener.on('utterance', ({ text }) => onVoiceUtterance(text));
+  voiceState = 'sleeping';
+  createMicWindow();
+}
+
+function stopVoice() {
+  voiceListener?.close();
+  voiceListener = null;
+  if (micWindow && !micWindow.isDestroyed()) micWindow.destroy();
+  micWindow = null;
+  voiceState = 'off';
+}
+
+const fromMic = (event) => Boolean(micWindow && !micWindow.isDestroyed() && event.sender === micWindow.webContents);
+ipcMain.on('mic:chunk', (event, samples) => {
+  if (fromMic(event)) voiceListener?.feed(samples);
+});
+ipcMain.on('mic:status', (event, status) => {
+  if (fromMic(event)) log(`mic: ${status}`);
+});
+
+// The microphone is the mic window's alone; every other permission keeps
+// Electron's default.
+function setupMediaPermissions() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) =>
+    callback(permission !== 'media' || webContents === micWindow?.webContents),
+  );
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) =>
+    permission !== 'media' || webContents === micWindow?.webContents,
+  );
+}
+
 // crossSessionInbound decides what a session does with the quick reply this app
 // sends. It lives in the user's Claude Code settings, so the app only ever
 // writes the user level — a repo or managed setting can still tighten it, and
@@ -3298,6 +3385,8 @@ app.whenReady().then(() => {
   reapDeadSessions();
   createWindows();
   socketServer = startSocketServer(socketPath, onHookEvent, log);
+  setupMediaPermissions();
+  startVoice();
   setupTray();
   registry.on('change', sendState);
   registry.on('change', scheduleCommandRoots);
@@ -3355,6 +3444,7 @@ app.on('before-quit', () => {
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
   removeGuardIfOnlineOnly();
+  stopVoice();
   tts.stopSpeaking();
   killPendingClaude();
   stopSocketServer(socketServer, socketPath);
