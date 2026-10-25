@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('vizor', {
   onState: (callback) => ipcRenderer.on('workspace:state', (_event, state) => callback(state)),
   addProject: () => ipcRenderer.invoke('workspace:add-project'),
+  openActionMenu: (rect) => ipcRenderer.send('workspace:action-menu', rect),
   removeProject: (root) => ipcRenderer.send('workspace:remove-project', root),
   openTerminal: (cwd, kind, sessionId = null) => ipcRenderer.invoke('pty:open', { cwd, kind, sessionId }),
   listConversations: (cwd) => ipcRenderer.invoke('workspace:conversations', cwd),

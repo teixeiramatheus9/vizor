@@ -48,9 +48,12 @@ button:hover {
   color: var(--text-3);
 }
 
+/* a button that still reads as the label it was; hover takes the accent (#169) */
 #topbar .brand {
   color: var(--text-2);
   font-weight: 600;
+  border: none;
+  padding: 0;
 }
 
 #topbar .count-item {

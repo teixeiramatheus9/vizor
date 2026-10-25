@@ -902,6 +902,12 @@ document.addEventListener('click', async (event) => {
     window.vizor.setMaestro(!maestro.on);
     return;
   }
+  const brand = target.closest('[data-action-menu]');
+  if (brand) {
+    const { left, bottom } = brand.getBoundingClientRect();
+    window.vizor.openActionMenu({ left, bottom });
+    return;
+  }
   const musician = target.closest('[data-musician]');
   if (musician) {
     window.vizor.focusMusician(musician.dataset.musician);

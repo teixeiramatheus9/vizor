@@ -128,6 +128,10 @@ describe('renderTopBar', () => {
     expect(renderTopBar(tree([]), { chatHidden: true })).toContain('Mostrar chat');
   });
 
+  it('the "vzr" label opens the same menu as the tray (#169)', () => {
+    expect(renderTopBar(tree([]))).toMatch(/<button class="brand" data-action-menu[^>]*>vzr · workspace<\/button>/);
+  });
+
   it('says who the voice is talking to, escaped', () => {
     const html = renderTopBar(tree([]), { voice: { state: 'listening', target: 'chat da <22>' } });
     expect(html).toContain('ouvindo');

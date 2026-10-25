@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectTrayHost, hasTrayHostIn, trayMenuTemplate } from '../src/main/tray.js';
+import { actionMenuAnchor, detectTrayHost, deviceChoice, hasTrayHostIn, trayMenuTemplate } from '../src/main/tray.js';
 
 describe('trayMenuTemplate', () => {
   it('opens the workspace first when it is available', () => {
@@ -32,6 +32,12 @@ describe('trayMenuTemplate', () => {
   it('offers to hide the bubble while it is on screen', () => {
     const toggle = trayMenuTemplate({ bubbleVisible: true }).find((item) => item.id === 'toggle');
     expect(toggle.label).toBe('Esconder a bolha');
+  });
+
+  it('never offers to hide the bubble where nothing could bring it back (#169)', () => {
+    // the workspace's menu also runs without a tray: hiding there would be a trap
+    expect(ids({ bubbleVisible: true, canHide: false })).not.toContain('toggle');
+    expect(ids({ bubbleVisible: true, canHide: false })).toContain('find');
   });
 
   it('offers to bring the bubble back once it is hidden', () => {
@@ -129,5 +135,39 @@ describe('trayMenuTemplate: microphone and audio output', () => {
 
   it('without audio info (not Linux) there are no audio submenus', () => {
     expect(trayMenuTemplate({ bubbleVisible: true }).some((item) => item.id === 'mic-menu')).toBe(false);
+  });
+});
+
+describe('deviceChoice', () => {
+  it('reads a listed device by its position', () => {
+    expect(deviceChoice('mic:1')).toEqual({ kind: 'mic', index: 1 });
+    expect(deviceChoice('output:0')).toEqual({ kind: 'output', index: 0 });
+  });
+
+  it('reads the system default as clearing the pin', () => {
+    expect(deviceChoice('mic:default')).toEqual({ kind: 'mic', index: 'default' });
+  });
+
+  it('ignores the entries that pick nothing: the unplugged pin, the empty notice', () => {
+    expect(deviceChoice('mic:pinned')).toBeNull();
+    expect(deviceChoice('output:none')).toBeNull();
+  });
+
+  it('ignores anything that is not a device id', () => {
+    for (const id of ['quit', 'mic', 'mic:', 'mic:-1', 'mic:1.5', 'speaker:0', null]) expect(deviceChoice(id)).toBeNull();
+  });
+});
+
+describe('actionMenuAnchor', () => {
+  it('opens the menu right under the clicked label, in window coordinates (#169)', () => {
+    expect(actionMenuAnchor({ left: 12, bottom: 32 })).toEqual({ x: 12, y: 32 });
+  });
+
+  it('rounds a fractional rect: popup takes whole pixels', () => {
+    expect(actionMenuAnchor({ left: 12.4, bottom: 31.6 })).toEqual({ x: 12, y: 32 });
+  });
+
+  it('falls back to the cursor when the renderer sent no usable rect', () => {
+    for (const rect of [null, undefined, {}, { left: 'x', bottom: 3 }, { left: -5, bottom: 3 }]) expect(actionMenuAnchor(rect)).toEqual({});
   });
 });

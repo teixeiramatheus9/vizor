@@ -117,7 +117,7 @@ import { sanitizeShortcuts } from './shortcuts.js';
 import { applyLinuxAutostart, autostartFilePath, desktopEntry, execLine } from './autostart.js';
 import { legacyAutostartFile, legacyConfigDir, migrateLegacyInstall } from './migration.js';
 import { setupUpdater } from './updater.js';
-import { detectTrayHost, trayMenuTemplate } from './tray.js';
+import { actionMenuAnchor, detectTrayHost, deviceChoice, trayMenuTemplate } from './tray.js';
 import { installTraySupport, shouldInstallTraySupport } from './tray-support.js';
 import { killPendingClaude } from './claude-cli.js';
 import {
@@ -1098,6 +1098,15 @@ function activateBubble() {
 }
 ipcMain.on('bubble:activate', () => activateBubble());
 
+// The workspace's "vzr" label opens the tray's menu (#169), for whoever has no
+// tray to reach it from.
+ipcMain.on('workspace:action-menu', (event, rect) => {
+  if (!fromWorkspace(event)) return;
+  const window = workspaceWindow.window();
+  if (!window || window.isDestroyed()) return;
+  buildActionMenu({ canHide: Boolean(tray) }).popup({ window, ...actionMenuAnchor(rect) });
+});
+
 // The balloon of a session born in the Vizor opens its workspace tab, like
 // its panel card (spec §9.1, #144); any other balloon opens the panel.
 ipcMain.on('tooltip:click', (_event, sessionId) => {
@@ -1390,8 +1399,9 @@ function applyShortcuts() {
   if (shortcutFailures.length) log(`shortcuts not registered: ${shortcutFailures.join(', ')}`);
 }
 
-function refreshTrayMenu() {
-  if (!tray) return;
+// The tray menu and the workspace's "vzr" menu (#169) are this one menu: same items,
+// same actions, built fresh so the checked devices are current.
+function buildActionMenu({ canHide = true } = {}) {
   const actions = {
     panel: () => {
       showBubble();
@@ -1404,12 +1414,12 @@ function refreshTrayMenu() {
     workspace: () => workspaceWindow?.show(),
     rules: () => openRulesWindow(),
   };
-  // mic:<n> / output:<n> pick a listed device, the default clears the pin.
   const pick = (id) => {
-    const [kind, which] = id.split(':');
-    if (which === 'pinned' || which === 'none') return;
-    if (kind === 'mic') applyConfig({ voiceMic: which === 'default' ? null : micDevices[Number(which)] ?? null });
-    if (kind === 'output') applyConfig({ audioOutput: which === 'default' ? null : audioOutputs[Number(which)] ?? null });
+    const choice = deviceChoice(id);
+    if (!choice) return;
+    const devices = choice.kind === 'mic' ? micDevices : audioOutputs;
+    const device = choice.index === 'default' ? null : devices[choice.index] ?? null;
+    applyConfig(choice.kind === 'mic' ? { voiceMic: device } : { audioOutput: device });
   };
   const wire = (item) => {
     if (item.submenu) return { ...item, submenu: item.submenu.map(wire) };
@@ -1420,8 +1430,13 @@ function refreshTrayMenu() {
     process.platform === 'linux'
       ? { mics: micDevices, mic: managerConfig.voiceMic ?? null, outputs: audioOutputs, output: managerConfig.audioOutput ?? null }
       : null;
-  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible(), workspace: Boolean(workspaceWindow), audio }).map(wire);
-  tray.setContextMenu(Menu.buildFromTemplate(template));
+  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible(), workspace: Boolean(workspaceWindow), audio, canHide });
+  return Menu.buildFromTemplate(template.map(wire));
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(buildActionMenu());
 }
 
 // The outputs for the tray menu, from PipeWire; re-read every few seconds so
