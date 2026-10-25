@@ -36,6 +36,50 @@ export function criticalOf(graph) {
   return { modules: hubs(size(importers), CRITICAL_MIN.modules), functions: hubs(size(callers), CRITICAL_MIN.functions) };
 }
 
+// Files inside a folder never touch: they start on a sunflower spiral and are
+// pushed apart until none overlaps; folders are then fitted around each other
+// on a spiral from the middle, and the whole drawing is scaled to fit
+// (live test: nodes piled up). Deterministic: same graph, same picture.
+const GAP = 1.5;
+const MARGIN = 30;
+
+function packFolder(members) {
+  const nodes = members.map((module) => ({ id: module.id, r: 3 + 1.4 * Math.sqrt(module.functions.length), x: 0, y: 0 }));
+  const mean = nodes.reduce((sum, node) => sum + node.r, 0) / Math.max(nodes.length, 1);
+  nodes.forEach((node, index) => {
+    const distance = (2 * mean + GAP) * 0.62 * Math.sqrt(index + 0.5);
+    node.x = distance * Math.cos(index * GOLDEN);
+    node.y = distance * Math.sin(index * GOLDEN);
+  });
+  for (let round = 0; round < 400; round++) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i++)
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let distance = Math.hypot(dx, dy);
+        const want = a.r + b.r + GAP;
+        if (distance >= want) continue;
+        if (distance < 1e-6) [dx, dy, distance] = [1, 0, 1]; // same spot: split along x
+        const push = (want - distance) / 2 + 0.01;
+        a.x -= (dx / distance) * push;
+        a.y -= (dy / distance) * push;
+        b.x += (dx / distance) * push;
+        b.y += (dy / distance) * push;
+        moved = true;
+      }
+    if (!moved) break;
+  }
+  // Recentred on the folder's middle; the folder is as big as its farthest file.
+  const cx = nodes.reduce((sum, node) => sum + node.x, 0) / Math.max(nodes.length, 1);
+  const cy = nodes.reduce((sum, node) => sum + node.y, 0) / Math.max(nodes.length, 1);
+  for (const node of nodes) [node.x, node.y] = [node.x - cx, node.y - cy];
+  const r = Math.max(...nodes.map((node) => Math.hypot(node.x, node.y) + node.r), 6) + 8;
+  return { nodes, r };
+}
+
 export function layoutGraph(graph, { width = SIZE, height = SIZE } = {}) {
   const byGroup = new Map();
   for (const module of graph.modules) {
@@ -43,29 +87,68 @@ export function layoutGraph(graph, { width = SIZE, height = SIZE } = {}) {
     byGroup.get(module.group).push(module);
   }
   const names = [...byGroup.keys()].sort();
-  const cx = width / 2;
-  const cy = height / 2;
-  const ring = names.length > 1 ? Math.min(width, height) * 0.36 : 0;
-  const room = names.length > 1 ? ring * Math.sin(Math.PI / names.length) * 0.92 : Math.min(width, height) * 0.45;
+  const packed = Object.fromEntries(names.map((name) => [name, packFolder(byGroup.get(name))]));
+  // The biggest folder in the middle, the rest on a spiral, each at the first
+  // spot that touches none placed before.
+  const order = [...names].sort((a, b) => packed[b].r - packed[a].r || a.localeCompare(b));
+  const placed = [];
+  // The spiral only goes outward: each folder starts where the last one was
+  // put, so 500 folders cost a walk, not 500 (a 3000-file repo took 2.3 s).
+  let t = 0;
+  for (const name of order) {
+    const r = packed[name].r;
+    let spot = { x: 0, y: 0 };
+    for (; ; t += 0.05) {
+      const candidate = { x: 4 * t * Math.cos(t), y: 4 * t * Math.sin(t) };
+      if (placed.every((other) => Math.hypot(other.x - candidate.x, other.y - candidate.y) >= other.r + r + 14)) {
+        spot = candidate;
+        break;
+      }
+    }
+    placed.push({ name, r, ...spot });
+  }
+  // Scaled and moved to fit the drawing.
+  const left = Math.min(...placed.map((group) => group.x - group.r));
+  const right = Math.max(...placed.map((group) => group.x + group.r));
+  const top = Math.min(...placed.map((group) => group.y - group.r));
+  const bottom = Math.max(...placed.map((group) => group.y + group.r));
+  const k = Math.min((width - 2 * MARGIN) / Math.max(right - left, 1), (height - 2 * MARGIN) / Math.max(bottom - top, 1));
+  const ox = (width - (right - left) * k) / 2 - left * k;
+  const oy = (height - (bottom - top) * k) / 2 - top * k;
   const groups = {};
   const modules = {};
-  names.forEach((name, index) => {
-    const angle = (2 * Math.PI * index) / names.length - Math.PI / 2;
-    const members = byGroup.get(name);
-    const r = Math.min(room, 26 + 14 * Math.sqrt(members.length));
-    const group = { x: cx + ring * Math.cos(angle), y: cy + ring * Math.sin(angle), r, color: GROUP_COLORS[index % GROUP_COLORS.length] };
-    groups[name] = group;
-    members.forEach((module, place) => {
-      const distance = r * 0.82 * Math.sqrt((place + 0.5) / members.length);
-      const turn = place * GOLDEN;
-      modules[module.id] = {
-        x: group.x + distance * Math.cos(turn),
-        y: group.y + distance * Math.sin(turn),
-        r: 3 + 1.4 * Math.sqrt(module.functions.length),
-      };
-    });
+  for (const group of placed) {
+    const color = GROUP_COLORS[names.indexOf(group.name) % GROUP_COLORS.length];
+    groups[group.name] = { x: group.x * k + ox, y: group.y * k + oy, r: group.r * k, color };
+    for (const node of packed[group.name].nodes)
+      modules[node.id] = { x: (group.x + node.x) * k + ox, y: (group.y + node.y) * k + oy, r: node.r * k };
+  }
+  return { groups, modules, openAreas: {} };
+}
+
+// An opened file: its functions on a sunflower inside a backdrop that covers
+// the neighbours, the functions it calls elsewhere on the rim. Memoized on
+// the layout, so a click on the backdrop is not a click on what lies under.
+const FN_R = 4;
+const FN_SPACING = 10.5;
+export function openArea(graph, layout, moduleId) {
+  if (layout.openAreas?.[moduleId]) return layout.openAreas[moduleId];
+  const center = layout.modules[moduleId];
+  const own = graph.modules.find((module) => module.id === moduleId)?.functions ?? [];
+  const spots = {};
+  own.forEach((fnId, index) => {
+    const distance = FN_SPACING * Math.sqrt(index + 0.5);
+    spots[fnId] = { x: center.x + distance * Math.cos(index * GOLDEN), y: center.y + distance * Math.sin(index * GOLDEN), r: FN_R, own: true };
   });
-  return { groups, modules };
+  const inner = FN_SPACING * Math.sqrt(own.length + 0.5) + 10;
+  const outside = [...new Set(graph.callEdges.filter((call) => spots[call.from]?.own && !spots[call.to]).map((call) => call.to))].slice(0, Math.floor((2 * Math.PI * (inner + 14)) / 9));
+  outside.forEach((fnId, index) => {
+    const angle = (2 * Math.PI * index) / Math.max(outside.length, 1) - Math.PI / 2;
+    spots[fnId] = { x: center.x + (inner + 14) * Math.cos(angle), y: center.y + (inner + 14) * Math.sin(angle), r: 2.6, own: false };
+  });
+  const area = { x: center.x, y: center.y, r: inner + 26, spots };
+  if (layout.openAreas) layout.openAreas[moduleId] = area;
+  return area;
 }
 
 // One state per item: any músico's touch wins over any plan.
@@ -100,20 +183,9 @@ function functionPaint(light, critical) {
 }
 
 function openModule(graph, layout, impacts, critical, moduleId, scale) {
-  const center = layout.modules[moduleId];
-  const own = graph.modules.find((module) => module.id === moduleId)?.functions ?? [];
-  const placed = {};
-  const inner = center.r + 40;
-  own.forEach((fnId, index) => {
-    const angle = (2 * Math.PI * index) / Math.max(own.length, 1) - Math.PI / 2;
-    placed[fnId] = { x: center.x + inner * Math.cos(angle), y: center.y + inner * Math.sin(angle), r: 4, own: true };
-  });
-  const calls = graph.callEdges.filter((call) => placed[call.from]?.own);
-  const outside = [...new Set(calls.map((call) => call.to).filter((fnId) => !placed[fnId]))];
-  outside.forEach((fnId, index) => {
-    const angle = (2 * Math.PI * index) / Math.max(outside.length, 1) - Math.PI / 2 + 0.2;
-    placed[fnId] = { x: center.x + (inner + 36) * Math.cos(angle), y: center.y + (inner + 36) * Math.sin(angle), r: 2.6, own: false };
-  });
+  const area = openArea(graph, layout, moduleId);
+  const placed = area.spots;
+  const calls = graph.callEdges.filter((call) => placed[call.from]?.own && placed[call.to]);
   const edges = calls
     .map((call) => {
       const a = placed[call.from];
@@ -129,11 +201,12 @@ function openModule(graph, layout, impacts, critical, moduleId, scale) {
       const fn = graph.functions[fnId];
       const isCritical = critical.functions.has(fnId);
       return `<circle data-function="${escapeHtml(fnId)}" cx="${node.x}" cy="${node.y}" r="${node.r}" ${functionPaint(lightOf(impacts, 'functions', fnId), isCritical)}><title>${escapeHtml(
-        `${fn.module} · ${fn.name} (linhas ${fn.startLine}–${fn.endLine})`,
+        `${fn?.module ?? ''} · ${fn?.name ?? fnId} (linhas ${fn?.startLine}–${fn?.endLine})`,
       )}</title></circle>`;
     })
     .join('');
-  return { svg: `<g class="open-module">${edges}${nodes}</g>`, placed };
+  const backdrop = `<circle class="open-backdrop" cx="${area.x}" cy="${area.y}" r="${area.r}"/>`;
+  return { svg: `<g class="open-module">${backdrop}${edges}${nodes}</g>`, placed };
 }
 
 // The name of what was clicked, on a plate so it reads over anything.
@@ -205,6 +278,8 @@ export function renderGraph({ graph, layout, view, impacts = [] }) {
 export function moduleAt(layout, view, px, py) {
   const gx = (px - view.x) / view.scale;
   const gy = (py - view.y) / view.scale;
+  const area = view.open ? layout.openAreas?.[view.open] : null;
+  if (area && Math.hypot(gx - area.x, gy - area.y) <= area.r) return null;
   let best = null;
   let bestDistance = Infinity;
   for (const [id, node] of Object.entries(layout.modules)) {

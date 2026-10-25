@@ -624,14 +624,22 @@ let graphSerial = 0;
 
 window.vizor.onMaestroGraph(({ root, graph }) => {
   graphs.set(root, graph);
-  layouts.delete(root);
+  // Same files, same map; only the opened file's functions are laid out again.
+  if (layouts.has(root)) layouts.get(root).openAreas = {};
   if (root === graphRoot) renderGraphColumn();
 });
 
+// The picture is redone only when files come or go: an edit changes the
+// functions, not the map, so nothing jumps under the user.
+const layoutKeys = new Map(); // root → the file list the layout was made for
 function layoutOf(root) {
   const graph = graphs.get(root);
   if (!graph || graph.unavailable) return null;
-  if (!layouts.has(root)) layouts.set(root, layoutGraph(graph));
+  const key = graph.modules.map((module) => module.id).join('\n');
+  if (!layouts.has(root) || layoutKeys.get(root) !== key) {
+    layouts.set(root, layoutGraph(graph));
+    layoutKeys.set(root, key);
+  }
   return layouts.get(root);
 }
 
@@ -653,7 +661,6 @@ function renderGraphColumn() {
     window.vizor.maestroGraph(root).then((graph) => {
       if (!graph) return;
       graphs.set(root, graph);
-      layouts.delete(root);
       renderGraphColumn();
     });
   }
@@ -751,6 +758,12 @@ window.addEventListener('mouseup', (event) => {
   const fn = event.target.closest('[data-function]');
   if (fn) {
     graphView = { ...graphView, selected: fn.dataset.function };
+    renderGraphColumn();
+    return;
+  }
+  // The opened file's backdrop: a click there keeps it open (only the name goes).
+  if (event.target.closest('.open-backdrop')) {
+    graphView = { ...graphView, selected: graphView.open };
     renderGraphColumn();
     return;
   }

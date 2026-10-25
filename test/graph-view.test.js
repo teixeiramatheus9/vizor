@@ -157,3 +157,65 @@ describe('critical nodes and links (red)', () => {
     expect(hot).toMatch(/class="import lit danger"[^>]*stroke="#bf616a"/);
   });
 });
+
+describe('the layout never piles nodes up (live test: "um em cima do outro")', async () => {
+  const { openArea } = await import('../src/renderer/graph-view.js');
+  // A crowded project: one folder with 80 files of mixed sizes, a few small folders.
+  const crowded = {
+    modules: [
+      ...Array.from({ length: 80 }, (_, index) => ({ id: `src/main/f${index}.js`, group: 'src/main', functions: Array.from({ length: (index * 7) % 60 }, (_, f) => `src/main/f${index}.js#g${f}`) })),
+      ...Array.from({ length: 30 }, (_, index) => ({ id: `test/t${index}.js`, group: 'test', functions: ['x'] })),
+      ...['a', 'b', 'c', 'd', 'e'].map((name) => ({ id: `src/${name}/m.js`, group: `src/${name}`, functions: ['y'] })),
+    ],
+    moduleEdges: [],
+    callEdges: [],
+    functions: {},
+  };
+  const layout = layoutGraph(crowded, { width: 1000, height: 1000 });
+  const nodes = Object.values(layout.modules);
+
+  it('files never overlap', () => {
+    for (let i = 0; i < nodes.length; i++)
+      for (let j = i + 1; j < nodes.length; j++) {
+        const [a, b] = [nodes[i], nodes[j]];
+        expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(a.r + b.r - 0.01);
+      }
+  });
+
+  it('folders never overlap, and every file stays in its folder', () => {
+    const groups = Object.values(layout.groups);
+    for (let i = 0; i < groups.length; i++)
+      for (let j = i + 1; j < groups.length; j++) expect(Math.hypot(groups[i].x - groups[j].x, groups[i].y - groups[j].y)).toBeGreaterThanOrEqual(groups[i].r + groups[j].r - 0.01);
+    for (const module of crowded.modules) {
+      const group = layout.groups[module.group];
+      const node = layout.modules[module.id];
+      expect(Math.hypot(node.x - group.x, node.y - group.y) + node.r).toBeLessThanOrEqual(group.r + 0.01);
+    }
+  });
+
+  it('everything fits the drawing', () => {
+    for (const group of Object.values(layout.groups)) {
+      expect(group.x - group.r).toBeGreaterThanOrEqual(0);
+      expect(group.y - group.r).toBeGreaterThanOrEqual(0);
+      expect(group.x + group.r).toBeLessThanOrEqual(1000);
+      expect(group.y + group.r).toBeLessThanOrEqual(1000);
+    }
+  });
+
+  it("an open file's functions sit on a backdrop and never overlap each other", () => {
+    const big = {
+      ...crowded,
+      functions: Object.fromEntries(crowded.modules.flatMap((module) => module.functions.map((fnId, index) => [fnId, { module: module.id, name: `g${index}`, startLine: 1, endLine: 2 }]))),
+    };
+    const open = 'src/main/f8.js'; // 56 functions
+    const svg = renderGraph({ graph: big, layout, view: { scale: 3, x: 0, y: 0, open }, impacts: [] });
+    expect(svg).toContain('class="open-backdrop"');
+    const spots = [...svg.matchAll(/data-function="[^"]+" cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"/g)].map(([, x, y, r]) => ({ x: +x, y: +y, r: +r }));
+    expect(spots).toHaveLength(56);
+    for (let i = 0; i < spots.length; i++)
+      for (let j = i + 1; j < spots.length; j++) expect(Math.hypot(spots[i].x - spots[j].x, spots[i].y - spots[j].y)).toBeGreaterThan(spots[i].r + spots[j].r);
+    // A click on the backdrop is not a click on the file underneath.
+    const area = openArea(big, layout, open);
+    expect(moduleAt(layout, { scale: 1, x: 0, y: 0, open }, area.x + area.r * 0.5, area.y)).toBeNull();
+  });
+});
