@@ -1,0 +1,112 @@
+import path from 'node:path';
+import { diffHunks } from './edit-hunks.js';
+
+// Pure shaping of the workspace sidebar: projects → worktrees → sessions →
+// files touched in the current task. No git, no fs: index.js feeds it.
+
+export function workspaceAvailable(platform) {
+  return platform === 'linux';
+}
+
+export function addProject(list, root) {
+  return list.includes(root) ? [...list] : [...list, root];
+}
+
+export function removeProject(list, root) {
+  return list.filter((candidate) => candidate !== root);
+}
+
+// Auto-add brings in the repo of every session — except one the user took
+// off the list, which stays off until they add it back by hand.
+export function shouldAutoAdd(root, projects, dismissed) {
+  return Boolean(root) && !projects.includes(root) && !dismissed.includes(root);
+}
+
+// An unplaced cwd inside a known repo usually means a worktree was just
+// created: re-list that repo — ONCE per cwd. A cwd still unplaced after the
+// re-list (worktree removed, symlinked path) must not trigger another one, or
+// the refresh would chase it forever. A cwd that gets placed again is
+// forgotten, so a later removal re-checks.
+export function staleRoots({ unplaced, rootOf, rechecked }) {
+  const next = new Set([...rechecked].filter((cwd) => unplaced.includes(cwd)));
+  const roots = [];
+  for (const cwd of unplaced) {
+    if (next.has(cwd)) continue;
+    const root = rootOf(cwd);
+    if (!root) continue;
+    next.add(cwd);
+    if (!roots.includes(root)) roots.push(root);
+  }
+  return { roots, rechecked: next };
+}
+
+function contains(parent, child) {
+  return child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
+}
+
+// Deepest wins: a checkout nested inside another repo's folder owns its own
+// sessions — a session must never show up under two worktrees.
+export function matchWorktree(cwd, worktreePaths) {
+  let best = null;
+  for (const candidate of worktreePaths)
+    if (contains(candidate, cwd) && (!best || candidate.length > best.length)) best = candidate;
+  return best;
+}
+
+// One line per file, start-of-task against now: two edits on the same lines
+// count once, as the person reading the diff sees them.
+export function taskFileStats(task) {
+  const order = [];
+  for (const filePath of [...(task?.files?.keys() ?? []), ...(task?.edits ?? []).map((edit) => edit.filePath)])
+    if (!order.includes(filePath)) order.push(filePath);
+  return order.map((filePath) => {
+    const file = task.files?.get(filePath);
+    const writing = task.edits.some((edit) => edit.filePath === filePath && edit.status === 'writing');
+    const diff =
+      typeof file?.start === 'string' && typeof file?.current === 'string'
+        ? diffHunks(file.start, file.current)
+        : null;
+    return { filePath, added: diff?.added ?? null, removed: diff?.removed ?? null, writing };
+  });
+}
+
+function sessionNode(session, taskOf) {
+  return {
+    id: session.id,
+    name: session.displayName ?? session.id,
+    status: session.status,
+    unread: Boolean(session.unread),
+    needsPermission: Boolean(session.needsPermission),
+    inside: Boolean(session.term?.VIZOR_PTY_ID),
+    files: taskFileStats(taskOf(session.id)),
+  };
+}
+
+export function buildWorkspaceTree({ projects, sessions, taskOf }) {
+  const nodes = projects.map(({ root, worktrees }) => ({
+    root,
+    name: path.basename(root),
+    worktrees: worktrees.map((worktree) => ({
+      path: worktree.path,
+      branch: worktree.branch,
+      prunable: worktree.prunable,
+      sessions: [],
+    })),
+  }));
+  const byPath = new Map(nodes.flatMap((project) => project.worktrees.map((node) => [node.path, node])));
+  const unplaced = [];
+  const unplacedSessions = [];
+  const counts = { working: 0, waiting: 0 };
+  for (const session of sessions) {
+    const match = session.cwd ? matchWorktree(session.cwd, [...byPath.keys()]) : null;
+    if (match) byPath.get(match).sessions.push(sessionNode(session, taskOf));
+    else {
+      if (session.cwd && !unplaced.includes(session.cwd)) unplaced.push(session.cwd);
+      // Never orphaned (spec §9.1): a session outside every project is still shown.
+      unplacedSessions.push(sessionNode(session, taskOf));
+    }
+    if (session.status === 'working') counts.working += 1;
+    else if (session.status === 'waiting') counts.waiting += 1;
+  }
+  return { projects: nodes, unplaced, unplacedSessions, counts };
+}

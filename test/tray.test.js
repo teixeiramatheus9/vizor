@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { detectTrayHost, hasTrayHostIn, trayMenuTemplate } from '../src/main/tray.js';
 
 describe('trayMenuTemplate', () => {
+  it('opens the workspace first when it is available', () => {
+    expect(trayMenuTemplate({ bubbleVisible: true, workspace: true })[0]).toEqual({
+      id: 'workspace',
+      label: 'Abrir o workspace',
+    });
+    expect(
+      trayMenuTemplate({ bubbleVisible: true, workspace: false }).some((item) => item.id === 'workspace'),
+    ).toBe(false);
+  });
+
   const ids = (options) => trayMenuTemplate(options).filter((item) => item.id).map((item) => item.id);
 
   it('opens the app and its settings straight from the tray', () => {
