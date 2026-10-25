@@ -173,9 +173,31 @@ export function readAdoptableSessions({
 // Claude Code keeps transcripts under ~/.claude/projects/<flattened cwd>,
 // where every character that is not a plain letter or digit collapses to a
 // dash — slashes, dots, spaces, accents (C:\Users\u\dev\proj ->
-// C--Users-u-dev-proj, Adaptação -> Adapta--o).
+// C--Users-u-dev-proj, Adaptação -> Adapta--o). A name longer than 200 chars
+// is cut there and gets "-<hash of the raw path, base 36>" (Claude Code 2.1;
+// older builds hashed differently, see resolveClaudeProjectDir).
+const MAX_PROJECT_NAME = 200;
+
+function pathHash(text) {
+  let hash = 0;
+  for (let index = 0; index < text.length; index++) hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+  return Math.abs(hash).toString(36);
+}
+
+export function flattenProjectName(cwd) {
+  const flat = String(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+  if (flat.length <= MAX_PROJECT_NAME) return flat;
+  return `${flat.slice(0, MAX_PROJECT_NAME)}-${pathHash(String(cwd))}`;
+}
+
+// What a long name starts with whatever the hash: "" when the name is short.
+export function longProjectPrefix(cwd) {
+  const flat = String(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+  return flat.length > MAX_PROJECT_NAME ? `${flat.slice(0, MAX_PROJECT_NAME)}-` : '';
+}
+
 export function claudeProjectDir(cwd, { home = os.homedir() } = {}) {
-  return path.join(home, '.claude', 'projects', String(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
+  return path.join(home, '.claude', 'projects', flattenProjectName(cwd));
 }
 
 export function claudeTranscriptPath(cwd, sessionId, { home = os.homedir() } = {}) {

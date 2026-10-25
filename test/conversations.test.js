@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseConversationTitle, readConversationTitle } from '../src/main/transcript.js';
-import { listConversations } from '../src/main/conversations.js';
+import { listConversations, resolveClaudeProjectDir } from '../src/main/conversations.js';
+import { claudeProjectDir } from '../src/main/cc-sessions.js';
 
 const line = (entry) => JSON.stringify(entry);
 
@@ -66,6 +67,58 @@ describe('readConversationTitle on a long chat (#157)', () => {
     });
     fs.writeFileSync(file, [mention, ...filler, line({ type: 'ai-title', aiTitle: 'IA' })].join('\n') + '\n');
     expect(await readConversationTitle(file)).toBe('IA');
+  });
+});
+
+describe('resolveClaudeProjectDir (#157)', () => {
+  const home = '/h';
+  const projects = path.join(home, '.claude', 'projects');
+  const longCwd = `/h/${'nome-bem-comprido/'.repeat(14)}fim`;
+  const prefix = `${longCwd.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 200)}-`;
+  const ID = '11111111-1111-1111-1111-111111111111';
+  const fakeFs = (tree, heads = {}) => ({
+    readdir: async (dir) => {
+      if (!(dir in tree)) throw new Error('ENOENT');
+      return tree[dir];
+    },
+    readHead: async (file) => heads[file] ?? '',
+    home,
+  });
+
+  it('a short path is the flattened name, no scan', async () => {
+    const deps = fakeFs({});
+    expect(await resolveClaudeProjectDir('/h/vizor', deps)).toBe(path.join(projects, '-h-vizor'));
+  });
+
+  it('a long path whose exact name exists is that folder', async () => {
+    const exact = claudeProjectDir(longCwd, { home });
+    const deps = fakeFs({ [projects]: [path.basename(exact)] });
+    expect(await resolveClaudeProjectDir(longCwd, deps)).toBe(exact);
+  });
+
+  it('a long path hashed by another Claude Code build: the folder whose chats ran in that cwd', async () => {
+    const other = `${prefix}outrohash`;
+    const mine = `${prefix}abc123`;
+    const deps = fakeFs(
+      {
+        [projects]: ['-h-vizor', other, mine],
+        [path.join(projects, other)]: [`${ID}.jsonl`],
+        [path.join(projects, mine)]: ['notes.txt', `${ID}.jsonl`],
+      },
+      {
+        [path.join(projects, other, `${ID}.jsonl`)]: `${JSON.stringify({ type: 'user', cwd: `${longCwd}-irma` })}\n`,
+        [path.join(projects, mine, `${ID}.jsonl`)]: `${JSON.stringify({ type: 'summary' })}\n${JSON.stringify({
+          type: 'user',
+          cwd: longCwd,
+        })}\n`,
+      },
+    );
+    expect(await resolveClaudeProjectDir(longCwd, deps)).toBe(path.join(projects, mine));
+  });
+
+  it('nothing that proves it: the computed name (lists nothing, as before)', async () => {
+    const deps = fakeFs({ [projects]: [`${prefix}x`], [path.join(projects, `${prefix}x`)]: [] });
+    expect(await resolveClaudeProjectDir(longCwd, deps)).toBe(claudeProjectDir(longCwd, { home }));
   });
 });
 

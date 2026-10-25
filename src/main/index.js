@@ -57,7 +57,7 @@ import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.
 import { loadPty } from './pty-loader.js';
 import { createPtyHost, withoutClaudeSession } from './pty-host.js';
 import { createQuitFreeze, linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
-import { listConversations } from './conversations.js';
+import { listConversations, resolveClaudeProjectDir } from './conversations.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
@@ -121,7 +121,6 @@ import {
   readLiveSessionIds,
   readAdoptableSessions,
   claudeTranscriptPath,
-  claudeProjectDir,
 } from './cc-sessions.js';
 import { readInboundPolicy, setInboundPolicy } from './claude-settings.js';
 import {
@@ -1596,7 +1595,7 @@ ipcMain.handle('workspace:conversations', async (event, cwd) => {
     ...[...resumedChats].map(([ptyId, sessionId]) => [sessionId, ptyId]),
     ...linked.map((session) => [session.id, session.term.VIZOR_PTY_ID]),
   ]);
-  const list = await listConversations(claudeProjectDir(cwd));
+  const list = await listConversations(await resolveClaudeProjectDir(cwd));
   return list.map((conversation) => ({
     ...conversation,
     open: Boolean(live?.has(conversation.sessionId)),
