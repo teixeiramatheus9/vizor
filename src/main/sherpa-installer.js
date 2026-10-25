@@ -3,24 +3,29 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import unbzip2 from 'unbzip2-stream';
 
-const SHERPA_VERSION = 'v1.13.6';
-const RELEASE_BASE = `https://github.com/k2-fsa/sherpa-onnx/releases/download/${SHERPA_VERSION}`;
+// Kokoro pt-br needs the 1.x build: 2.0.0 dropped espeak-ng, its phonemizer.
+// Supertonic needs 2.0.0: 1.x synthesizes the whole text in one pass, with no
+// pause between sentences and the pace dragging after each English word.
+const KOKORO_RUNTIME = 'v1.13.6';
+const SUPERTONIC_RUNTIME = 'v2.0.0';
+const releaseBase = (version) => `https://github.com/k2-fsa/sherpa-onnx/releases/download/${version}`;
 const MODELS_BASE = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models';
 
 // One runtime per platform+arch; the mac arm64 build is the only one whose
 // asset name carries the onnxruntime version.
 const RUNTIMES = {
-  'darwin-arm64': `sherpa-onnx-${SHERPA_VERSION}-onnxruntime-1.17.1-osx-arm64-shared`,
-  'darwin-x64': `sherpa-onnx-${SHERPA_VERSION}-osx-x64-shared`,
-  'linux-x64': `sherpa-onnx-${SHERPA_VERSION}-linux-x64-shared`,
-  'linux-arm64': `sherpa-onnx-${SHERPA_VERSION}-linux-aarch64-shared-cpu`,
+  'darwin-arm64': (version) => `sherpa-onnx-${version}-onnxruntime-1.17.1-osx-arm64-shared`,
+  'darwin-x64': (version) => `sherpa-onnx-${version}-osx-x64-shared`,
+  'linux-x64': (version) => `sherpa-onnx-${version}-linux-x64-shared`,
+  'linux-arm64': (version) => `sherpa-onnx-${version}-linux-aarch64-shared-cpu`,
   // MT = static CRT: no MSVC runtime redistributable needed on the user's box.
-  'win32-x64': `sherpa-onnx-${SHERPA_VERSION}-win-x64-shared-MT-Release`,
+  'win32-x64': (version) => `sherpa-onnx-${version}-win-x64-shared-MT-Release`,
 };
 
 export const VOICES = {
   santa: {
     label: 'Santa',
+    runtime: KOKORO_RUNTIME,
     dirName: 'kokoro-multi-lang-v1_0',
     modelFile: 'model.onnx',
     args: (dir) => [
@@ -44,6 +49,7 @@ function supertonic(label, sid) {
   return {
     label,
     engine: 'supertonic',
+    runtime: SUPERTONIC_RUNTIME,
     dirName: 'sherpa-onnx-supertonic-tts-int8-2026-03-06',
     modelFile: 'text_encoder.int8.onnx',
     args: (dir) => [
@@ -63,13 +69,13 @@ function supertonic(label, sid) {
 
 export const DEFAULT_VOICE = 'clara';
 
-export function runtimeName(platform = process.platform, arch = process.arch) {
-  return RUNTIMES[`${platform}-${arch}`] ?? null;
+export function runtimeName(platform = process.platform, arch = process.arch, version = VOICES[DEFAULT_VOICE].runtime) {
+  return RUNTIMES[`${platform}-${arch}`]?.(version) ?? null;
 }
 
 export function voicePaths(sherpaDir, voiceId, platform = process.platform, arch = process.arch) {
   const voice = VOICES[voiceId] ?? VOICES[DEFAULT_VOICE];
-  const runtime = runtimeName(platform, arch);
+  const runtime = runtimeName(platform, arch, voice.runtime);
   const runtimeDir = runtime ? path.join(sherpaDir, runtime) : null;
   const voiceDir = path.join(sherpaDir, voice.dirName);
   return {
@@ -155,14 +161,14 @@ export function extractTarBz2(archive, directory, spawnFn = spawn) {
 
 // Downloads the sherpa-onnx runtime (once) and the chosen voice model.
 export async function installVoice(sherpaDir, voiceId, { fetchFn = fetch, spawnFn = spawn } = {}) {
-  const runtime = runtimeName();
-  if (!runtime) throw new Error(`no sherpa build for ${process.platform}-${process.arch}`);
   const voice = VOICES[voiceId] ?? VOICES[DEFAULT_VOICE];
+  const runtime = runtimeName(process.platform, process.arch, voice.runtime);
+  if (!runtime) throw new Error(`no sherpa build for ${process.platform}-${process.arch}`);
   fs.mkdirSync(sherpaDir, { recursive: true });
   const { binary, model } = voicePaths(sherpaDir, voiceId);
 
   for (const [target, url, name] of [
-    [binary, `${RELEASE_BASE}/${runtime}.tar.bz2`, 'runtime.tar.bz2'],
+    [binary, `${releaseBase(voice.runtime)}/${runtime}.tar.bz2`, 'runtime.tar.bz2'],
     [model, `${MODELS_BASE}/${voice.dirName}.tar.bz2`, 'voice.tar.bz2'],
   ]) {
     if (fs.existsSync(target)) continue;

@@ -56,6 +56,13 @@ describe('runtime and voice resolution', () => {
     expect(davi.voiceDir).toBe(clara.voiceDir); // one model, two speakers
   });
 
+  it('each voice runs on its own runtime: Supertonic needs 2.0.0, Kokoro pt-br the 1.x espeak build', () => {
+    expect(voicePaths('/cfg', 'clara', 'linux', 'x64').binary).toContain('sherpa-onnx-v2.0.0-linux-x64-shared');
+    expect(voicePaths('/cfg', 'davi', 'win32', 'x64').binary).toContain('sherpa-onnx-v2.0.0-win-x64-shared-MT-Release');
+    expect(voicePaths('/cfg', 'santa', 'linux', 'x64').binary).toContain('sherpa-onnx-v1.13.6-linux-x64-shared');
+    expect(runtimeName('darwin', 'arm64', 'v2.0.0')).toBe('sherpa-onnx-v2.0.0-onnxruntime-1.17.1-osx-arm64-shared');
+  });
+
   it('Clara is the default and Faber is gone (#161: the user rejected it)', () => {
     expect(DEFAULT_VOICE).toBe('clara');
     expect(VOICES.faber).toBeUndefined();
