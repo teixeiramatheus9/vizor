@@ -63,6 +63,17 @@ describe('runtime and voice resolution', () => {
     expect(runtimeName('darwin', 'arm64', 'v2.0.0')).toBe('sherpa-onnx-v2.0.0-onnxruntime-1.17.1-osx-arm64-shared');
   });
 
+  it('the ten Supertonic speakers also speak American English, from the same model', () => {
+    const english = Object.entries(VOICES).filter(([, voice]) => voice.lang === 'en');
+    expect(english.map(([id]) => id)).toEqual(['en-0', 'en-1', 'en-2', 'en-3', 'en-4', 'en-5', 'en-6', 'en-7', 'en-8', 'en-9']);
+    const voice = voicePaths('/cfg', 'en-3', 'linux', 'x64');
+    expect(voice.args).toContain('--lang=en');
+    expect(voice.args).toContain('--sid=3');
+    expect(voice.voiceDir).toBe(voicePaths('/cfg', 'clara', 'linux', 'x64').voiceDir);
+    expect(VOICES.clara.lang).toBe('pt');
+    expect(VOICES.santa.lang).toBe('pt');
+  });
+
   it('Clara is the default and Faber is gone (#161: the user rejected it)', () => {
     expect(DEFAULT_VOICE).toBe('clara');
     expect(VOICES.faber).toBeUndefined();
@@ -257,13 +268,17 @@ describe('dev terms said the way Brazilian devs say them (#161)', () => {
     expect(speakableText('No GitHub tem 2 PRs e 1 PR, e 3 issues.', 'clara')).toBe('No GitHub tem 2 peérris e 1 PR, e 3 issues.');
     expect(speakableText('Dois bugs no frontend e no backend.', 'davi')).toBe('Dois bugs no front-êndi e no béqui-êndi.');
     expect(speakableText('Mexi no front e no back.', 'clara')).toBe('Mexi no fronti e no béqui.');
-    expect(speakableText('Fiz o review de 2 tasks e 1 task.', 'davi')).toBe('Fiz o rêvíu de 2 tésquís e 1 tésquí.');
+    expect(speakableText('Fiz o review de 2 tasks e 1 task.', 'davi')).toBe('Fiz o rêvíu de 2 téskís e 1 téskí.');
   });
 
   it('Supertonic: "a" and "pra" before a term stay Portuguese (a double space keeps them apart)', () => {
     expect(speakableText('A feature tem dois bugs.', 'clara')).toBe('A  feature tem dois bugs.');
     expect(speakableText('Abri uma pull request pra main.', 'davi')).toBe('Abri uma pull request pra  main.');
     expect(speakableText('Vou pra casa e a gente vê.', 'clara')).toBe('Vou pra casa e a gente vê.');
+  });
+
+  it('English voices get the text as is: no pt-BR respelling at all', () => {
+    expect(speakableText('A task on GitHub has two PRs, ask Vizor.', 'en-0')).toBe('A task on GitHub has two PRs, ask Vizor.');
   });
 
   it('only whole words, and the brand still respelled', () => {

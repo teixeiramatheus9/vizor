@@ -237,8 +237,8 @@ const SUPERTONIC_WORDS = [
   [/\bfront\b(?!-)/gi, 'fronti'],
   [/\bback\b/gi, 'béqui'],
   [/\breview\b/gi, 'rêvíu'],
-  [/\btasks\b/gi, 'tésquís'],
-  [/\btask\b/gi, 'tésquí'],
+  [/\btasks\b/gi, 'téskís'],
+  [/\btask\b/gi, 'téskí'],
 ];
 const SUPERTONIC_TERMS =
   'github|prs?|pull requests?|issues?|push|commits?|merge|branch(?:es)?|main|rebase|build|deploy|features?|bugs?|frontend|backend|front|back|worktrees?|hotfix|ci';
@@ -247,6 +247,8 @@ const SUPERTONIC_TERMS =
 const ARTICLE_BEFORE_TERM = new RegExp(`\\b(a|pra|para) (?=(?:${SUPERTONIC_TERMS})\\b)`, 'gi');
 
 export function speakableText(text, voiceId = DEFAULT_VOICE) {
+  // An English voice reads English text: nothing to respell.
+  if (VOICES[voiceId]?.lang === 'en') return String(text ?? '');
   let speech = String(text ?? '').replace(/\bvizor\b/gi, 'Váizor');
   if (VOICES[voiceId]?.engine === 'supertonic') {
     speech = speech.replace(ARTICLE_BEFORE_TERM, '$1  ');

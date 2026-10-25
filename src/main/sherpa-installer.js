@@ -25,6 +25,7 @@ const RUNTIMES = {
 export const VOICES = {
   santa: {
     label: 'Santa',
+    lang: 'pt',
     runtime: KOKORO_RUNTIME,
     dirName: 'kokoro-multi-lang-v1_0',
     modelFile: 'model.onnx',
@@ -42,13 +43,17 @@ export const VOICES = {
   // every dev word.
   clara: supertonic('Clara', 0),
   davi: supertonic('Davi', 8),
+  // The same speakers in American English, for whoever prefers to hear the
+  // Vizor in English; all ten kept, the user's call.
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, sid) => [`en-${sid}`, supertonic(`Inglês (EUA) ${sid + 1}`, sid, 'en')])),
 };
 
-function supertonic(label, sid) {
+function supertonic(label, sid, lang = 'pt') {
   const file = (dir, name) => path.join(dir, name);
   return {
     label,
     engine: 'supertonic',
+    lang,
     runtime: SUPERTONIC_RUNTIME,
     dirName: 'sherpa-onnx-supertonic-tts-int8-2026-03-06',
     modelFile: 'text_encoder.int8.onnx',
@@ -60,7 +65,7 @@ function supertonic(label, sid) {
       `--supertonic-tts-json=${file(dir, 'tts.json')}`,
       `--supertonic-unicode-indexer=${file(dir, 'unicode_indexer.bin')}`,
       `--supertonic-voice-style=${file(dir, 'voice.bin')}`,
-      '--lang=pt',
+      `--lang=${lang}`,
       `--sid=${sid}`,
       '--num-steps=8',
     ],
