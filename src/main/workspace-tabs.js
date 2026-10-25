@@ -8,9 +8,13 @@ export function isSessionId(value) {
   return typeof value === 'string' && SESSION_ID.test(value);
 }
 
-export function terminalCommand({ kind, sessionId } = {}) {
+// Single quotes, each ' closed and escaped: nothing in a prompt is expanded.
+const shellQuote = (text) => `'${String(text).replace(/'/g, "'\\''")}'`;
+
+export function terminalCommand({ kind, sessionId, prompt = null } = {}) {
   if (kind === 'shell') return { command: null };
-  if (kind === 'claude') return { command: 'claude' };
+  // A chat the voice opens for a task starts with its first prompt (#161).
+  if (kind === 'claude') return { command: prompt ? `claude ${shellQuote(prompt)}` : 'claude' };
   // Claude Code's own list, for a chat older than the ones the Vizor shows.
   if (kind === 'picker') return { command: 'claude --resume' };
   if (kind === 'resume') {

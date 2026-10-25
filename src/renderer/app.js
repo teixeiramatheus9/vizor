@@ -1018,7 +1018,8 @@ window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId, sp
     chime(kind === 'guard' ? 'question' : kind);
     if (ttsEnabled && !muted) {
       const phrase = TTS_PHRASES[kind] ?? TTS_PHRASES.waiting;
-      speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
+      // A guard card in voice mode is spoken by main (speech is null then).
+      if (kind !== 'guard' || speech) speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
     }
   }
   const alert = kind === 'question' || kind === 'waiting' || kind === 'guard';

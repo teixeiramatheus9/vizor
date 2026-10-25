@@ -4,6 +4,11 @@ import { linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds 
 const ID = '4b706711-9840-4931-8b0f-d6d51518d6ba';
 
 describe('terminalCommand', () => {
+  it('a new chat can start with a prompt, quoted for the shell (#161)', () => {
+    expect(terminalCommand({ kind: 'claude', prompt: 'Vamos trabalhar na issue #22.' })).toEqual({ command: "claude 'Vamos trabalhar na issue #22.'" });
+    expect(terminalCommand({ kind: 'claude', prompt: "it's $(rm -rf /)" })).toEqual({ command: "claude 'it'\\''s $(rm -rf /)'" });
+  });
+
   it('starts nothing in a plain terminal, claude in a new chat, and resumes by id', () => {
     expect(terminalCommand({ kind: 'shell' })).toEqual({ command: null });
     expect(terminalCommand({ kind: 'claude' })).toEqual({ command: 'claude' });

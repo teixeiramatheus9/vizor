@@ -174,10 +174,10 @@ describe('systemVoiceCommand', () => {
   it('darwin still uses say -v Luciana', () => {
     expect(systemVoiceCommand('oi', 100, 'darwin')).toEqual(['say', ['-v', 'Luciana', '--', 'oi']]);
   });
-  it('linux still uses spd-say', () => {
+  it('linux still uses spd-say, waiting until it was said (#161: the voice mode must not hear itself)', () => {
     expect(systemVoiceCommand('oi', 100, 'linux')).toEqual([
       'spd-say',
-      ['-l', 'pt-BR', '-i', '100', '--', 'oi'],
+      ['-w', '-l', 'pt-BR', '-i', '100', '--', 'oi'],
     ]);
   });
 });

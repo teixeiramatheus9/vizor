@@ -27,6 +27,12 @@ import { guardSpeech } from '../renderer/guard-card.js';
 import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
 import { createSpeechArbiter } from './voice/arbiter.js';
+import { createVoiceSession } from './voice/session.js';
+import { correctTranscript, createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
+import { buildDigest, ghQueries, githubRepoOf, resolveProject } from './voice/gh-digest.js';
+import { createTaskLinks, resolveTask } from './voice/task-links.js';
+import { safeToTypeIdle } from './bubble-routing.js';
+import { runClaude } from './claude-cli.js';
 import { missingVoiceModels, voiceModelPaths } from './voice/models.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, validateEditedRule } from './rules-compiler.js';
@@ -376,6 +382,7 @@ let managerConfig = loadConfig(configFile);
 const voiceSherpaDir = path.join(configDir, 'sherpa');
 let voiceListener = null;
 let voiceArbiter = null;
+let voiceSession = null;
 let micWindow = null;
 let voiceState = 'off';
 
@@ -393,6 +400,7 @@ const guardAsks = createGuardAsks({
   onChange: () => {
     sendState();
     updateNotificationHalo();
+    if (guardAsks.pending().length === 0) voiceSession?.onGuardAnswered();
   },
 });
 
@@ -424,12 +432,14 @@ function onGuardMessage(message, reply) {
   const ask = guardAsks.pending().find((candidate) => candidate.id === result.id);
   if (!ask) return;
   // The balloon announces; the choices live in the panel and the workspace.
+  // In voice mode the session speaks it (priority 2) and takes the answer.
+  if (voiceSession) voiceSession.onGuardAsk({ speech: guardSpeech(ask) });
   sendToRenderer('tooltip', {
     projectName: path.basename(ask.cwd ?? '') || 'Claude',
     text: ask.summary,
     kind: 'guard',
     sessionId: null,
-    speech: guardSpeech(ask),
+    speech: voiceSession ? null : guardSpeech(ask),
   });
   showTooltip();
 }
@@ -1309,6 +1319,13 @@ async function generateVoiceForStop(session) {
   // pending ask found here is shown too instead of being discarded.
   registry.setQuestion(session.id, snapshot.pendingQuestion);
   registry.setLastMessage(session.id, digestMessage(snapshot.lastAssistantMessage));
+  // The chat bound to the voice answers in its own words, not the gerente's
+  // alert — and no tokens go to the alert (#161).
+  const bound = voiceSession?.target();
+  if (bound?.kind === 'chat' && bound.sessionId === session.id) {
+    await voiceSession.onSessionStop({ id: session.id, lastMessage: snapshot.lastAssistantMessage });
+    return;
+  }
   let voice;
   if (isEconomyMode()) {
     voice = fallbackMessage(displayNameOf(session));
@@ -1569,8 +1586,8 @@ function linkedSessions(sessions) {
 }
 
 // kind: 'shell' | 'claude' | 'resume' (with sessionId) — #154.
-function openTerminal({ cwd, kind, sessionId }) {
-  const { command, error: invalid } = terminalCommand({ kind, sessionId });
+function openTerminal({ cwd, kind, sessionId, prompt = null }) {
+  const { command, error: invalid } = terminalCommand({ kind, sessionId, prompt });
   if (invalid) return { error: invalid };
   if (!isDirectory(cwd)) return { error: 'pasta não existe' };
   const { host, error } = ensurePtyHost();
@@ -2176,6 +2193,13 @@ function onHookEvent(event, reply) {
     return;
   }
   event = verifiedTerm(event);
+  // A chat the voice opened for a task: its first event names its session.
+  const newChat = event?.term?.VIZOR_PTY_ID && pendingNewChats.get(event.term.VIZOR_PTY_ID);
+  if (newChat && event.session_id) {
+    pendingNewChats.delete(event.term.VIZOR_PTY_ID);
+    newChat({ sessionId: event.session_id });
+  }
+  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') voiceSession?.onToolEvent(event);
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
   for (const [ptyId, sessionId] of resumedChats) if (sessionId === event?.session_id) resumedChats.delete(ptyId);
@@ -3227,6 +3251,252 @@ function voiceAvailable() {
 
 function onVoiceUtterance(text) {
   log(`voice: "${text}"`);
+  voiceSession?.onUtterance(text).catch((error) => {
+    log(`voice failed: ${error?.stack ?? error}`);
+    voiceArbiter?.say({ text: 'Deu erro aqui; olha o log.', priority: 1 });
+  });
+}
+
+// --- Voice session (#161): what an utterance does --------------------------
+const voiceDir = path.join(configDir, 'voz');
+const vocabularyStore = createVocabularyStore({
+  dir: path.join(voiceDir, 'vocabulario'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const taskLinks = createTaskLinks({
+  file: path.join(voiceDir, 'tasks.json'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const VOCABULARY_MAX_AGE_MS = 24 * 3600 * 1000;
+const voiceScanning = new Set();
+const voiceInfoCache = new Map(); // sessionId → { title, lastMessage, cwd }
+const pendingNewChats = new Map(); // pty id → resolve({ sessionId })
+let lastGhDigest = null;
+
+const runText = async (command, args, options = {}) => (await execFileAsync(command, args, { maxBuffer: 1e7, timeout: 15000, ...options })).stdout;
+
+function voiceProject() {
+  const focused = ptyHost?.list().find((terminal) => terminal.id === activeTerminalId)?.cwd ?? null;
+  const target = voiceSession?.target();
+  const boundCwd = target?.kind === 'chat' ? (registry.sessions.get(target.sessionId)?.cwd ?? voiceInfoCache.get(target.sessionId)?.cwd ?? null) : null;
+  return resolveProject({ focusedCwd: focused, boundCwd, projects: workspaceProjects() });
+}
+
+function voiceRoot() {
+  return voiceProject().root ?? workspaceProjects()[0] ?? null;
+}
+
+function refreshVocabulary(root) {
+  if (!root || voiceScanning.has(root)) return;
+  if (Date.now() - vocabularyStore.load(root).scannedAt < VOCABULARY_MAX_AGE_MS) return;
+  voiceScanning.add(root);
+  scanVocabulary({ root, run: runText })
+    .then(({ terms }) => vocabularyStore.save(root, { terms, scannedAt: Date.now() }))
+    .catch((error) => log(`vocabulary scan failed: ${error}`))
+    .finally(() => voiceScanning.delete(root));
+}
+
+async function voiceGhDigest() {
+  const root = voiceRoot();
+  if (!root) return { speech: 'Abra um projeto no workspace primeiro.', lines: [] };
+  try {
+    const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
+    const repo = githubRepoOf(remote);
+    if (!repo) return { speech: 'Esse projeto não está no GitHub.', lines: [] };
+    let defaultBranch = 'main';
+    try {
+      defaultBranch = (await runText('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: root })).trim().replace(/^[^/]+\//, '') || 'main';
+    } catch {
+      // no origin/HEAD: main
+    }
+    const results = {};
+    await Promise.all(
+      Object.entries(ghQueries(repo, defaultBranch)).map(async ([key, args]) => {
+        results[key] = JSON.parse(await runText('gh', args, { cwd: root }));
+      }),
+    );
+    lastGhDigest = buildDigest(results);
+  } catch (error) {
+    log(`gh digest failed: ${error}`);
+    lastGhDigest = buildDigest({ error: String(error) });
+  }
+  return lastGhDigest;
+}
+
+async function voiceResolveTask(number) {
+  const root = voiceRoot();
+  if (!root) return { none: true };
+  const worktrees = worktreeCache.get(root) ?? (await listWorktrees(root).catch(() => [])) ?? [];
+  const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
+  const conversations = [];
+  for (const folder of folders) {
+    for (const conversation of await listConversations(claudeProjectDir(folder))) conversations.push({ ...conversation, cwd: folder });
+  }
+  const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees });
+  if (found.sessionId) {
+    const snapshot = await readTranscriptSnapshot(claudeTranscriptPath(found.cwd, found.sessionId)).catch(() => null);
+    const title = conversations.find((item) => item.sessionId === found.sessionId)?.title ?? null;
+    voiceInfoCache.set(found.sessionId, { title, lastMessage: snapshot?.lastAssistantMessage ?? null, cwd: found.cwd });
+  }
+  return found;
+}
+
+function ptyOfSession(sessionId) {
+  const session = registry.sessions.get(sessionId);
+  if (session?.term?.VIZOR_PTY_ID && ptyHost?.list().some((terminal) => terminal.id === session.term.VIZOR_PTY_ID && terminal.alive))
+    return session.term.VIZOR_PTY_ID;
+  for (const [ptyId, resumed] of resumedChats) if (resumed === sessionId) return ptyId;
+  return null;
+}
+
+async function voiceOpenOrFocus({ sessionId, cwd }) {
+  workspaceWindow?.show();
+  if (!ptyOfSession(sessionId)) {
+    const live = readLiveSessionIds();
+    if (live?.has(sessionId)) {
+      // Running in another terminal: two processes on one history would be
+      // worse than not opening it.
+      const outside = registry.sessions.get(sessionId);
+      if (outside) huntSessionTab(outside).catch?.((error) => log(`voice focus failed: ${error}`));
+      return { sessionId };
+    }
+    const opened = openTerminal({ cwd, kind: 'resume', sessionId });
+    if (opened.error) log(`voice resume failed: ${opened.error}`);
+  }
+  setTimeout(() => workspaceWindow?.focusSession(sessionId), 400);
+  return { sessionId };
+}
+
+function voiceOpenNew({ cwd, prompt }) {
+  workspaceWindow?.show();
+  const opened = openTerminal({ cwd, kind: 'claude', prompt });
+  if (opened.error) return Promise.resolve({ sessionId: null });
+  return new Promise((resolve) => {
+    pendingNewChats.set(opened.id, resolve);
+    setTimeout(() => {
+      if (pendingNewChats.delete(opened.id)) resolve({ sessionId: null });
+    }, 30000);
+  });
+}
+
+// The same rule as the 💬 comments: type into the tab only between turns and
+// only when its own claude is the job in front; otherwise wait for the turn.
+const PROMPT_ENTER_DELAY_MS = 150;
+async function voiceDeliverPrompt(sessionId, text) {
+  if (!sessionId) return 'failed';
+  const ptyId = ptyOfSession(sessionId);
+  if (!ptyId) return 'failed';
+  const session = registry.sessions.get(sessionId) ?? { id: sessionId, status: 'done' };
+  if (!safeToTypeIdle(session, Date.now()) || !claudeInPty(session, ptyId)) return 'hold';
+  ptyHost.write(ptyId, bracketedPaste(text));
+  await new Promise((resolve) => setTimeout(resolve, PROMPT_ENTER_DELAY_MS));
+  if (!claudeInPty(session, ptyId)) return 'failed';
+  ptyHost.write(ptyId, '\r');
+  return 'sent';
+}
+
+async function voiceAskManager(text) {
+  const github = lastGhDigest ? `\n\n(GitHub do projeto agora: ${lastGhDigest.speech})` : '';
+  const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}` });
+  tokenBudget.add(tokensUsed);
+  return reply;
+}
+
+async function voiceSummarize(plain) {
+  if (isEconomyMode()) return null;
+  const result = await runClaude({
+    prompt: `Resuma em no máximo duas frases curtas, em pt-BR, pra ser falado em voz alta, sem markdown e sem código:\n\n${plain.slice(0, 4000)}`,
+    timeoutMs: 15000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  return result?.text?.trim() || null;
+}
+
+function voiceAnswerGuard(choice) {
+  const ask = guardAsks.pending().at(-1);
+  if (!ask) return false;
+  const request = guardAsks.answer(ask.id, choice);
+  if (request) recordGuardOutcome({ ...request, summary: ask.summary }, GUARD_OUTCOMES[choice] ?? choice);
+  return Boolean(request);
+}
+
+function voiceFindChat(query) {
+  const wanted = String(query ?? '').toLowerCase();
+  const number = Number(wanted);
+  const root = voiceRoot();
+  if (Number.isInteger(number) && number > 0 && root) {
+    const linked = taskLinks.linksFor(root, number).find((id) => registry.sessions.has(id) || voiceInfoCache.has(id));
+    if (linked) return linked;
+  }
+  const match = listWithDisplayNames().find((session) =>
+    [session.displayName, session.title, session.promptPreview, session.cwd && path.basename(session.cwd)]
+      .filter(Boolean)
+      .some((name) => String(name).toLowerCase().includes(wanted)),
+  );
+  return match?.id ?? null;
+}
+
+function voiceSessionInfo(sessionId) {
+  const session = registry.sessions.get(sessionId);
+  const cached = voiceInfoCache.get(sessionId) ?? {};
+  return {
+    title: session?.title ?? cached.title ?? (session ? displayNameOf(session) : null),
+    lastMessage: session?.lastMessage ?? cached.lastMessage ?? null,
+    cwd: session?.cwd ?? cached.cwd ?? null,
+  };
+}
+
+function createVoiceSessionForApp() {
+  return createVoiceSession({
+    say: (item) => voiceArbiter?.say(item),
+    flushSpeech: () => voiceArbiter?.flush(),
+    correct: (text) => {
+      const root = voiceRoot();
+      refreshVocabulary(root);
+      const { terms, learned } = root ? vocabularyStore.load(root) : { terms: [], learned: [] };
+      return correctTranscript(text, terms, learned);
+    },
+    ghDigest: voiceGhDigest,
+    showLines: (lines) => {
+      if (!lines.length) return;
+      sendToRenderer('tooltip', { projectName: 'GitHub', text: lines.slice(0, 8).join(' · '), kind: 'hint', sessionId: null });
+      showTooltip();
+    },
+    resolveTask: voiceResolveTask,
+    openOrFocus: voiceOpenOrFocus,
+    openNew: voiceOpenNew,
+    linkTask: (number, sessionId) => {
+      const root = voiceRoot();
+      if (root && sessionId) taskLinks.link(root, number, sessionId);
+    },
+    sessionInfo: voiceSessionInfo,
+    deliverPrompt: voiceDeliverPrompt,
+    askManager: voiceAskManager,
+    answerGuard: voiceAnswerGuard,
+    workspace: (action, file) => {
+      workspaceWindow?.show();
+      workspaceWindow?.send('workspace:voice', { action, file: file ?? null });
+    },
+    summarize: voiceSummarize,
+    economy: () => isEconomyMode(),
+    learn: (pair) => {
+      const root = voiceRoot();
+      if (root) vocabularyStore.learn(root, pair);
+    },
+    findChat: voiceFindChat,
+    dictation: (on) => voiceListener?.dictation(on),
+    projectRoot: () => voiceRoot(),
+  });
 }
 
 function createMicWindow() {
@@ -3286,11 +3556,14 @@ function startVoice() {
     voiceArbiter?.noteUserTurn();
     onVoiceUtterance(text);
   });
+  voiceSession = createVoiceSessionForApp();
+  refreshVocabulary(voiceRoot());
   voiceState = 'sleeping';
   createMicWindow();
 }
 
 function stopVoice() {
+  voiceSession = null;
   voiceArbiter?.flush();
   voiceArbiter = null;
   voiceListener?.close();
@@ -3383,6 +3656,7 @@ function reapDeadSessions() {
       editTracker.forgetSession(sessionId);
       commentStore.forgetSession(sessionId);
       guardAsks.dropSession(sessionId);
+      voiceSession?.onSessionEnded(sessionId);
     }
 }
 

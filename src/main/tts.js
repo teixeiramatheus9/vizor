@@ -71,7 +71,8 @@ export function systemVoiceCommand(text, volume, platform = process.platform, us
     return ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]];
   }
   // spd-say wants -100..100.
-  return ['spd-say', ['-l', 'pt-BR', '-i', String(Math.round(volume * 2 - 100)), '--', text]];
+  // -w: exits only once the line was said, so onDone means silence.
+  return ['spd-say', ['-w', '-l', 'pt-BR', '-i', String(Math.round(volume * 2 - 100)), '--', text]];
 }
 
 // The system voice covers the gap while a model downloads.

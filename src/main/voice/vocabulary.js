@@ -231,3 +231,22 @@ export function createVocabularyStore({ dir, readFile, writeFile, rename }) {
     },
   };
 }
+
+// The part of what was heard that the user just corrected: "roda os testes
+// do rubik guard" + "não, é rule-guard" → "rubik guard".
+export function closestPhrase(text, meant) {
+  const target = phoneticKey(meant);
+  const tokens = String(text ?? '').split(/\s+/).filter(Boolean);
+  let best = null;
+  for (let index = 0; index < tokens.length; index++) {
+    for (let length = 1; length <= 4 && index + length <= tokens.length; length++) {
+      const words = tokens.slice(index, index + length);
+      if (isFunctionWord(words[0]) || isFunctionWord(words.at(-1))) continue;
+      const key = phoneticKey(words.join(' '));
+      if (key.length < 3) continue;
+      const gap = distance(key, target) / Math.max(key.length, target.length);
+      if (!best || gap < best.gap) best = { gap, phrase: words.join(' ') };
+    }
+  }
+  return best && best.gap <= 0.6 ? best.phrase.replace(/[?!.,;:…]+$/, '') : null;
+}
