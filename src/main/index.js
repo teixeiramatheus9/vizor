@@ -123,7 +123,7 @@ import {
   claudeTranscriptPath,
   claudeProjectDir,
 } from './cc-sessions.js';
-import { readInboundPolicy, setInboundPolicy } from './claude-settings.js';
+import { readClaudeSettingsFile, readInboundPolicy, setInboundPolicy } from './claude-settings.js';
 import {
   probeSystemEventsAutomation,
   accessibilityLostAfterUpdate,
@@ -2761,12 +2761,12 @@ ipcMain.on('drag:end', () => {
 // app's own binary into the hook runtime — no system Node required.
 const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
 
+// null = the file exists but does not read as settings: every writer below
+// leaves it alone rather than replace the user's config with only our hooks.
 function readClaudeSettings() {
-  try {
-    return JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
-  } catch {
-    return {}; // no settings yet — start from empty
-  }
+  const settings = readClaudeSettingsFile(() => fs.readFileSync(claudeSettingsPath, 'utf8'));
+  if (!settings) log(`${claudeSettingsPath} is unreadable: left untouched`);
+  return settings;
 }
 
 // Every write backs the file up first: this is the user's global Claude Code
@@ -2782,6 +2782,7 @@ function writeClaudeSettings(next) {
 function removeHooksInstalled() {
   try {
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = removeAppHooks(settings);
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
     writeClaudeSettings(next);
@@ -2805,6 +2806,7 @@ function ensureHooksInstalled() {
       fs.writeFileSync(shim.path, shim.content);
     }
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = ensureHooks(settings, command);
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
     writeClaudeSettings(next);
@@ -2849,6 +2851,7 @@ function syncGuardHook() {
     const compiledFile = path.join(rulesDir, 'compiladas.json');
     rulesUnreadable = fs.existsSync(compiledFile) && !loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
     const settings = readClaudeSettings();
+    if (!settings) return;
     let next;
     if (managerConfig.guardEnabled !== false && approvedRuleCount() > 0) {
       const { command, offline, shim } = guardCommand({
@@ -2882,6 +2885,7 @@ function removeGuardIfOnlineOnly() {
   if (!guardInstalled || guardOffline) return;
   try {
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = removeGuard(settings);
     if (JSON.stringify(next) !== JSON.stringify(settings)) writeClaudeSettings(next);
     log('rule guard removed on quit (no offline runtime)');
@@ -3215,6 +3219,7 @@ ipcMain.handle('inbound:get', () => readInboundPolicy(readClaudeSettings()));
 
 ipcMain.handle('inbound:set', (_event, value) => {
   const settings = readClaudeSettings();
+  if (!settings) return readInboundPolicy(null);
   const next = setInboundPolicy(settings, value);
   if (!next) {
     log(`inbound policy refused: ${value}`);
