@@ -24,6 +24,7 @@ import { guardCommand, installGuardScript } from './guard-runtime.js';
 import { createGuardAsks } from './guard-asks.js';
 import { createRulesStore } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
+import { normalizeMic, normalizeMicList } from '../renderer/mic-choice.js';
 import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
 import { createSpeechArbiter } from './voice/arbiter.js';
@@ -390,6 +391,7 @@ let voiceListener = null;
 let voiceArbiter = null;
 let voiceSession = null;
 let micWindow = null;
+let micDevices = []; // what the mic window found, for the settings picker
 let voiceState = 'off';
 let voiceDownload = null; // { percent } | { error } while the models come down
 let voiceRestarts = 0;
@@ -2429,6 +2431,8 @@ ipcMain.handle('config:set', (_event, partial) => {
   if (partial?.voiceModel === 'parakeet' || partial?.voiceModel === 'base') allowed.voiceModel = partial.voiceModel;
   if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
   if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
+  if (partial && 'voiceMic' in partial) allowed.voiceMic = normalizeMic(partial.voiceMic);
+  const micChanged = 'voiceMic' in allowed && JSON.stringify(allowed.voiceMic) !== JSON.stringify(managerConfig.voiceMic ?? null);
   const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
     ('voiceModel' in allowed && allowed.voiceModel !== managerConfig.voiceModel);
   // Not config state: the OS holds the truth, so the flag is applied and
@@ -2441,6 +2445,9 @@ ipcMain.handle('config:set', (_event, partial) => {
     }
   }
   managerConfig = { ...managerConfig, ...allowed };
+  // Muted by voice, the mic stays off: it only learns which one to open next.
+  if (micChanged)
+    micWindow?.webContents.send('mic:control', { command: voiceState === 'muted' ? 'stop' : 'restart', mic: managerConfig.voiceMic });
   try {
     saveConfig(configFile, managerConfig);
   } catch (error) {
@@ -3586,6 +3593,8 @@ function voiceStatus() {
     model: managerConfig.voiceModel ?? 'parakeet',
     narration: managerConfig.voiceNarration !== false,
     summary: managerConfig.voiceSummary ?? 'always',
+    mic: managerConfig.voiceMic ?? null,
+    mics: micDevices,
     download: voiceDownload,
     target: target?.kind === 'chat' ? `chat ${title ? title.slice(0, 40) : ''}`.trim() : voiceListener ? 'gerente' : null,
   };
@@ -3677,7 +3686,9 @@ function createMicWindow() {
     height: 100,
     webPreferences: { preload: path.join(rendererDir, 'mic-preload.cjs'), contextIsolation: true, backgroundThrottling: false },
   });
-  micWindow.webContents.once('did-finish-load', () => micWindow?.webContents.send('mic:control', 'start'));
+  micWindow.webContents.once('did-finish-load', () =>
+    micWindow?.webContents.send('mic:control', { command: 'start', mic: managerConfig.voiceMic ?? null }),
+  );
   micWindow.loadFile(path.join(rendererDir, 'mic.html'));
 }
 
@@ -3788,6 +3799,13 @@ function stopVoice() {
 const fromMic = (event) => Boolean(micWindow && !micWindow.isDestroyed() && event.sender === micWindow.webContents);
 ipcMain.on('mic:chunk', (event, samples) => {
   if (fromMic(event)) voiceListener?.feed(samples);
+});
+ipcMain.on('mic:devices', (event, list) => {
+  if (!fromMic(event)) return;
+  const next = normalizeMicList(list);
+  if (JSON.stringify(next) !== JSON.stringify(micDevices)) log(`mic devices: ${next.map((mic) => mic.label).join(' | ') || 'none'}`);
+  micDevices = next;
+  sendState();
 });
 ipcMain.on('mic:status', (event, status) => {
   if (fromMic(event)) log(`mic: ${status}`);

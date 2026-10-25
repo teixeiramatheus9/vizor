@@ -31,6 +31,7 @@ export const DEFAULT_CONFIG = {
   voiceModel: 'parakeet',
   voiceNarration: true,
   voiceSummary: 'always',
+  voiceMic: null, // { id, label } pinned in the settings, or null for the system default
 };
 
 const stringList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);

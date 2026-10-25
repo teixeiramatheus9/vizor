@@ -4,5 +4,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('mic', {
   chunk: (samples) => ipcRenderer.send('mic:chunk', samples),
   status: (status) => ipcRenderer.send('mic:status', String(status)),
+  devices: (mics) => ipcRenderer.send('mic:devices', mics),
   onControl: (callback) => ipcRenderer.on('mic:control', (_event, command) => callback(command)),
 });

@@ -847,6 +847,22 @@ const voiceEnabledBox = document.getElementById('voice-enabled');
 const voiceNarrationBox = document.getElementById('voice-narration');
 const voiceModelSelect = document.getElementById('voice-model');
 const voiceSummarySelect = document.getElementById('voice-summary');
+const voiceMicSelect = document.getElementById('voice-mic');
+let voiceMics = [];
+let pinnedMic = null;
+
+// The mics the mic window found; a pinned one that is unplugged stays listed,
+// marked, so the choice is not lost (the system default covers meanwhile).
+function renderMics(voice) {
+  if (document.activeElement === voiceMicSelect) return;
+  voiceMics = voice.mics ?? [];
+  const pinned = voice.mic;
+  pinnedMic = pinned;
+  const options = [new Option('padrão do sistema', ''), ...voiceMics.map((mic) => new Option(mic.label, mic.id))];
+  if (pinned && !voiceMics.some((mic) => mic.id === pinned.id)) options.push(new Option(`${pinned.label} (desconectado)`, pinned.id));
+  voiceMicSelect.replaceChildren(...options);
+  voiceMicSelect.value = pinned?.id ?? '';
+}
 
 function renderVoice(voice) {
   if (!voice) return;
@@ -857,6 +873,7 @@ function renderVoice(voice) {
   document.getElementById('voice-narration-state').textContent = voice.narration ? '[on]' : '[off]';
   if (document.activeElement !== voiceModelSelect) voiceModelSelect.value = voice.model;
   if (document.activeElement !== voiceSummarySelect) voiceSummarySelect.value = voice.summary;
+  renderMics(voice);
   document.getElementById('voice-mode-status').textContent = `# ${VOICE_STATE_TEXT[voice.state] ?? voice.state}${voice.target ? ` · falando com ${voice.target}` : ''}`;
   document.getElementById('voice-download').textContent = voice.download?.error
     ? `# não consegui baixar os modelos: ${voice.download.error}`
@@ -895,6 +912,11 @@ voiceEnabledBox.addEventListener('change', () => window.manager.setConfig({ voic
 voiceNarrationBox.addEventListener('change', () => window.manager.setConfig({ voiceNarration: voiceNarrationBox.checked }));
 voiceModelSelect.addEventListener('change', () => window.manager.setConfig({ voiceModel: voiceModelSelect.value }));
 voiceSummarySelect.addEventListener('change', () => window.manager.setConfig({ voiceSummary: voiceSummarySelect.value }));
+voiceMicSelect.addEventListener('change', () => {
+  const id = voiceMicSelect.value;
+  const label = voiceMics.find((mic) => mic.id === id)?.label ?? (pinnedMic?.id === id ? pinnedMic.label : id);
+  window.manager.setConfig({ voiceMic: id ? { id, label } : null });
+});
 document.getElementById('voice-rescan').addEventListener('click', async () => {
   await window.manager.voiceRescan();
   renderVocabulary();
