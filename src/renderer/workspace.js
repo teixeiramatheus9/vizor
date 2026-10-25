@@ -672,7 +672,8 @@ function renderGraphColumn() {
     const mine = impacts.find((impact) => impact.sessionId === maestro.focusedId);
     const target = Object.keys(mine?.modules ?? {}).find((id) => mine.modules[id] === 'touched') ?? Object.keys(mine?.modules ?? {})[0];
     const node = target && layoutOf(root).modules[target];
-    if (node) graphView = { ...graphView, x: 500 - node.x * graphView.scale, y: 500 - node.y * graphView.scale };
+    // Not zoomed in, the whole map shows; zoomed, it follows the músico.
+    if (node && graphView.scale > 1) graphView = { ...graphView, x: 500 - node.x * graphView.scale, y: 500 - node.y * graphView.scale };
   }
   // Redrawn only when something it shows changed (review I3: a 1.4 MB SVG on
   // every state push stalls big repos).
