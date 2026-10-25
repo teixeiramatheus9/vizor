@@ -1,7 +1,27 @@
 import { Terminal } from '../../node_modules/@xterm/xterm/lib/xterm.mjs';
 import { FitAddon } from '../../node_modules/@xterm/addon-fit/lib/addon-fit.mjs';
 import { WebglAddon } from '../../node_modules/@xterm/addon-webgl/lib/addon-webgl.mjs';
-import { renderSidebar, renderTabs, renderTerminalPlaceholder, renderTopBar } from './workspace-view.js';
+import {
+  renderCards,
+  renderFileView,
+  renderInspectorHeader,
+  renderRail,
+  renderSidebar,
+  renderTabs,
+  renderTaskPicker,
+  renderTerminalPlaceholder,
+  renderTimeline,
+  renderTopBar,
+} from './workspace-view.js';
+import {
+  acceptsFile,
+  initialInspector,
+  nextFileRequest,
+  onFollow,
+  onPickTask,
+  onSelect,
+  onTask,
+} from './inspector-state.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -19,6 +39,21 @@ let activeTab = null;
 const unavailable = new Map();
 const titles = {};
 const views = new Map(); // pty id → { term, fit, el }
+
+const inspectorHead = document.getElementById('inspector-head');
+const taskPickerEl = document.getElementById('task-picker');
+const timelineEl = document.getElementById('timeline');
+const detailEl = document.getElementById('detail');
+const railEl = document.getElementById('rail');
+const prefs = { mode: 'arquivo', width: 'compact' };
+let lastOpenWidth = 'compact';
+let inspector = initialInspector(null);
+let inspectorTask = null;
+let inspectorSummaries = [];
+let fileView = null;
+let scrollPending = false; // scroll to the selection once its element renders
+let fileSignature = null; // what the current fileView was built from
+let pickerSignature = null;
 
 function cssVar(name) {
   return getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -122,6 +157,152 @@ function render() {
   renderTerminalArea();
 }
 
+// --- inspector (#93) ---------------------------------------------------------
+// Never calls focus(): the terminal keeps the keyboard while changes update.
+
+function selectedEdit() {
+  return inspectorTask?.edits.find((edit) => edit.id === inspector.selectedId) ?? null;
+}
+
+function renderInspector() {
+  document.body.dataset.inspectorWidth = prefs.width;
+  const edits = inspectorTask?.edits ?? [];
+  const writing = edits.some((edit) => edit.status === 'writing');
+  railEl.innerHTML = renderRail({ editCount: edits.length, writing });
+  inspectorHead.innerHTML = renderInspectorHeader({ mode: prefs.mode, width: prefs.width, editCount: edits.length, writing });
+  // Rebuilt only when it changes: an open dropdown must survive edit pings.
+  const picker = inspector.sessionId ? renderTaskPicker(inspectorSummaries, inspector.taskId) : '';
+  if (picker !== pickerSignature) {
+    pickerSignature = picker;
+    taskPickerEl.innerHTML = picker;
+  }
+  timelineEl.innerHTML = renderTimeline(inspectorTask, inspector.selectedId, inspector);
+  // Keep the reader's place: the selected item stays where it was on screen
+  // even when the AI inserts lines above it.
+  const anchorSelector =
+    prefs.mode === 'cards' ? '[data-card][aria-current="true"]' : '[data-banner][aria-current="true"]';
+  const anchorBefore = detailEl.querySelector(anchorSelector);
+  const offsetBefore = anchorBefore ? anchorBefore.offsetTop - detailEl.scrollTop : null;
+  if (prefs.mode === 'cards') detailEl.innerHTML = renderCards(inspectorTask, inspector.selectedId);
+  else if (fileView && !fileView.error) {
+    const byId = Object.fromEntries(edits.map((edit) => [edit.id, edit]));
+    detailEl.innerHTML = renderFileView(fileView, byId, inspector.selectedId);
+  } else detailEl.innerHTML = '';
+  const anchor = detailEl.querySelector(anchorSelector);
+  // A pending scroll waits until its target exists: following an edit that
+  // is still being written, the banner only appears once it lands.
+  if (scrollPending && anchor) {
+    scrollPending = false;
+    anchor.scrollIntoView({ block: 'center' });
+    timelineEl.querySelector('[data-edit][aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  } else if (anchor && offsetBefore !== null) detailEl.scrollTop = anchor.offsetTop - offsetBefore;
+}
+
+// What the file view depends on: the selected file's edits. Pings about
+// other files (or a reason arriving) must not re-fetch a 2 MB file.
+function selectedFileSignature() {
+  const edit = selectedEdit();
+  if (!edit) return null;
+  return `${inspector.sessionId}|${inspector.taskId}|${edit.filePath}|${(inspectorTask?.edits ?? [])
+    .filter((item) => item.filePath === edit.filePath)
+    .map((item) => `${item.id}:${item.status}:${item.endedAt}`)
+    .join(',')}`;
+}
+
+async function loadFileView() {
+  const edit = selectedEdit();
+  if (prefs.mode !== 'arquivo' || !edit) {
+    fileView = null;
+    fileSignature = null;
+    renderInspector();
+    return;
+  }
+  // Collapsed: nothing to show, fetch when it opens.
+  if (prefs.width === 'collapsed') {
+    renderInspector();
+    return;
+  }
+  const signature = selectedFileSignature();
+  if (fileView && signature === fileSignature) {
+    renderInspector();
+    return;
+  }
+  // Nothing on disk to show yet for an edit in flight.
+  if (edit.status === 'writing') {
+    fileView = { relPath: edit.relPath, rows: [], anchors: {}, unplaced: [], note: 'writing' };
+    renderInspector();
+    return;
+  }
+  const request = nextFileRequest(inspector);
+  inspector = request.state;
+  const result = await window.vizor.getFileView(inspector.sessionId, inspector.taskId, edit.filePath);
+  if (!acceptsFile(inspector, request.token)) return;
+  fileView = result;
+  fileSignature = signature;
+  renderInspector();
+}
+
+async function refreshInspector({ scroll = false } = {}) {
+  const sessionId = inspector.sessionId;
+  if (!sessionId) {
+    inspectorTask = null;
+    inspectorSummaries = [];
+    fileView = null;
+    renderInspector();
+    return;
+  }
+  const before = inspector.selectedId;
+  const { task, summaries } = await window.vizor.getTaskEdits(sessionId, inspector.taskId);
+  if (inspector.sessionId !== sessionId) return; // switched meanwhile
+  inspectorTask = task;
+  inspectorSummaries = summaries;
+  inspector = onTask(inspector, task);
+  // Scroll only when the selection moved (following, or a click) — never on a
+  // plain refresh of the same selection.
+  if (scroll || inspector.selectedId !== before) scrollPending = true;
+  await loadFileView();
+}
+
+function selectInspectorSession(sessionId) {
+  if (inspector.sessionId === sessionId) return;
+  inspector = initialInspector(sessionId);
+  inspectorTask = null;
+  fileView = null;
+  refreshInspector({ scroll: true });
+}
+
+async function savePrefs(change) {
+  Object.assign(prefs, change);
+  if (prefs.width !== 'collapsed') lastOpenWidth = prefs.width;
+  renderInspector();
+  await window.vizor.setPrefs({ mode: prefs.mode, width: prefs.width });
+}
+
+window.vizor.onEditsChanged(({ sessionId }) => {
+  if (sessionId === inspector.sessionId) refreshInspector();
+});
+
+window.vizor.getPrefs().then((saved) => {
+  Object.assign(prefs, saved);
+  if (prefs.width !== 'collapsed') lastOpenWidth = prefs.width;
+  renderInspector();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'e') {
+    event.preventDefault();
+    savePrefs({ width: prefs.width === 'collapsed' ? lastOpenWidth : 'collapsed' }).then(() => loadFileView());
+  }
+});
+
+document.addEventListener('change', (event) => {
+  const picker = event.target.closest('[data-task-picker]');
+  if (!picker) return;
+  inspector = onPickTask(inspector, picker.value || null);
+  fileView = null;
+  refreshInspector({ scroll: true });
+});
+
 window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
   if (theme) document.body.dataset.theme = theme;
   if (palette) document.body.dataset.palette = palette;
@@ -149,6 +330,45 @@ new ResizeObserver(() => fitActive()).observe(termHost);
 
 document.addEventListener('click', async (event) => {
   const target = event.target;
+  const editRow = target.closest('[data-edit]');
+  if (editRow) {
+    inspector = onSelect(inspector, editRow.dataset.edit);
+    scrollPending = true;
+    await loadFileView();
+    return;
+  }
+  const banner = target.closest('[data-banner]');
+  if (banner) {
+    inspector = onSelect(inspector, banner.dataset.banner);
+    renderInspector();
+    return;
+  }
+  if (target.closest('[data-follow]')) {
+    inspector = onFollow(inspector);
+    fileView = null;
+    refreshInspector({ scroll: true });
+    return;
+  }
+  const mode = target.closest('[data-mode]');
+  if (mode) {
+    scrollPending = true;
+    await savePrefs({ mode: mode.dataset.mode });
+    await loadFileView();
+    return;
+  }
+  if (target.closest('[data-width-next]')) {
+    savePrefs({ width: prefs.width === 'wide' ? 'compact' : 'wide' });
+    return;
+  }
+  if (target.closest('[data-collapse]')) {
+    savePrefs({ width: 'collapsed' });
+    return;
+  }
+  if (target.closest('[data-expand]')) {
+    await savePrefs({ width: lastOpenWidth });
+    await loadFileView();
+    return;
+  }
   const remove = target.closest('[data-remove-project]');
   if (remove) {
     window.vizor.removeProject(remove.dataset.removeProject);
@@ -206,6 +426,7 @@ document.addEventListener('click', async (event) => {
     selectedId = row.dataset.session;
     const selection = findSession(selectedId);
     if (selection?.worktree) selectedWorktree = selection.worktree.path;
+    selectInspectorSession(selectedId);
     if (selection?.session.ptyId) {
       activeTab = selection.session.ptyId;
       // The pty may live in another folder (cd before claude): show its tabs (#119).

@@ -321,3 +321,264 @@ button:hover {
 [hidden] {
   display: none !important;
 }
+
+/* --- inspector (#93): the terminal is the protagonist; changes sit beside it */
+body[data-inspector-width='compact'] #columns {
+  grid-template-columns: 240px 1fr 380px;
+}
+
+body[data-inspector-width='wide'] #columns {
+  grid-template-columns: 240px 1fr 50%;
+}
+
+body[data-inspector-width='collapsed'] #columns {
+  grid-template-columns: 240px 1fr 36px;
+}
+
+#inspector {
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+
+#inspector-head .modes {
+  display: inline-flex;
+  gap: 2px;
+}
+
+#inspector-head button {
+  border: none;
+  padding: 1px 8px;
+  color: var(--text-3);
+}
+
+#inspector-head button[aria-pressed='true'] {
+  background: var(--hairline);
+  color: var(--text);
+}
+
+#inspector-head .spacer {
+  flex: 1;
+}
+
+#task-picker select {
+  width: 100%;
+  font: inherit;
+  color: var(--text-2);
+  background: var(--bg-footer);
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  padding: 3px 8px;
+}
+
+#timeline {
+  max-height: 38%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+#timeline [data-follow] {
+  display: block;
+  margin: 6px 8px;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.edit {
+  padding: 4px 10px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.edit:hover {
+  background: var(--hairline);
+}
+
+.edit[aria-selected='true'] {
+  background: var(--hairline);
+  border-left-color: var(--accent);
+}
+
+.edit-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.edit .seq {
+  color: var(--muted);
+}
+
+.edit-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edit .count,
+.edit .time {
+  color: var(--muted);
+}
+
+.edit .count {
+  margin-left: auto;
+}
+
+.edit-state {
+  color: var(--warn);
+}
+
+.status-not-applied .edit-path,
+.card.status-not-applied header {
+  color: var(--dim);
+  text-decoration: line-through;
+}
+
+.status-writing .icon {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.reason {
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#detail {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+#inspector .empty,
+#inspector .note {
+  padding: 12px 10px;
+  color: var(--muted);
+}
+
+.card {
+  margin: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.card[aria-current='true'] {
+  border-color: var(--accent);
+}
+
+.card header,
+.file-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-header);
+  color: var(--text-3);
+}
+
+.card .reason {
+  padding: 4px 8px 0;
+}
+
+.code {
+  margin: 0;
+  padding: 4px 0;
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.row {
+  padding: 0 8px;
+}
+
+.code.filediff .row {
+  display: flex;
+  padding: 0;
+}
+
+.gutter {
+  flex: none;
+  width: 36px;
+  padding-right: 6px;
+  text-align: right;
+  color: var(--dim);
+  user-select: none;
+}
+
+.row.add {
+  background: rgba(63, 185, 80, 0.14);
+}
+
+.row.del {
+  background: rgba(248, 81, 73, 0.14);
+}
+
+.banner,
+.file-unplaced {
+  margin: 4px 8px 2px;
+  padding: 3px 8px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-header);
+  color: var(--text-3);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  white-space: normal;
+}
+
+.banner[aria-current='true'] {
+  color: var(--text);
+}
+
+#rail {
+  display: none;
+}
+
+body[data-inspector-width='collapsed'] #inspector > :not(#rail) {
+  display: none;
+}
+
+body[data-inspector-width='collapsed'] #rail {
+  display: flex;
+  justify-content: center;
+  padding-top: 8px;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  border: none;
+}
+
+.rail .badge {
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 9px;
+  background: var(--hairline);
+  color: var(--text-2);
+  text-align: center;
+}
+
+.rail .dot.writing {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
+}

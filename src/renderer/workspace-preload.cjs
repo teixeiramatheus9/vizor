@@ -14,4 +14,9 @@ contextBridge.exposeInMainWorld('vizor', {
   onTerminalData: (callback) => ipcRenderer.on('pty:data', (_event, payload) => callback(payload)),
   onTerminalExit: (callback) => ipcRenderer.on('pty:exit', (_event, payload) => callback(payload)),
   focusOutside: (sessionId) => ipcRenderer.invoke('warp:focus', sessionId),
+  getTaskEdits: (sessionId, taskId) => ipcRenderer.invoke('edits:task', { sessionId, taskId }),
+  getFileView: (sessionId, taskId, filePath) => ipcRenderer.invoke('edits:file', { sessionId, taskId, filePath }),
+  getPrefs: () => ipcRenderer.invoke('workspace:prefs', {}),
+  setPrefs: (set) => ipcRenderer.invoke('workspace:prefs', { set }),
+  onEditsChanged: (callback) => ipcRenderer.on('edits:changed', (_event, payload) => callback(payload)),
 });

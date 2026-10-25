@@ -4,6 +4,13 @@ import {
   escapeHtml,
   renderEmpty,
   renderSidebar,
+  editStatusIcon,
+  renderCards,
+  renderFileView,
+  renderInspectorHeader,
+  renderRail,
+  renderTaskPicker,
+  renderTimeline,
   renderTabs,
   renderTerminalPlaceholder,
   renderTopBar,
@@ -156,4 +163,128 @@ describe('selected worktree (#119)', () => {
     expect(html).toContain('data-worktree="/r" aria-current="true"');
   });
 });
+});
+
+describe('inspector', () => {
+  const at = new Date(2026, 9, 24, 14, 2).getTime();
+  const ev = (id, seq, extra = {}) => ({
+    id, seq, filePath: `/r/${id}.js`, relPath: `${id}.js`, toolName: 'Edit', status: 'applied',
+    startedAt: at, endedAt: at, reason: `porque ${seq}`, note: null, added: 2, removed: 1, baseline: 'reverse',
+    hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: ['-velho', '+<script>&', '+novo'] }],
+    ...extra,
+  });
+  const task = (edits) => ({ id: 's:1', prompt: 'p', startedAt: at, endedAt: null, edits });
+
+  it('timeline marks the selection, shows counts, time and the reason', () => {
+    const html = renderTimeline(task([ev('a', 1), ev('b', 2, { reason: '<b>x</b>' })]), 'b', { following: true, newCount: 0 });
+    expect(html).toContain('data-edit="b" aria-selected="true"');
+    expect(html).toContain('#1');
+    expect(html).toContain('+2 −1');
+    expect(html).toContain('14:02');
+    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;');
+    expect(html).not.toContain('data-follow');
+  });
+
+  it('offers to follow the AI only when it stopped following', () => {
+    expect(renderTimeline(task([ev('a', 1)]), 'a', { following: false, newCount: 3 })).toContain(
+      '<button data-follow>seguir a IA (3)</button>',
+    );
+    expect(renderTimeline(task([ev('a', 1)]), 'a', { following: false, newCount: 0 })).not.toContain('data-follow');
+  });
+
+  it('says when the task has no change yet', () => {
+    expect(renderTimeline(task([]), null, { following: true, newCount: 0 })).toContain(
+      'Nenhuma mudança nesta tarefa ainda.',
+    );
+    expect(renderTimeline(null, null, { following: true, newCount: 0 })).toContain('Nenhuma mudança nesta tarefa ainda.');
+  });
+
+  it('labels edits that never landed or are still being written', () => {
+    expect(renderTimeline(task([ev('a', 1, { status: 'not-applied' })]), null, { following: true, newCount: 0 })).toContain(
+      'não aplicada',
+    );
+    expect(editStatusIcon({ status: 'not-applied' })).toBe(ICONS.skipped);
+    expect(editStatusIcon({ status: 'writing' })).toBe(ICONS.writing);
+    expect(editStatusIcon({ status: 'applied' })).toBe(ICONS.done);
+  });
+
+  it('cards show each edit with only its hunk, escaped', () => {
+    const html = renderCards(task([ev('a', 1), ev('b', 2)]), 'b');
+    expect(html.match(/<article class="card/g)).toHaveLength(2);
+    expect(html).toContain('data-card="b" aria-current="true"');
+    expect(html).toContain('&lt;script&gt;&amp;');
+    expect(html).not.toContain('<script>');
+  });
+
+  it('notes replace the diff with plain pt-BR copy', () => {
+    const copy = {
+      'no-diff': 'não deu pra montar o diff',
+      'too-large': 'arquivo grande demais pra mostrar o diff',
+      binary: 'arquivo binário',
+      unreadable: 'não deu pra ler o arquivo',
+    };
+    for (const [note, text] of Object.entries(copy)) {
+      expect(renderCards(task([ev('a', 1, { note, hunks: [] })]), null)).toContain(text);
+      expect(renderFileView({ relPath: 'a.js', rows: [], anchors: {}, unplaced: [], note }, {}, null)).toContain(text);
+    }
+    expect(renderTimeline(task([ev('a', 1, { note: 'no-diff', added: 0, removed: 0 })]), null, { following: true, newCount: 0 })).toContain('±?');
+  });
+
+  it('file view puts banners above their rows and escapes the code', () => {
+    const rows = [
+      { kind: 'ctx', oldNo: 1, newNo: 1, text: 'a' },
+      { kind: 'add', oldNo: null, newNo: 2, text: '<script>&' },
+    ];
+    const html = renderFileView({ relPath: 'a.js', rows, anchors: { 1: ['b'] }, unplaced: ['a'] }, { a: ev('a', 1), b: ev('b', 2) }, 'b');
+    expect(html).toContain('edições sem posição neste arquivo');
+    expect(html).toContain('data-banner="b" aria-current="true"');
+    expect(html.indexOf('data-banner="b"')).toBeLessThan(html.indexOf('&lt;script&gt;&amp;'));
+    expect(html).not.toContain('<script>');
+  });
+
+  it('header toggles the mode and the width', () => {
+    const html = renderInspectorHeader({ mode: 'cards', width: 'compact', editCount: 4, writing: false });
+    expect(html).toContain('data-mode="arquivo" aria-pressed="false"');
+    expect(html).toContain('data-mode="cards" aria-pressed="true"');
+    expect(html).toContain('title="Mais largo"');
+    expect(html).toContain('data-collapse title="Recolher"');
+    expect(renderInspectorHeader({ mode: 'arquivo', width: 'wide', editCount: 0, writing: false })).toContain('title="Mais estreito"');
+  });
+
+  it('collapsed rail shows the count and pulses while writing', () => {
+    const html = renderRail({ editCount: 7, writing: true });
+    expect(html).toContain('data-expand');
+    expect(html).toContain('title="Mostrar mudanças"');
+    expect(html).toContain('>7<');
+    expect(html).toContain('writing');
+  });
+
+  it('task picker starts with the current task and lists only the earlier ones', () => {
+    const html = renderTaskPicker(
+      [
+        { id: 't3', prompt: 'atual', startedAt: at, edits: 1 },
+        { id: 't2', prompt: '<x>', startedAt: at, edits: 2 },
+      ],
+      null,
+    );
+    expect(html).not.toContain('value="t3"');
+    expect(html).toContain('data-task-picker');
+    expect(html).toContain('<option value="">tarefa atual</option>');
+    expect(html).toContain('&lt;x&gt;');
+  });
+
+  it('an edit still being written shows no counts and says so in the file view', () => {
+    const writing = ev('w', 5, { status: 'writing', added: 0, removed: 0, hunks: [] });
+    expect(renderTimeline(task([writing]), 'w', { following: true, newCount: 0 })).not.toContain('+0 −0');
+    expect(renderFileView({ relPath: 'c.js', rows: [], anchors: {}, unplaced: [], note: 'writing' }, {}, 'w')).toContain(
+      'a IA está escrevendo neste arquivo…',
+    );
+  });
+
+  it('file view with a seal shows the whole file plus the warning (#93 review)', () => {
+    const html = renderFileView({ relPath: 'a.js', rows: [{ kind: 'ctx', oldNo: 1, newNo: 1, text: 'x' }], anchors: {}, unplaced: [], note: null, seal: 'no-diff' }, {}, null);
+    expect(html).toContain('não deu pra montar o diff');
+    expect(html).toContain('<span class="text">x</span>');
+    expect(html).not.toContain('class="unplaced"');
+  });
 });

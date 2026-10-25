@@ -37,6 +37,7 @@ import {
   quitPrompt,
   removeProject,
   clampTerminalSize,
+  matchWorktree,
   shouldAutoAdd,
   staleRoots,
   workspaceAvailable,
@@ -44,6 +45,7 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost } from './pty-host.js';
+import { fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -1391,6 +1393,92 @@ ipcMain.on('pty:title', (event, { id, title } = {}) => {
   if (fromWorkspace(event)) ptyHost?.setTitle(id, title);
 });
 ipcMain.handle('pty:buffer', (event, id) => (fromWorkspace(event) ? (ptyHost?.buffer(id) ?? '') : ''));
+
+// --- inspector (#93): the window pulls edits and files on demand --------
+const editPings = new Map(); // sessionId → throttle timer
+
+editTracker.on('change', ({ sessionId }) => {
+  if (!workspaceWindow?.isReady() || editPings.has(sessionId)) return;
+  editPings.set(
+    sessionId,
+    setTimeout(() => {
+      editPings.delete(sessionId);
+      workspaceWindow?.send('edits:changed', { sessionId });
+    }, 150),
+  );
+});
+
+function sessionWorktree(sessionId) {
+  const cwd = registry.list().find((session) => session.id === sessionId)?.cwd;
+  if (!cwd) return null;
+  const paths = [...worktreeCache.values()].flat().map((worktree) => worktree.path);
+  return matchWorktree(cwd, paths) ?? cwd;
+}
+
+function pickTask(sessionId, taskId) {
+  if (!taskId) return editTracker.currentTask(sessionId);
+  return editTracker.tasks(sessionId).find((task) => task.id === taskId) ?? null;
+}
+
+ipcMain.handle('edits:task', (event, { sessionId, taskId = null } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return { task: null, summaries: [] };
+  return {
+    task: serializeTask(pickTask(sessionId, taskId), sessionWorktree(sessionId)),
+    summaries: taskSummaries(editTracker.tasks(sessionId)),
+  };
+});
+
+// Only files the task touched: the window must not be able to read anything
+// else. The rows are cached per task and file until its contents change —
+// every edit ping would otherwise re-diff the whole file on main.
+const fileViewCache = new Map(); // `${taskId}\0${filePath}` → { start, current, dropped, edits, view }
+
+ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof filePath !== 'string')
+    return { error: 'pedido inválido' };
+  const task = pickTask(sessionId, taskId);
+  if (!task) return { error: 'arquivo fora da tarefa' };
+  const file = task.files.get(filePath);
+  const edits = task.edits.filter((edit) => edit.filePath === filePath);
+  const signature = edits.map((edit) => `${edit.id}:${edit.status}:${edit.endedAt}`).join('|');
+  const key = `${task.id}\0${filePath}`;
+  const cached = fileViewCache.get(key);
+  if (
+    cached &&
+    cached.start === file?.start &&
+    cached.current === file?.current &&
+    cached.dropped === task.snapshotsDropped &&
+    cached.edits === signature
+  )
+    return cached.view;
+  const view = fileViewFor(task, filePath, sessionWorktree(sessionId));
+  if (fileViewCache.size > 50) fileViewCache.clear();
+  fileViewCache.set(key, { start: file?.start, current: file?.current, dropped: task.snapshotsDropped, edits: signature, view });
+  return view;
+});
+
+const INSPECTOR_MODES = ['arquivo', 'cards'];
+const INSPECTOR_WIDTHS = ['compact', 'wide', 'collapsed'];
+
+ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
+  const saved = loadPersistedState().workspaceInspector ?? {};
+  const current = {
+    mode: INSPECTOR_MODES.includes(saved.mode) ? saved.mode : 'arquivo',
+    width: INSPECTOR_WIDTHS.includes(saved.width) ? saved.width : 'compact',
+  };
+  if (!fromWorkspace(event) || !set) return current;
+  const next = {
+    mode: INSPECTOR_MODES.includes(set.mode) ? set.mode : current.mode,
+    width: INSPECTOR_WIDTHS.includes(set.width) ? set.width : current.width,
+  };
+  try {
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ ...loadPersistedState(), workspaceInspector: next }));
+  } catch (error) {
+    log(`inspector prefs save failed: ${error}`);
+  }
+  return next;
+});
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.

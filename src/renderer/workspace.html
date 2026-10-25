@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
     <link rel="stylesheet" href="workspace.css" />
   </head>
-  <body>
+  <body data-inspector-width="compact">
     <header id="topbar"></header>
     <main id="columns">
       <nav id="sidebar" aria-label="Projetos"></nav>
@@ -20,14 +20,13 @@
         <div id="term-host"></div>
         <div class="placeholder" id="term-placeholder"></div>
       </section>
-      <section class="pane" id="file-pane">
-        <div class="pane-bar">arquivo vivo</div>
-        <p class="placeholder">O arquivo vivo chega na #93.</p>
-      </section>
-      <section class="pane" id="timeline-pane">
-        <div class="pane-bar">linha do tempo</div>
-        <p class="placeholder">A linha do tempo chega na #93.</p>
-      </section>
+      <aside class="pane" id="inspector" aria-label="Mudanças">
+        <div class="pane-bar" id="inspector-head"></div>
+        <div id="task-picker"></div>
+        <div id="timeline"></div>
+        <div id="detail"></div>
+        <div id="rail"></div>
+      </aside>
     </main>
     <script type="module" src="workspace.js"></script>
   </body>
