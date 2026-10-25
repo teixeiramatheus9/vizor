@@ -142,6 +142,12 @@ export const GUARD_TIMEOUT_S = 600;
 const GUARD_PROMPT_TIMEOUT_S = 25;
 const GUARD_EVENTS = ['PreToolUse', 'SessionStart', 'UserPromptSubmit'];
 
+// Only the app's own guard: the copy in <config>/guard/ (.mjs, or the .js of
+// the first builds) and the Windows shim in <config>. Another tool whose name
+// happens to contain "rule-guard" is not ours to remove (#165).
+const GUARD_SCRIPT = /[\\/]guard[\\/]rule-guard\.m?js(?=["'\s]|$)|[\\/]vizor[\\/]rule-guard\.cmd(?=["'\s]|$)/;
+export const isGuardCommand = (command) => GUARD_SCRIPT.test(String(command ?? ''));
+
 export function removeGuard(settings) {
   const next = { ...settings, hooks: { ...(settings.hooks ?? {}) } };
   for (const eventName of Object.keys(next.hooks)) {
@@ -149,7 +155,7 @@ export function removeGuard(settings) {
     const groups = next.hooks[eventName]
       .map((group) =>
         Array.isArray(group.hooks)
-          ? { ...group, hooks: group.hooks.filter((hook) => !(hook.command ?? '').includes(GUARD_MARKER)) }
+          ? { ...group, hooks: group.hooks.filter((hook) => !isGuardCommand(hook.command)) }
           : group,
       )
       .filter((group) => !Array.isArray(group.hooks) || group.hooks.length > 0);
@@ -167,7 +173,22 @@ function guardGroup(eventName, command) {
   return { hooks: [{ type: 'command', command }] };
 }
 
+// Already right: one canonical guard group per guard event and none elsewhere.
+// Where it sits among the other groups does not matter to Claude Code.
+function guardInPlace(settings, command) {
+  const hooks = settings?.hooks ?? {};
+  for (const [eventName, groups] of Object.entries(hooks)) {
+    if (!Array.isArray(groups)) continue;
+    const ours = groups.filter((group) => Array.isArray(group.hooks) && group.hooks.some((hook) => isGuardCommand(hook.command)));
+    const wanted = GUARD_EVENTS.includes(eventName) ? 1 : 0;
+    if (ours.length !== wanted) return false;
+    if (wanted && JSON.stringify(ours[0]) !== JSON.stringify(guardGroup(eventName, command))) return false;
+  }
+  return GUARD_EVENTS.every((eventName) => Array.isArray(hooks[eventName]));
+}
+
 export function ensureGuard(settings, command) {
+  if (guardInPlace(settings, command)) return settings;
   const next = removeGuard(settings);
   for (const eventName of GUARD_EVENTS) {
     next.hooks[eventName] = [...(next.hooks[eventName] ?? []), guardGroup(eventName, command)];

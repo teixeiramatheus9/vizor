@@ -16,6 +16,25 @@ export const INBOUND_DEFAULT = 'default';
 
 const SETTING_KEY = 'crossSessionInbound';
 
+// The user's ~/.claude/settings.json. Missing = start empty; anything else
+// that does not read as an object (a half-saved edit, a permission problem)
+// is null, and callers must leave the file alone: writing hooks into {} would
+// wipe the user's whole config (#165).
+export function readClaudeSettingsFile(read) {
+  let text;
+  try {
+    text = read();
+  } catch (error) {
+    return error?.code === 'ENOENT' ? {} : null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function readInboundPolicy(settings) {
   const value = settings?.[SETTING_KEY];
   return INBOUND_POLICIES.includes(value) ? value : INBOUND_DEFAULT;

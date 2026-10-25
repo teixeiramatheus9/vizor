@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import { runClaude } from './claude-cli.js';
+import { regexRisk } from './regex-risk.js';
+
+export { regexRisk };
 
 // Turns the user's free-text rules into checks the guard can run without AI
 // (#160). The gerente reads them once per change; the user approves each
@@ -35,6 +38,7 @@ export function buildCompilerPrompt({ lines, scope }) {
     '  {"type":"sql","statements":["DROP","TRUNCATE",...]} — comando, arquivos .sql escritos e ferramentas MCP',
     '  {"type":"tool","pattern":"<regex no nome da ferramenta, ex.: ^mcp__.*__execute_sql$>"}',
     'Prefira palavras inteiras e checagens estreitas: pergunta demais faz o usuário desligar a trava.',
+    'Nas regex, nunca ponha quantificador dentro de quantificador ((a+)+, (\\w+\\s?)*) nem alternativas que se sobrepõem numa repetição ((.|\\s)*): a trava recusa esses padrões. Para "qualquer flag" use (\\s+\\S+)* ou (\\s+-\\w+)*.',
     '',
     'Exemplos:',
     examples,
@@ -89,7 +93,25 @@ function cleanRule(raw, source, scope) {
   if (raw.kind === 'agent') return agent(explain || UNCOMPILABLE);
   const match = (Array.isArray(raw.match) ? raw.match : []).map(cleanMatch).filter(Boolean);
   if (match.length === 0) return agent(UNCOMPILABLE);
-  return { id, source, kind: raw.kind, irreversible: raw.irreversible === true, explain, match };
+  const rule = { id, source, kind: raw.kind, irreversible: raw.irreversible === true, explain, match };
+  // Never drop a risky check quietly (the lock would show as "proibido" and
+  // catch less): the whole rule waits, with the reason, until it is edited.
+  const refused = riskOf(match);
+  return refused ? { ...rule, refused } : rule;
+}
+
+function riskOf(matches) {
+  for (const match of matches) {
+    if (match?.type !== 'command' && match?.type !== 'tool') continue;
+    const reason = typeof match.pattern === 'string' ? regexRisk(match.pattern) : null;
+    if (reason) return `regex arriscada: ${reason}`;
+  }
+  return null;
+}
+
+// The rules window's "editar" shows this instead of a generic error.
+export function editProblem(edited) {
+  return Array.isArray(edited?.match) ? riskOf(edited.match) : null;
 }
 
 function firstArray(text) {
@@ -129,6 +151,7 @@ export function validateEditedRule(draft, edited) {
   if (edited.explain !== undefined && typeof edited.explain !== 'string') return null;
   if (edited.kind !== 'agent' && !Array.isArray(edited.match)) return null;
   const rule = { ...cleanRule(edited, draft.source, 'edit'), id: draft.id };
+  if (rule.refused) return null;
   if (edited.kind !== 'agent' && rule.kind === 'agent') return null;
   if (edited.kind !== 'agent' && rule.match.length !== edited.match.length) return null;
   return rule;

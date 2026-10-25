@@ -124,7 +124,7 @@ $('review').addEventListener('click', async (event) => {
       }
     }
     state = await window.rules.approve(current, id, rule);
-    say(state.error ? 'Essa edição não vira uma trava válida — confira os tipos e campos.' : '');
+    say(state.error ? (state.reason ?? 'Essa edição não vira uma trava válida — confira os tipos e campos.') : '');
     render();
   } else if (action === 'discard') {
     state = await window.rules.discard(current, id);
@@ -136,6 +136,15 @@ $('review').addEventListener('click', async (event) => {
     editor.spellcheck = false;
     editor.value = JSON.stringify({ kind: draft.kind, irreversible: draft.irreversible, explain: draft.explain, match: draft.match }, null, 2);
     item.append(editor);
+    // A refused draft has no aprovar until there is an edit to send.
+    if (!item.querySelector('[data-rule-action="approve"]')) {
+      const approve = document.createElement('button');
+      approve.type = 'button';
+      approve.dataset.ruleAction = 'approve';
+      approve.dataset.ruleId = id;
+      approve.textContent = 'aprovar edição';
+      item.querySelector('.rule-actions')?.prepend(approve);
+    }
   }
 });
 

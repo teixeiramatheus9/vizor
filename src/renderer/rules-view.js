@@ -36,7 +36,9 @@ function draftItem(rule) {
     `<li class="rule draft" data-rule-id="${id}">`,
     `<div class="rule-source">${escape(rule.source)}</div>`,
     `<div class="rule-meaning">entendi assim: ${escape(rule.explain || '—')} ${chips(rule)}</div>`,
-    `<div class="rule-actions">${action('approve', 'aprovar')}${action('edit', 'editar')}${action('discard', 'descartar')}</div>`,
+    // A refused translation (risky regex) only leaves through an edit.
+    rule.refused ? `<div class="rule-refused">${escape(rule.refused)} — edite a checagem antes de aprovar</div>` : '',
+    `<div class="rule-actions">${rule.refused ? '' : action('approve', 'aprovar')}${action('edit', 'editar')}${action('discard', 'descartar')}</div>`,
     '</li>',
   ].join('');
 }
