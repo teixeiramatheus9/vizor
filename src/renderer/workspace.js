@@ -365,6 +365,11 @@ window.vizor.onState(({ tree, terminals: list, theme, palette }) => {
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;
   terminals = list ?? [];
+  if (pendingFocus && findSession(pendingFocus)) {
+    const sessionId = pendingFocus;
+    pendingFocus = null;
+    queueMicrotask(() => selectSession(sessionId));
+  }
   // Titles live in main too, so a reloaded window gets them back (#117).
   for (const terminal of terminals) if (terminal.title && !titles[terminal.id]) titles[terminal.id] = terminal.title;
   for (const id of [...views.keys()]) {
@@ -468,6 +473,7 @@ document.addEventListener('click', async (event) => {
     activeTab = tab.dataset.tab;
     unavailable.delete(selectedWorktree);
     renderTerminalArea();
+    reportSelection();
     return;
   }
   if (target.closest('[data-new-terminal]')) {
@@ -483,6 +489,7 @@ document.addEventListener('click', async (event) => {
     }
     unavailable.delete(worktree);
     activeTab = result.id;
+    reportSelection();
     // The state push that lists the new terminal can arrive before this
     // reply, rendering with the old tab still active.
     renderTerminalArea();
@@ -497,20 +504,55 @@ document.addEventListener('click', async (event) => {
     selectedWorktree = worktree.dataset.worktree;
     selectedId = null;
     render();
+    reportSelection();
     return;
   }
   const row = target.closest('[data-session]');
-  if (row) {
-    selectedId = row.dataset.session;
-    const selection = findSession(selectedId);
-    if (selection?.worktree) selectedWorktree = selection.worktree.path;
-    selectInspectorSession(selectedId);
-    if (selection?.session.ptyId) {
-      activeTab = selection.session.ptyId;
-      // The pty may live in another folder (cd before claude): show its tabs (#119).
-      const terminal = terminals.find((item) => item.id === activeTab);
-      if (terminal) selectedWorktree = terminal.cwd;
-    }
-    render();
+  if (row) selectSession(row.dataset.session);
+});
+
+// One way to select a session: a sidebar click, or main pointing the window
+// at it (the bubble, a panel card — #96).
+function selectSession(sessionId) {
+  pendingFocus = null; // a hand pick beats a request still waiting for the tree
+  selectedId = sessionId;
+  const selection = findSession(selectedId);
+  if (selection?.worktree) selectedWorktree = selection.worktree.path;
+  selectInspectorSession(selectedId);
+  if (selection?.session.ptyId) {
+    activeTab = selection.session.ptyId;
+    // The pty may live in another folder (cd before claude): show its tabs (#119).
+    const terminal = terminals.find((item) => item.id === activeTab);
+    if (terminal) selectedWorktree = terminal.cwd;
   }
+  render();
+  reportSelection();
+}
+
+// Main mutes notices for the session this focused window is showing — which
+// is the one whose terminal tab is active when a tab was picked by hand
+// (#96 review: a stale selection muted a session nobody was looking at).
+function reportSelection() {
+  const selected = selectedId ? findSession(selectedId)?.session : null;
+  if (activeTab && selected?.ptyId !== activeTab) {
+    let owner = null;
+    for (const project of lastTree?.projects ?? [])
+      for (const worktree of project.worktrees)
+        for (const session of worktree.sessions) if (session.ptyId === activeTab) owner = session.id;
+    window.vizor.reportSelection(owner);
+    return;
+  }
+  window.vizor.reportSelection(selectedId);
+}
+
+window.addEventListener('focus', reportSelection);
+
+// A request that lands before the tree knows the session waits for it.
+let pendingFocus = null;
+window.vizor.onFocusSession(({ sessionId }) => {
+  if (sessionId && !findSession(sessionId)) {
+    pendingFocus = sessionId;
+    return;
+  }
+  if (sessionId) selectSession(sessionId);
 });

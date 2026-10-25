@@ -50,10 +50,18 @@ import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.
 import { loadPty } from './pty-loader.js';
 import { createPtyHost } from './pty-host.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
-import { buildCommentMessage, validateComment } from './comment-message.js';
+import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
 import { createCommentDelivery } from './comment-delivery.js';
 import { inForeground } from './pty-foreground.js';
+import {
+  answerKeys,
+  answerRoute,
+  bubbleClickTarget,
+  pickWorkspaceSession,
+  replyRoute,
+  workspaceFocusOverride,
+} from './bubble-routing.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -208,13 +216,20 @@ async function allowAnnouncement(session, kind, text) {
   const decision = notifyPolicy({
     kind,
     text,
-    focused: await sessionFocused(session),
+    // Already looking at it in the workspace? Then no bark (#96).
+    focused:
+      workspaceFocusOverride({
+        windowFocused: Boolean(workspaceWindow?.isFocused()),
+        selectedSessionId: workspaceSelectedSession,
+        sessionId: session.id,
+      }) ?? (await sessionFocused(session)),
     lastAnnouncement: lastAnnouncements.get(session.id) ?? null,
     announceWhenUnknown: managerConfig.announceWhenFocusUnknown,
     now: Date.now(),
   });
   if (decision.announce) {
     lastAnnouncements.set(session.id, { text, at: Date.now() });
+    lastNoticeSessionId = session.id;
   } else {
     log(`announcement suppressed (${decision.reason}) for ${session.id?.slice(0, 8)}`);
   }
@@ -315,6 +330,9 @@ let appQuitting = false;
 const worktreeCache = new Map(); // project root → Worktree[]
 const repoRootCache = new Map(); // session cwd → repo root | null
 let workspacePushTimer = null;
+let lastNoticeSessionId = null; // the session the bubble opens the workspace on
+let workspaceSelectedSession = null; // what the workspace window shows (for notices)
+const answering = new Set(); // sessions with a pty answer in flight
 let workspaceRechecked = new Set(); // unplaced cwds whose repo was already re-listed
 let ptyHost = null; // created on the first terminal open
 const editPipeline = createEditPipeline({
@@ -647,6 +665,20 @@ ipcMain.on('overlay:toggle-panel', () => {
   openPanel();
 });
 ipcMain.on('overlay:open-panel', () => openPanel());
+
+// A plain bubble click (#96): on Linux the workspace, on the session of the
+// last notice; elsewhere the panel, as always. Right-click keeps the panel.
+function activateBubble() {
+  if (bubbleClickTarget({ workspaceAvailable: Boolean(workspaceWindow) }) === 'panel') {
+    sendToRenderer('ui:click'); // the bubble renderer toggles the panel, as before
+    return;
+  }
+  if (overlayMode === 'panel') hideOverlay();
+  const sessionId = pickWorkspaceSession({ lastNoticeSessionId, sessions: registry.list() });
+  if (sessionId) workspaceWindow.focusSession(sessionId);
+  else workspaceWindow.show();
+}
+ipcMain.on('bubble:activate', () => activateBubble());
 ipcMain.on('overlay:close', () => {
   log('overlay close requested');
   hideOverlay();
@@ -1684,7 +1716,10 @@ ipcMain.handle('comments:add', async (event, { sessionId, editId, text } = {}) =
   commentStore.add({ sessionId, editId, text: valid.text, message: buildCommentMessage(edit, valid.text) });
   // immediate: the user just pressed Enviar — the only moment typing into a
   // terminal window is acceptable.
-  commentDelivery.flush(sessionId, { immediate: true }).catch((error) => log(`comment flush failed: ${error}`));
+  commentDelivery
+    .flush(sessionId, { immediate: true })
+    .then(() => flushHeldComments())
+    .catch((error) => log(`comment flush failed: ${error}`));
   return { ok: true };
 });
 
@@ -1698,12 +1733,27 @@ ipcMain.handle('comments:copy', (event, { sessionId, commentId } = {}) => {
   return true;
 });
 
-// A session that stops waiting gets its held comments.
+// A session that stops waiting gets its held comments. A comment held only
+// because a fresh notice hasn't settled is retried a moment later, since no
+// registry change will come to wake it.
+let heldRetryTimer = null;
 function flushHeldComments() {
+  let pending = false;
   for (const session of registry.list())
-    if (commentStore.nextToSend(session.id, session))
+    if (commentStore.nextToSend(session.id, session)) {
+      pending = true;
       commentDelivery.flush(session.id).catch((error) => log(`comment flush failed: ${error}`));
+    }
+  if (pending && !heldRetryTimer)
+    heldRetryTimer = setTimeout(() => {
+      heldRetryTimer = null;
+      flushHeldComments();
+    }, 3500);
 }
+
+ipcMain.on('workspace:selected', (event, sessionId) => {
+  if (fromWorkspace(event)) workspaceSelectedSession = typeof sessionId === 'string' ? sessionId : null;
+});
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
@@ -2111,6 +2161,12 @@ async function huntSessionTab(session) {
 
 ipcMain.handle('warp:focus', (_event, sessionId) => {
   const session = registry.sessions.get(sessionId);
+  // A session born in the Vizor lives in a workspace tab: no window hunt.
+  if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
+    if (overlayMode === 'panel') hideOverlay();
+    workspaceWindow.focusSession(session.id);
+    return 'focused';
+  }
   return huntSessionTab(session);
 });
 
@@ -2129,6 +2185,34 @@ ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
 
   // Sending the option's own text beats simulating Down x N + Return: it needs
   // no window, and it cannot land on the wrong option if the list scrolled.
+  const ptyId = session.term?.VIZOR_PTY_ID;
+  if (ptyId && answerRoute({ session, claudeInFront: claudeInPty(session, ptyId) }) === 'pty') {
+    // One answer at a time per session: two chip clicks would mix arrows.
+    if (answering.has(sessionId)) return 'failed';
+    answering.add(sessionId);
+    try {
+      // The question the panel shows may be stale (answered in the terminal,
+      // replaced by a permission prompt): only press keys if the transcript
+      // still has THIS question pending, and the index is one of its options.
+      const fresh = session.transcriptPath
+        ? (await readTranscriptSnapshot(session.transcriptPath)).pendingQuestion
+        : null;
+      const shown = session.question?.questions?.[0];
+      const same =
+        fresh?.questions?.length === 1 &&
+        fresh.questions[0].question === shown?.question &&
+        JSON.stringify(fresh.questions[0].options) === JSON.stringify(shown?.options);
+      if (!same || index >= shown.options.length) return 'failed';
+      ptyHost.write(ptyId, answerKeys(index));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!claudeInPty(session, ptyId) || registry.sessions.get(sessionId)?.needsPermission) return 'failed';
+      ptyHost.write(ptyId, '\r');
+      registry.markAnswered(sessionId);
+      return 'answered';
+    } finally {
+      answering.delete(sessionId);
+    }
+  }
   const optionText = session.question?.questions?.[0]?.options?.[index];
   const channel = readSessionChannel(session.id);
   if (channel && typeof optionText === 'string' && optionText.trim()) {
@@ -2192,6 +2276,16 @@ ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
   const session = registry.sessions.get(sessionId);
   const reply = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!reply) return 'failed';
+  const ptyId = session?.term?.VIZOR_PTY_ID;
+  if (ptyId && replyRoute({ session, claudeInFront: claudeInPty(session, ptyId) }) === 'pty') {
+    ptyHost.write(ptyId, bracketedPaste(reply));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (claudeInPty(session, ptyId)) {
+      ptyHost.write(ptyId, '\r');
+      return 'sent';
+    }
+    return 'failed';
+  }
   return replyToSession(session, reply);
 });
 
@@ -2230,7 +2324,7 @@ ipcMain.on('drag:end', () => {
     // it here raced the panel opening. The breadcrumb makes 'the bubble is
     // dead' reports diagnosable from the log.
     log('bubble click');
-    sendToRenderer('ui:click');
+    activateBubble();
     return;
   }
   haloActive = null; // force a re-show at the new spot
