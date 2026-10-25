@@ -30,7 +30,7 @@ App Electron (src/main/index.js)
   ├── session-registry.js  → estado puro das sessões (testável)
   ├── transcript.js        → última msg/pergunta pendente no transcript .jsonl
   ├── manager-voice.js     → claude -p (Haiku) gera {title, message}; fallback frases
-  ├── tts.js               → fala neural (sherpa-onnx); voz Santa/Faber à escolha
+  ├── tts.js               → fala neural (sherpa-onnx); vozes Clara/Davi (Supertonic) e Santa (Kokoro)
   ├── manager-chat.js      → chat com o gerente (digest local, econômico)
   ├── claude-cli.js        → runner compartilhado com contagem real de tokens
   ├── token-budget.js      → teto diário de tokens / modo economia

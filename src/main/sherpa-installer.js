@@ -32,19 +32,36 @@ export const VOICES = {
       '--sid=44',
     ],
   },
-  faber: {
-    label: 'Faber',
-    dirName: 'vits-piper-pt_BR-faber-medium',
-    modelFile: 'pt_BR-faber-medium.onnx',
-    args: (dir) => [
-      `--vits-model=${path.join(dir, 'pt_BR-faber-medium.onnx')}`,
-      `--vits-tokens=${path.join(dir, 'tokens.txt')}`,
-      `--vits-data-dir=${path.join(dir, 'espeak-ng-data')}`,
-    ],
-  },
+  // Supertonic (#161): one 95 MB model, several speakers; the user picked
+  // 0 and 8 by ear (4 and 9 sound European). Faber was dropped: it mangled
+  // every dev word.
+  clara: supertonic('Clara', 0),
+  davi: supertonic('Davi', 8),
 };
 
-export const DEFAULT_VOICE = process.platform === 'darwin' ? 'santa' : 'faber';
+function supertonic(label, sid) {
+  const file = (dir, name) => path.join(dir, name);
+  return {
+    label,
+    engine: 'supertonic',
+    dirName: 'sherpa-onnx-supertonic-tts-int8-2026-03-06',
+    modelFile: 'text_encoder.int8.onnx',
+    args: (dir) => [
+      `--supertonic-duration-predictor=${file(dir, 'duration_predictor.int8.onnx')}`,
+      `--supertonic-text-encoder=${file(dir, 'text_encoder.int8.onnx')}`,
+      `--supertonic-vector-estimator=${file(dir, 'vector_estimator.int8.onnx')}`,
+      `--supertonic-vocoder=${file(dir, 'vocoder.int8.onnx')}`,
+      `--supertonic-tts-json=${file(dir, 'tts.json')}`,
+      `--supertonic-unicode-indexer=${file(dir, 'unicode_indexer.bin')}`,
+      `--supertonic-voice-style=${file(dir, 'voice.bin')}`,
+      '--lang=pt',
+      `--sid=${sid}`,
+      '--num-steps=8',
+    ],
+  };
+}
+
+export const DEFAULT_VOICE = 'clara';
 
 export function runtimeName(platform = process.platform, arch = process.arch) {
   return RUNTIMES[`${platform}-${arch}`] ?? null;

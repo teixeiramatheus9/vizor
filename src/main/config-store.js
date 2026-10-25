@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_VOICE } from './sherpa-installer.js';
+import { DEFAULT_VOICE, VOICES } from './sherpa-installer.js';
 import { DEFAULT_THEME, DEFAULT_PALETTE, migrateThemeConfig } from './themes.js';
 import { PANEL_SCALE } from './panel-size.js';
 import { DEFAULT_SHORTCUTS } from './shortcuts.js';
@@ -41,6 +41,8 @@ export function loadConfig(file) {
     // Hand-edited lists must not break the workspace (#105).
     config.workspaceProjects = stringList(config.workspaceProjects);
     config.workspaceDismissed = stringList(config.workspaceDismissed);
+    // A voice that was dropped (Faber, #161) must not stick in the settings.
+    if (!VOICES[config.voice]) config.voice = DEFAULT_VOICE;
     return config;
   } catch {
     return { ...DEFAULT_CONFIG };

@@ -195,33 +195,62 @@ export function predownloadVoice(voiceId, { enabled = true, ensureFn = ensureVoi
 // The brand is pronounced like the English "visor" ("váizor"), but pt-BR
 // voices read the spelling literally. Respell it for SPEECH only — every
 // displayed surface keeps "Vizor" (issue #71).
-// Dev words are said in English (#161): pt-BR voices read "GitHub" as
-// "Jite Chob" and "issues" as "SUS". Each spelling was checked by speaking it
-// with that voice and transcribing it back; the voices differ, so each has
-// its own column. Speech only — every displayed surface keeps the real word.
+// Dev words are said the way Brazilian devs say them (#161). Kokoro (Santa)
+// reads "GitHub" as "Jite Chob" and "PRs" as "pê erê esse", so its terms are
+// respelled in pt-BR; the user's own references set the rule ("guitirrube",
+// "pê érre"). Speech only — every displayed surface keeps the real word.
+// Longer terms come first.
 const DEV_WORDS = [
-  [/\bgithub\b/gi, 'guíti ráb', 'guíti ráb'],
-  [/\bissues\b/gi, 'íchius', 'íchius'],
-  [/\bissue\b/gi, 'íchiu', 'íchiu'],
-  [/\bpull requests\b/gi, 'pul requésts', 'púl ri-qués'],
-  [/\bpull request\b/gi, 'pul requést', 'púl ri-quést'],
-  [/\bbranches\b/gi, 'brénchis', 'brântchis'],
-  [/\bbranch\b/gi, 'brénch', 'brântch'],
-  [/\bpush\b/gi, 'púch', 'púch'],
-  [/\bdeploy\b/gi, 'diplói', 'diplói'],
-  [/\bbuild\b/gi, 'bíuld', 'bilde'],
-  [/\breview\b/gi, 'riviú', 'riviú'],
-  [/\bfeatures?\b/gi, 'fítcher', 'fítcher'],
-  [/\bmain\b/gi, 'mêin', 'mêin'],
-  [/\btasks?\b/gi, 'tâsk', null],
-  [/\bworktrees?\b/gi, 'uórc trí', 'uôrc tri'],
-  [/\bCI\b/g, 'si-ái', 'si-ái'],
+  [/\bgithub\b/gi, 'guitirrube'],
+  [/\bpull requests\b/gi, 'pul riquéstis'],
+  [/\bpull request\b/gi, 'pul riquésti'],
+  [/\bPRs\b/g, 'pê érres'],
+  [/\bPR\b/g, 'pê érre'],
+  [/\bissues\b/gi, 'íchus'],
+  [/\bissue\b/gi, 'íchu'],
+  [/\bpush\b/gi, 'púxi'],
+  [/\bcommits?\b/gi, 'comíti'],
+  [/\bmerge\b/gi, 'mérdji'],
+  [/\bbranches\b/gi, 'brénchis'],
+  [/\bbranch\b/gi, 'brénchi'],
+  [/\brebase\b/gi, 'ribêissi'],
+  [/\bbuild\b/gi, 'bíldi'],
+  [/\bdeploy\b/gi, 'diplói'],
+  [/\breview\b/gi, 'riviú'],
+  [/\bfeatures?\b/gi, 'fítcher'],
+  [/\btasks\b/gi, 'tésquis'],
+  [/\btask\b/gi, 'tésqui'],
+  [/\bbugs?\b/gi, 'bâgui'],
+  [/\bmain\b/gi, 'mêin'],
+  [/\bCI\b/g, 'ci ái'],
+  [/\bworktrees?\b/gi, 'uôrqui tri'],
+  [/\bhotfix\b/gi, 'rótfiqs'],
+  [/\bfrontend\b/gi, 'frontendi'],
+  [/\bbackend\b/gi, 'béquendi'],
 ];
+
+// Supertonic says most terms right as written; these the user tuned by ear.
+const SUPERTONIC_WORDS = [
+  [/\bPRs\b/g, 'peérris'],
+  [/\bfrontend\b/gi, 'front-êndi'],
+  [/\bbackend\b/gi, 'béqui-êndi'],
+  [/\bfront\b(?!-)/gi, 'fronti'],
+  [/\bback\b/gi, 'béqui'],
+];
+const SUPERTONIC_TERMS =
+  'github|prs?|pull requests?|issues?|push|commits?|merge|branch(?:es)?|main|rebase|build|deploy|review|features?|tasks?|bugs?|frontend|backend|front|back|worktrees?|hotfix|ci';
+// Supertonic glues "a"/"pra" to the English word after it ("A task" came out
+// as English "a task"); a double space keeps the Portuguese word apart.
+const ARTICLE_BEFORE_TERM = new RegExp(`\\b(a|pra|para) (?=(?:${SUPERTONIC_TERMS})\\b)`, 'gi');
 
 export function speakableText(text, voiceId = DEFAULT_VOICE) {
   let speech = String(text ?? '').replace(/\bvizor\b/gi, 'Váizor');
-  const column = voiceId === 'faber' ? 2 : 1;
-  for (const entry of DEV_WORDS) if (entry[column]) speech = speech.replace(entry[0], entry[column]);
+  if (VOICES[voiceId]?.engine === 'supertonic') {
+    speech = speech.replace(ARTICLE_BEFORE_TERM, '$1  ');
+    for (const [pattern, spoken] of SUPERTONIC_WORDS) speech = speech.replace(pattern, spoken);
+    return speech;
+  }
+  for (const [pattern, spoken] of DEV_WORDS) speech = speech.replace(pattern, spoken);
   return speech;
 }
 

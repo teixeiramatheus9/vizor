@@ -41,15 +41,24 @@ describe('runtime and voice resolution', () => {
     expect(runtimeName('sunos', 'x64')).toBeNull();
   });
 
-  it('builds kokoro flags for santa and vits flags for faber', () => {
+  it('builds kokoro flags for santa and supertonic flags for clara and davi', () => {
     const santa = voicePaths('/cfg', 'santa', 'linux', 'x64');
     expect(santa.args.some((a) => a.startsWith('--kokoro-model='))).toBe(true);
     expect(santa.args).toContain('--kokoro-lang=pt-br');
     expect(santa.args).toContain('--sid=44');
 
-    const faber = voicePaths('/cfg', 'faber', 'linux', 'x64');
-    expect(faber.args.some((a) => a.startsWith('--vits-model='))).toBe(true);
-    expect(faber.args.every((a) => !a.includes('kokoro'))).toBe(true);
+    const clara = voicePaths('/cfg', 'clara', 'linux', 'x64');
+    const davi = voicePaths('/cfg', 'davi', 'linux', 'x64');
+    expect(clara.args.some((a) => a.startsWith('--supertonic-text-encoder='))).toBe(true);
+    expect(clara.args).toContain('--lang=pt');
+    expect(clara.args).toContain('--sid=0');
+    expect(davi.args).toContain('--sid=8');
+    expect(davi.voiceDir).toBe(clara.voiceDir); // one model, two speakers
+  });
+
+  it('Clara is the default and Faber is gone (#161: the user rejected it)', () => {
+    expect(DEFAULT_VOICE).toBe('clara');
+    expect(VOICES.faber).toBeUndefined();
   });
 
   it('pins the OS-bundled bsdtar on win32 and plain tar elsewhere', () => {
@@ -61,14 +70,14 @@ describe('runtime and voice resolution', () => {
   });
 
   it('resolves a win32-x64 runtime with an .exe binary', () => {
-    const { binary, libDir } = voicePaths('C:\\cfg\\sherpa', 'faber', 'win32', 'x64');
+    const { binary, libDir } = voicePaths('C:\\cfg\\sherpa', 'clara', 'win32', 'x64');
     expect(binary).toMatch(/sherpa-onnx-offline-tts\.exe$/);
     expect(binary).toContain('win-x64-shared');
     expect(libDir).toContain('win-x64-shared');
   });
 
   it('still resolves the linux binary without a suffix', () => {
-    const { binary } = voicePaths('/cfg/sherpa', 'faber', 'linux', 'x64');
+    const { binary } = voicePaths('/cfg/sherpa', 'clara', 'linux', 'x64');
     expect(binary).toMatch(/sherpa-onnx-offline-tts$/);
   });
 
@@ -78,10 +87,10 @@ describe('runtime and voice resolution', () => {
   });
 
   it('needs binary and model to consider a voice installed', () => {
-    expect(isVoiceInstalled('/cfg', 'faber', () => true, 'linux', 'x64')).toBe(true);
+    expect(isVoiceInstalled('/cfg', 'clara', () => true, 'linux', 'x64')).toBe(true);
     const missingModel = (p) => !p.endsWith('.onnx');
-    expect(isVoiceInstalled('/cfg', 'faber', missingModel, 'linux', 'x64')).toBe(false);
-    expect(isVoiceInstalled('/cfg', 'faber', () => true, 'sunos', 'x64')).toBe(false);
+    expect(isVoiceInstalled('/cfg', 'clara', missingModel, 'linux', 'x64')).toBe(false);
+    expect(isVoiceInstalled('/cfg', 'clara', () => true, 'sunos', 'x64')).toBe(false);
   });
 });
 
@@ -90,10 +99,10 @@ describe('speak', () => {
     const { calls, children, spawnFn } = recorder();
     // accent-free on purpose: the win32 argv encoding is unit-tested on its
     // own (encodeAnsiArgvText) and would rewrite accented args here.
-    speak('oi amigo', { voice: 'faber', spawnFn, installed: true });
+    speak('oi amigo', { voice: 'clara', spawnFn, installed: true });
     expect(calls[0].command).toContain('sherpa-onnx-offline-tts');
     expect(calls[0].args.at(-1)).toBe('oi amigo');
-    expect(calls[0].args.some((a) => a.startsWith('--vits-model='))).toBe(true);
+    expect(calls[0].args.some((a) => a.startsWith('--supertonic-voice-style='))).toBe(true);
     children[0].emit('exit', 0, null);
     expect(calls[1].command).toBe(playerCommand('x.wav', process.platform)[0]);
     stopSpeaking();
@@ -120,14 +129,14 @@ describe('speak', () => {
   it('tells when the line was said, failed or was cut (#161)', () => {
     const played = recorder();
     let done = 0;
-    speak('oi', { voice: 'faber', spawnFn: played.spawnFn, installed: true, onDone: () => done++ });
+    speak('oi', { voice: 'clara', spawnFn: played.spawnFn, installed: true, onDone: () => done++ });
     played.children[0].emit('exit', 0, null);
     expect(done).toBe(0);
     played.children[1].emit('exit', 0, null);
     expect(done).toBe(1);
 
     const cut = recorder();
-    speak('oi', { voice: 'faber', spawnFn: cut.spawnFn, installed: true, onDone: () => done++ });
+    speak('oi', { voice: 'clara', spawnFn: cut.spawnFn, installed: true, onDone: () => done++ });
     stopSpeaking();
     cut.children[0].emit('exit', null, 'SIGKILL');
     expect(done).toBe(2);
@@ -231,19 +240,27 @@ describe('speakableText', () => {
   });
 });
 
-describe('dev terms sound English (#161, validated by speaking and transcribing back)', () => {
-  it('Santa', () => {
-    expect(speakableText('Tem 3 issues abertas no GitHub.', 'santa')).toBe('Tem 3 íchius abertas no guíti ráb.');
-    expect(speakableText('Fiz o push na branch e o build quebrou.', 'santa')).toBe('Fiz o púch na brénch e o bíuld quebrou.');
-    expect(speakableText('A task 22 tem uma pull request.', 'santa')).toBe('A tâsk 22 tem uma pul requést.');
+describe('dev terms said the way Brazilian devs say them (#161)', () => {
+  it("Santa: the user's own references, GitHub and PR", () => {
+    expect(speakableText('Tem 2 PRs e 1 PR no GitHub.', 'santa')).toBe('Tem 2 pê érres e 1 pê érre no guitirrube.');
+    expect(speakableText('A task 22 tem 3 issues e uma pull request.', 'santa')).toBe('A tésqui 22 tem 3 íchus e uma pul riquésti.');
   });
 
-  it('Faber has its own spellings', () => {
-    expect(speakableText('O build quebrou na branch main.', 'faber')).toBe('O bilde quebrou na brântch mêin.');
-    expect(speakableText('A task 22 tem uma issue.', 'faber')).toBe('A task 22 tem uma íchiu.');
+  it('Supertonic says most terms right as written; only a few are respelled', () => {
+    expect(speakableText('No GitHub tem 2 PRs e 1 PR, e 3 issues.', 'clara')).toBe('No GitHub tem 2 peérris e 1 PR, e 3 issues.');
+    expect(speakableText('Dois bugs no frontend e no backend.', 'davi')).toBe('Dois bugs no front-êndi e no béqui-êndi.');
+    expect(speakableText('Mexi no front e no back.', 'clara')).toBe('Mexi no fronti e no béqui.');
+  });
+
+  it('Supertonic: "a" and "pra" before a term stay Portuguese (a double space keeps them apart)', () => {
+    expect(speakableText('A task tem dois bugs.', 'clara')).toBe('A  task tem dois bugs.');
+    expect(speakableText('Abri uma pull request pra review da feature.', 'davi')).toBe('Abri uma pull request pra  review da feature.');
+    expect(speakableText('Vou pra casa e a gente vê.', 'clara')).toBe('Vou pra casa e a gente vê.');
   });
 
   it('only whole words, and the brand still respelled', () => {
     expect(speakableText('o maintainer fez rebuild no Vizor', 'santa')).toBe('o maintainer fez rebuild no Váizor');
+    expect(speakableText('PRESSA não é PR', 'santa')).toBe('PRESSA não é pê érre');
+    expect(speakableText('o Vizor e o frontender', 'clara')).toBe('o Váizor e o frontender');
   });
 });
