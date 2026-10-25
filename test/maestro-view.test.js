@@ -106,3 +106,44 @@ describe('the orchestra shows the gerente\'s orders', () => {
     expect(renderOrchestra([musician('a', 22)], 'a')).toContain('gerente · segue suas ordens');
   });
 });
+
+describe('the backstage on the stage (#142)', async () => {
+  const { cleanLogLine, renderBackstage } = await import('../src/renderer/maestro-view.js');
+  const backstage = {
+    subagents: [
+      { id: 'ag1', type: 'code-reviewer', description: 'Review the diff', running: true, files: ['/r/src/a.js'], lastTool: 'Read' },
+      { id: 'ag2', type: 'Explore', description: 'Find usages', running: false, files: [], lastTool: 'Grep' },
+    ],
+    background: [{ id: 'b1', command: 'npm run dev', lines: ['VITE ready', 'Local: http://localhost:5173/'], gone: false }],
+    ports: [{ port: 5173, process: 'node' }],
+  };
+
+  it('collapsed by default: one row of chips with counts and ports', () => {
+    const html = renderBackstage(backstage, null);
+    expect(html).toContain('data-backstage="subagents"');
+    expect(html).toContain('⚙ 1 sub-agente rodando');
+    expect(html).toContain('▶ 1 em segundo plano');
+    expect(html).toContain('⇅ :5173');
+    expect(html).not.toContain('VITE ready');
+  });
+
+  it('a chip opens its detail: sub-agents with files, a background log, ports', () => {
+    expect(renderBackstage(backstage, 'subagents')).toContain('code-reviewer');
+    expect(renderBackstage(backstage, 'subagents')).toContain('a.js');
+    expect(renderBackstage(backstage, 'subagents')).toContain('terminou');
+    expect(renderBackstage(backstage, 'background')).toContain('VITE ready');
+    expect(renderBackstage(backstage, 'background')).toContain('npm run dev');
+    expect(renderBackstage(backstage, 'ports')).toContain('5173');
+    expect(renderBackstage(backstage, 'ports')).toContain('node');
+  });
+
+  it('log lines lose ANSI codes, are cut and escaped', () => {
+    expect(cleanLogLine('\u001b[32m✓\u001b[0m built <b>')).toBe('✓ built &lt;b&gt;');
+    expect(cleanLogLine('x'.repeat(500)).length).toBeLessThanOrEqual(201);
+  });
+
+  it('nothing backstage, nothing drawn', () => {
+    expect(renderBackstage({ subagents: [], background: [], ports: [] }, null)).toBe('');
+    expect(renderBackstage(null, null)).toBe('');
+  });
+});

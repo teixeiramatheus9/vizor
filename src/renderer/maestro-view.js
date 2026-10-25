@@ -75,3 +75,55 @@ export function renderConsequences(lines) {
   const last = (lines ?? []).slice(-CONSEQUENCE_LINES);
   return `<div class="maestro-title">consequências</div>${last.map((line) => `<div class="consequence">${escapeHtml(line)}</div>`).join('')}`;
 }
+
+// --- the backstage (#142): collapsed to a row of chips, a click opens one ---
+const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const LOG_LINE_MAX = 200;
+
+export function cleanLogLine(text) {
+  const plain = String(text ?? '').replace(ANSI, '').replace(/\r/g, '');
+  return escapeHtml(plain.length > LOG_LINE_MAX ? `${plain.slice(0, LOG_LINE_MAX)}…` : plain);
+}
+
+function subagentsChip(subagents) {
+  const running = subagents.filter((agent) => agent.running).length;
+  if (running) return `⚙ ${running} ${running === 1 ? 'sub-agente rodando' : 'sub-agentes rodando'}`;
+  return `⚙ ${subagents.length} ${subagents.length === 1 ? 'sub-agente' : 'sub-agentes'} (terminaram)`;
+}
+
+function backstageDetail(backstage, open) {
+  if (open === 'subagents')
+    return backstage.subagents
+      .map(
+        (agent) =>
+          `<div class="backstage-item"><b>${escapeHtml(agent.type)}</b> ${escapeHtml(agent.description)} <span class="backstage-state">${
+            agent.running ? `rodando${agent.lastTool ? ` · ${escapeHtml(agent.lastTool)}` : ''}` : 'terminou'
+          }</span>${agent.files.length ? `<div class="backstage-files">${agent.files.map((file) => escapeHtml(file.split(/[\\/]/).pop())).join(', ')}</div>` : ''}</div>`,
+      )
+      .join('');
+  if (open === 'background')
+    return backstage.background
+      .map(
+        (item) =>
+          `<div class="backstage-item"><b>$ ${escapeHtml(item.command)}</b>${item.gone ? ' <span class="backstage-state">terminado</span>' : ''}<pre class="backstage-log">${item.lines
+            .map(cleanLogLine)
+            .join('\n')}</pre></div>`,
+      )
+      .join('');
+  if (open === 'ports')
+    return backstage.ports.map((item) => `<div class="backstage-item"><b>:${item.port}</b> ${escapeHtml(item.process)}</div>`).join('');
+  return '';
+}
+
+export function renderBackstage(backstage, open) {
+  if (!backstage) return '';
+  const { subagents = [], background = [], ports = [] } = backstage;
+  const chips = [];
+  const chip = (kind, text) => chips.push(`<button class="backstage-chip${open === kind ? ' open' : ''}" data-backstage="${kind}">${text}</button>`);
+  if (subagents.length) chip('subagents', subagentsChip(subagents));
+  if (background.length) chip('background', `▶ ${background.length} em segundo plano`);
+  if (ports.length) chip('ports', `⇅ ${ports.map((item) => `:${item.port}`).join(' ')}`);
+  if (!chips.length) return '';
+  const detail = open ? backstageDetail(backstage, open) : '';
+  return `<div class="backstage"><div class="backstage-chips">${chips.join('')}</div>${detail ? `<div class="backstage-detail">${detail}</div>` : ''}</div>`;
+}
