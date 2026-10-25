@@ -311,7 +311,8 @@ export async function decide({ event, rules, repoRoot, gitContext, ask, headless
       outcome: 'barrado',
       summary: command.slice(0, 200),
     });
-    return deny(`Barrado pela regra do usuário: "${rule.source}". ${rule.explain ?? ''} Não tente contornar.`.trim());
+    const why = rule.explain ? `${rule.explain.replace(/[.!?]$/, '')}. ` : '';
+    return deny(`Barrado pela regra do usuário: "${rule.source}". ${why}Não tente contornar.`);
   }
   const answer = await ask({
     type: 'guard-ask',
@@ -383,13 +384,13 @@ function git(cwd, args) {
   }
 }
 
-function repoRootOf(cwd) {
+export function repoRootOf(cwd) {
   const common = cwd ? git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']) : null;
   if (!common) return null;
   return common.endsWith(`${path.sep}.git`) ? path.dirname(common) : common;
 }
 
-function gitContextOf(cwd) {
+export function gitContextOf(cwd) {
   if (!cwd) return null;
   const currentBranch = git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (!currentBranch) return null;

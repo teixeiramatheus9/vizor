@@ -20,6 +20,10 @@ describe('renderStatus', () => {
   it('warns when the lock only works with the Vizor open', () => {
     expect(renderStatus(status({ offline: false }))).toContain('só funciona com o Vizor aberto');
   });
+
+  it('no warning before the lock is installed', () => {
+    expect(renderStatus(status({ installed: false, offline: false }))).not.toContain('só funciona com o Vizor aberto');
+  });
 });
 
 describe('renderReview', () => {

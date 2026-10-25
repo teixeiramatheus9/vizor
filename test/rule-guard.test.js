@@ -47,6 +47,7 @@ describe('decide', () => {
     expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
     expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
     expect(output.hookSpecificOutput.permissionDecisionReason).toContain(DROP.source);
+    expect(output.hookSpecificOutput.permissionDecisionReason).toContain('DROP em banco. Não tente contornar.');
     expect(asked).toBe(false);
   });
 

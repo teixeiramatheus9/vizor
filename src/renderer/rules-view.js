@@ -16,7 +16,7 @@ export function renderStatus(status) {
     plural(status.pending ?? 0, 'esperando revisão', 'esperando revisão'),
   ];
   const warning =
-    status.enabled && status.offline === false
+    status.enabled && status.installed && status.offline === false
       ? '<div class="status-warn">Neste formato (AppImage sem node) a trava só funciona com o Vizor aberto.</div>'
       : '';
   return `<div class="status${off ? ' status-off' : ''}">${parts.join(' · ')}</div>${warning}`;
