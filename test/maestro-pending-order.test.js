@@ -79,3 +79,31 @@ describe('a Maestro order, held "entendi: …" before it acts', () => {
     ]);
   });
 });
+
+describe('review C1: the window waits while the user is talking', () => {
+  it('pause stops the countdown; resume gives at least 1.5 s back', () => {
+    const { order, fire, timer, advance } = setup();
+    let runs = 0;
+    order.hold({ label: 'x' }, () => runs++);
+    advance(2800);
+    order.pause();
+    expect(timer()).toBeNull();
+    advance(5000);
+    order.resume();
+    expect(timer().ms).toBe(1500);
+    expect(order.pending().until).toBe(1000 + 2800 + 5000 + 1500);
+    fire();
+    expect(runs).toBe(1);
+  });
+
+  it('pause and resume with nothing pending do nothing; ranAt says when the last order ran', () => {
+    const { order, fire, advance } = setup();
+    order.pause();
+    order.resume();
+    expect(order.ranAt()).toBe(-Infinity);
+    order.hold({ label: 'x' }, () => {});
+    advance(3000);
+    fire();
+    expect(order.ranAt()).toBe(4000);
+  });
+});

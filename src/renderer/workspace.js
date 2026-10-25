@@ -631,7 +631,13 @@ function placeBalloon() {
 detailEl.addEventListener('scroll', () => maestro.on && placeBalloon());
 
 function focusMusicianView(sessionId) {
-  if (!sessionId) return;
+  // The last músico closed: the center empties instead of showing it (review I4).
+  if (!sessionId) {
+    selectedId = null;
+    selectInspectorSession(null);
+    render();
+    return;
+  }
   selectSession(sessionId);
   inspector = onFollow(inspector);
   fileView = null;
@@ -888,6 +894,9 @@ document.addEventListener('click', async (event) => {
 // One way to select a session: a sidebar click, or main pointing the window
 // at it (the bubble, a panel card — #96).
 function selectSession(sessionId) {
+  // In the Maestro a selection from anywhere (bubble, panel, voice) moves the
+  // focus, so the code and the orchestra always show the same chat (review I5).
+  if (maestro.on && sessionId !== maestro.focusedId && musicianOf(sessionId)) window.vizor.focusMusician(sessionId);
   pendingFocus = null; // a hand pick beats a request still waiting for the tree
   selectedId = sessionId;
   const selection = findSession(selectedId);

@@ -420,3 +420,79 @@ describe('voice session — Maestro', async () => {
     expect(english.texts().at(-1)).toBe('Maestro mode on.');
   });
 });
+
+describe('voice session — Maestro, review fixes', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const musician = (sessionId, number) => ({ sessionId, number, ptyId: `p-${sessionId}`, label: `chat ${sessionId}`, status: 'working', color: '#fff', files: [] });
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  function maestro(overrides = {}) {
+    let timer = null;
+    let time = 1000;
+    const pendingOrder = createPendingOrder({ now: () => time, setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const interrupted = [];
+    const errors = [];
+    const scene = setup({
+      now: () => time,
+      maestro: () => true,
+      orchestra: () => [musician('s1', 1), musician('s2', 2)],
+      interrupt: (ptyId) => (interrupted.push(ptyId), true),
+      focus: () => {},
+      pendingOrder,
+      onError: (error) => errors.push(error.message),
+      ...overrides,
+    });
+    return { ...scene, pendingOrder, interrupted, errors, fire: () => timer?.(), advance: (ms) => (time += ms) };
+  }
+
+  it('C1: "cancela" right after the order ran says it already went, and sends nothing', async () => {
+    const { session, fire, advance, calls, texts, pendingOrder } = maestro();
+    await session.onUtterance('retoma a task 22');
+    fire();
+    await tick();
+    await session.onUtterance('interrompa a task 2');
+    fire();
+    await tick();
+    advance(2000);
+    await session.onUtterance('cancela');
+    expect(texts().at(-1)).toBe('Já foi.');
+    expect(calls.filter(([name]) => name === 'deliver')).toEqual([]);
+    advance(10000);
+    await session.onUtterance('cancela');
+    // Long after: just words for the chat, held like any prompt.
+    expect(pendingOrder.pending().label).toBe('mandar pro chat: cancela');
+  });
+
+  it('I1: a task number linked to a chat outside the Vizor never falls back to the músico in that place', async () => {
+    const { session, interrupted, texts } = maestro({ linkedSessions: (number) => (number === 2 ? ['outside'] : []) });
+    await session.onUtterance('interrompa a task 2');
+    expect(texts().at(-1)).toBe('Não achei músico na 2.');
+    expect(interrupted).toEqual([]);
+  });
+
+  it('I1: a task number linked to a músico finds it even when its place is another', async () => {
+    const { session, fire, interrupted } = maestro({ linkedSessions: (number) => (number === 2 ? ['s1'] : []) });
+    await session.onUtterance('interrompa a task 2');
+    fire();
+    await tick();
+    expect(interrupted).toEqual(['p-s1']);
+  });
+
+  it('I3: with the Maestro off an error reaches the caller again; on, it is reported and said', async () => {
+    const failing = async () => {
+      throw new Error('pty gone');
+    };
+    const off = maestro({ maestro: () => false, deliverPrompt: failing });
+    await off.session.onUtterance('retoma a task 22');
+    await expect(off.session.onUtterance('roda os testes')).rejects.toThrow('pty gone');
+
+    const on = maestro({ deliverPrompt: failing });
+    await on.session.onUtterance('retoma a task 22');
+    on.fire();
+    await tick();
+    await on.session.onUtterance('roda os testes');
+    on.fire();
+    await tick();
+    expect(on.errors).toEqual(['pty gone']);
+    expect(on.texts().at(-1)).toBe('Deu erro nessa ordem; olha o log.');
+  });
+});

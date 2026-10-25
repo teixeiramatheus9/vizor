@@ -567,7 +567,11 @@ let maestroOrchestra = [];
 let maestroFocusId = null;
 const maestroNarrators = new Map(); // sessionId → narrator, for the consequences strip
 const maestroOrder = createPendingOrder();
-maestroOrder.on('show', (order) => workspaceWindow?.send('maestro:order', order));
+maestroOrder.on('show', (order) => {
+  workspaceWindow?.send('maestro:order', order);
+  // Listening already: "cancela" needs no "Vizor" in front (review C1).
+  if (voiceState === 'sleeping') voiceListener?.wake();
+});
 maestroOrder.on('clear', () => workspaceWindow?.send('maestro:order', null));
 
 const maestroOn = () => Boolean(managerConfig.maestroEnabled);
@@ -3688,6 +3692,10 @@ function createVoiceSessionForApp() {
     focus: maestroFocus,
     interrupt: maestroInterrupt,
     pendingOrder: maestroOrder,
+    linkedSessions: (number) => {
+      const root = voiceRoot();
+      return root ? taskLinks.linksFor(root, number) : [];
+    },
     onError: (error) => log(`maestro order failed: ${error?.stack ?? error}`),
   });
 }
@@ -3864,6 +3872,9 @@ function startVoice() {
   voiceArbiter.on('quiet', ({ followUp } = {}) => voiceListener?.speakingEnded({ followUp }));
   voiceListener.on('state', (state) => {
     voiceState = state;
+    // The user is finishing a sentence (maybe "cancela"): the order waits.
+    if (state === 'closing' || state === 'grace') maestroOrder.pause();
+    else maestroOrder.resume();
     // Held through the grace window too: a line starting there would pause
     // listening and lose the utterance (only the "ok" passes).
     voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing' || state === 'grace');
@@ -3883,6 +3894,12 @@ function startVoice() {
   voiceListener.on('barge', () => voiceArbiter?.flush());
   voiceListener.on('cancelled', (payload) => {
     if (payload?.stopSpeaking) voiceArbiter?.flush();
+    // "não, espera" / "para" never reach the session: the listener takes
+    // them. A held order goes with them (review I2).
+    if (maestroOrder.pending()) {
+      maestroOrder.cancel();
+      voiceArbiter?.say({ text: spokenLang() === 'en' ? 'Cancelled.' : 'Cancelado.', priority: 1 });
+    }
   });
   voiceListener.on('utterance', ({ text }) => {
     voiceRestarts = 0; // the engine works again

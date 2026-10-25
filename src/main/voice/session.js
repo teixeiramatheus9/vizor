@@ -47,9 +47,11 @@ const LINES = {
     maestroOn: 'Modo Maestro ativado.',
     maestroOff: 'Modo Maestro desativado.',
     cancelled: 'Cancelado.',
+    alreadyRan: 'Já foi.',
+    orderFailed: 'Deu erro nessa ordem; olha o log.',
     order: {
       interrupt: (number) => `interromper a ${number}`,
-      prompt: (number, text) => `mandar pra ${number ?? 'o chat'}: ${text}`,
+      prompt: (number, text) => (number === null ? `mandar pro chat: ${text}` : `mandar pra ${number}: ${text}`),
       resume: (number) => `retomar a ${number}`,
       newChat: (number) => `abrir um chat novo pra ${number}`,
       guard: { liberar: 'liberar', 'liberar-sessao': 'liberar nesta sessão', barrar: 'barrar' },
@@ -89,6 +91,8 @@ const LINES = {
     maestroOn: 'Maestro mode on.',
     maestroOff: 'Maestro mode off.',
     cancelled: 'Cancelled.',
+    alreadyRan: 'It already went.',
+    orderFailed: 'That order failed; check the log.',
   },
 };
 
@@ -172,10 +176,18 @@ export function createVoiceSession(deps) {
   // few seconds; off the Maestro it runs at once. The labels are on screen,
   // so they stay pt-BR whatever the voice speaks.
   const ORDER = LINES.pt.order;
+  // Off the Maestro the order runs at once and its errors reach the caller,
+  // as before; held, nobody awaits it, so a failure is logged and said.
   const held = (label, run) => {
-    const go = () => Promise.resolve().then(run).catch((error) => deps.onError?.(error));
-    if (deps.maestro?.() && deps.pendingOrder) deps.pendingOrder.hold({ label }, go);
-    else return go();
+    if (!deps.maestro?.() || !deps.pendingOrder) return run();
+    deps.pendingOrder.hold({ label }, () =>
+      Promise.resolve()
+        .then(run)
+        .catch((error) => {
+          deps.onError?.(error);
+          say(lines().orderFailed);
+        }),
+    );
     return undefined;
   };
   const numberOfSession = (sessionId) => (deps.orchestra?.() ?? []).find((musician) => musician.sessionId === sessionId)?.number ?? null;
@@ -192,8 +204,14 @@ export function createVoiceSession(deps) {
   }
 
   // "interrompa a task 22" / "vai pra 22": none says so, two asks which.
+  // A task linked to chats is found only among them (one outside the Vizor is
+  // no músico); a number nobody links is a place in the orchestra.
   function onMusicians(kind, number, run) {
-    const found = findMusicians(deps.orchestra?.() ?? [], number);
+    const orchestra = deps.orchestra?.() ?? [];
+    const linked = deps.linkedSessions?.(number) ?? [];
+    const found = linked.length
+      ? orchestra.filter((musician) => linked.includes(musician.sessionId))
+      : findMusicians(orchestra, number);
     if (!found.length) return say(lines().noMusician(number));
     if (found.length === 1) return run(found[0]);
     const candidates = found.slice(0, MAX_CANDIDATES);
@@ -342,6 +360,16 @@ export function createVoiceSession(deps) {
       }
       if (intent.type !== 'confirm' && intent.type !== 'correct') pendingConfirm = null;
       if (intent.type !== 'choose' && intent.type !== 'resume-task') pendingChoice = null;
+      // "cancela"/"manda" just after the order went: too late, and not a prompt.
+      const ORDER_WORDS_LATE_MS = 5000;
+      if (
+        (intent.type === 'prompt' || intent.type === 'ask-manager') &&
+        now() - (deps.pendingOrder?.ranAt() ?? -Infinity) < ORDER_WORDS_LATE_MS &&
+        routeUtterance(corrected, { pendingOrder: true }).type === 'order'
+      ) {
+        say(lines().alreadyRan);
+        return;
+      }
       // Anything said while an order waits replaces it: never both.
       if (intent.type !== 'order' && deps.pendingOrder?.pending()) deps.pendingOrder.cancel();
       await act(intent, heard);
