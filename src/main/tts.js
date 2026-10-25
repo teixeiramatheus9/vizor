@@ -14,6 +14,11 @@ const legacyPiperDir = path.join(configDir, 'piper');
 const downloading = new Set();
 let processes = [];
 let onDownloadStatus = () => {};
+let audioOutput = null; // the sink pinned in the tray menu; null = system default
+
+export function setAudioOutput(output) {
+  audioOutput = output ?? null;
+}
 
 // The renderer shows a line while a model is on its way.
 export function watchDownloads(listener) {
@@ -36,7 +41,8 @@ export function stopSpeaking() {
 }
 
 // Pure command builders so every platform's spawn line is unit-testable.
-export function playerCommand(wavFile, platform = process.platform) {
+// output: the sink pinned in the tray menu ({ name, label }), Linux only.
+export function playerCommand(wavFile, platform = process.platform, output = null) {
   if (platform === 'darwin') return ['afplay', [wavFile]];
   if (platform === 'win32') {
     return [
@@ -49,6 +55,7 @@ export function playerCommand(wavFile, platform = process.platform) {
       ],
     ];
   }
+  if (output?.name) return ['pw-play', ['--target', output.name, wavFile]];
   return ['aplay', ['-q', wavFile]];
 }
 
@@ -158,7 +165,7 @@ export function speakNeural(text, voiceId, spawnFn = spawn, volume = 100, onDone
         log(`gain failed: ${error}`);
       }
     }
-    const [playCommand, playArgs] = playerCommand(wavFile);
+    const [playCommand, playArgs] = playerCommand(wavFile, process.platform, audioOutput);
     const player = spawnFn(playCommand, playArgs, { stdio: 'ignore' });
     processes = [player];
     player.on('error', (error) => {

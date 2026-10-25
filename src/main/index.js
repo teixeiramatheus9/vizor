@@ -25,6 +25,7 @@ import { createGuardAsks } from './guard-asks.js';
 import { createRulesStore } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
 import { normalizeMic, normalizeMicList } from '../renderer/mic-choice.js';
+import { chromiumSinkId, listSinks, normalizeOutput } from './audio-devices.js';
 import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
 import { createSpeechArbiter } from './voice/arbiter.js';
@@ -383,6 +384,7 @@ const registry = new SessionRegistry({
   folderAliasFor: (cwd) => managerConfig.folderAliases[cwd] ?? null,
 });
 let managerConfig = loadConfig(configFile);
+tts.setAudioOutput(managerConfig.audioOutput);
 
 // Voice mode state (#161), declared up here: speakAsManager and sendState
 // read it, and they run long before the voice section below.
@@ -392,6 +394,7 @@ let voiceArbiter = null;
 let voiceSession = null;
 let micWindow = null;
 let micDevices = []; // what the mic window found, for the settings picker
+let chromiumOutputs = []; // the outputs as Chromium names them, for the bubble chimes
 let voiceState = 'off';
 let voiceDownload = null; // { percent } | { error } while the models come down
 let voiceRestarts = 0;
@@ -526,6 +529,8 @@ function sendState() {
     voiceDownloading: tts.downloadingVoice(),
     // The bubble speaks the alert lines: it must hear about a voice change.
     voiceLang: speechLang(managerConfig.voice),
+    // ...and plays the chimes: on the output pinned in the tray menu.
+    audioSinkId: chromiumSinkId(chromiumOutputs, managerConfig.audioOutput),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
     trayAvailable: Boolean(tray),
@@ -1122,13 +1127,39 @@ function refreshTrayMenu() {
     workspace: () => workspaceWindow?.show(),
     rules: () => openRulesWindow(),
   };
-  const template = trayMenuTemplate({
-    bubbleVisible: bubbleVisible(),
-    workspace: Boolean(workspaceWindow),
-  }).map((item) =>
-    item.id ? { ...item, click: actions[item.id] } : item,
-  );
+  // mic:<n> / output:<n> pick a listed device, the default clears the pin.
+  const pick = (id) => {
+    const [kind, which] = id.split(':');
+    if (which === 'pinned' || which === 'none') return;
+    if (kind === 'mic') applyConfig({ voiceMic: which === 'default' ? null : micDevices[Number(which)] ?? null });
+    if (kind === 'output') applyConfig({ audioOutput: which === 'default' ? null : audioOutputs[Number(which)] ?? null });
+  };
+  const wire = (item) => {
+    if (item.submenu) return { ...item, submenu: item.submenu.map(wire) };
+    if (!item.id) return item;
+    return { ...item, click: actions[item.id] ?? (() => pick(item.id)) };
+  };
+  const audio =
+    process.platform === 'linux'
+      ? { mics: micDevices, mic: managerConfig.voiceMic ?? null, outputs: audioOutputs, output: managerConfig.audioOutput ?? null }
+      : null;
+  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible(), workspace: Boolean(workspaceWindow), audio }).map(wire);
   tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+// The outputs for the tray menu, from PipeWire; re-read every few seconds so
+// a headset plugged in shows up (Linux only, where the voice runs).
+let audioOutputs = [];
+async function refreshAudioOutputs() {
+  try {
+    const next = listSinks(parsePwDump(await runText('pw-dump', [])));
+    if (JSON.stringify(next) === JSON.stringify(audioOutputs)) return;
+    audioOutputs = next;
+    log(`audio outputs: ${next.map((sink) => sink.label).join(' | ') || 'none'}`);
+    refreshTrayMenu();
+  } catch {
+    // no pw-dump: the menu keeps the system default only
+  }
 }
 
 // Hiding into the tray is only offered where an icon can actually appear.
@@ -2399,7 +2430,8 @@ ipcMain.handle('config:get', () => ({
   panelScaleRange: PANEL_SCALE,
 }));
 
-ipcMain.handle('config:set', (_event, partial) => {
+// The settings window and the tray menu both change the config through here.
+function applyConfig(partial) {
   const allowed = {};
   if (typeof partial?.terminal === 'string') allowed.terminal = partial.terminal;
   if (typeof partial?.voice === 'string' && VOICES[partial.voice]) allowed.voice = partial.voice;
@@ -2432,6 +2464,7 @@ ipcMain.handle('config:set', (_event, partial) => {
   if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
   if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
   if (partial && 'voiceMic' in partial) allowed.voiceMic = normalizeMic(partial.voiceMic);
+  if (partial && 'audioOutput' in partial) allowed.audioOutput = normalizeOutput(partial.audioOutput);
   const micChanged = 'voiceMic' in allowed && JSON.stringify(allowed.voiceMic) !== JSON.stringify(managerConfig.voiceMic ?? null);
   const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
     ('voiceModel' in allowed && allowed.voiceModel !== managerConfig.voiceModel);
@@ -2445,6 +2478,10 @@ ipcMain.handle('config:set', (_event, partial) => {
     }
   }
   managerConfig = { ...managerConfig, ...allowed };
+  if ('audioOutput' in allowed) tts.setAudioOutput(managerConfig.audioOutput);
+  if ('audioOutput' in allowed || 'voiceMic' in allowed) refreshTrayMenu();
+  if ('audioOutput' in allowed && managerConfig.audioOutput && !chromiumSinkId(chromiumOutputs, managerConfig.audioOutput))
+    log(`audio output: no Chromium match for "${managerConfig.audioOutput.label}" (${chromiumOutputs.map((device) => device.label).join(' | ')}) — chimes stay on the default`);
   // Muted by voice, the mic stays off: it only learns which one to open next.
   if (micChanged)
     micWindow?.webContents.send('mic:control', { command: voiceState === 'muted' ? 'stop' : 'restart', mic: managerConfig.voiceMic });
@@ -2471,7 +2508,9 @@ ipcMain.handle('config:set', (_event, partial) => {
   // now instead of on the first spoken line.
   if (allowed.ttsEnabled === true) tts.predownloadVoice(managerConfig.voice);
   return managerConfig;
-});
+}
+
+ipcMain.handle('config:set', (_event, partial) => applyConfig(partial));
 
 // Remembers the exact window title each session was last found under, so the
 // next hunt hits it instantly instead of cycling tabs again.
@@ -3800,12 +3839,14 @@ const fromMic = (event) => Boolean(micWindow && !micWindow.isDestroyed() && even
 ipcMain.on('mic:chunk', (event, samples) => {
   if (fromMic(event)) voiceListener?.feed(samples);
 });
-ipcMain.on('mic:devices', (event, list) => {
+ipcMain.on('mic:devices', (event, found) => {
   if (!fromMic(event)) return;
-  const next = normalizeMicList(list);
+  chromiumOutputs = normalizeMicList(found?.outputs);
+  const next = normalizeMicList(found?.mics);
   if (JSON.stringify(next) !== JSON.stringify(micDevices)) log(`mic devices: ${next.map((mic) => mic.label).join(' | ') || 'none'}`);
   micDevices = next;
   sendState();
+  refreshTrayMenu();
 });
 ipcMain.on('mic:status', (event, status) => {
   if (fromMic(event)) log(`mic: ${status}`);
@@ -3934,6 +3975,10 @@ app.whenReady().then(() => {
   setupMediaPermissions();
   startVoice();
   setupTray();
+  if (process.platform === 'linux') {
+    refreshAudioOutputs();
+    setInterval(refreshAudioOutputs, 10000);
+  }
   registry.on('change', sendState);
   registry.on('change', scheduleCommandRoots);
   registry.on('change', flushHeldComments);

@@ -1,7 +1,7 @@
 // The hidden window that owns the microphone (#161). Chromium does the
 // capture, echo cancellation, noise suppression and gain; the frames go to
 // main in ~100 ms batches. Nothing is stored.
-import { listMics, pickMic } from './mic-choice.js';
+import { listMics, listOutputs, pickMic } from './mic-choice.js';
 
 const BATCH = 1536; // 12 frames of 128 ≈ 96 ms at 16 kHz
 let context = null;
@@ -50,7 +50,8 @@ async function open() {
     };
     source.connect(tap);
     // Labels only come with the permission: the list is sent once it is open.
-    window.mic.devices(listMics(await navigator.mediaDevices.enumerateDevices()));
+    const found = await navigator.mediaDevices.enumerateDevices();
+    window.mic.devices(listMics(found), listOutputs(found));
     window.mic.status(`ok (${stream.getAudioTracks()[0]?.label || 'padrão'})`);
   } catch (error) {
     window.mic.status(`erro: ${error?.message ?? error}`);
@@ -81,7 +82,8 @@ function deviceChanged() {
 navigator.mediaDevices.addEventListener('devicechange', deviceChanged);
 setInterval(async () => {
   if (!on || !context) return;
-  const mics = JSON.stringify(listMics(await navigator.mediaDevices.enumerateDevices()));
+  const found = await navigator.mediaDevices.enumerateDevices();
+  const mics = JSON.stringify([listMics(found), listOutputs(found)]);
   if (knownMics !== null && mics !== knownMics) deviceChanged();
   knownMics = mics;
 }, 5000);

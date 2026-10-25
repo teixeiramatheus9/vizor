@@ -144,6 +144,7 @@ window.manager.onSpotted(() => {
 const muteButton = document.getElementById('mute');
 let muted = false;
 let audioContext = null;
+let audioSinkId = ''; // the output pinned in the tray menu, as Chromium names it ("" = default)
 
 function renderMuteButton() {
   muteButton.textContent = muted ? '[mudo]' : '[som]';
@@ -1071,7 +1072,7 @@ function playNote(frequency, startOffset, peakGain) {
 function chime(kind, force = false) {
   if (muted && !force) return;
   try {
-    audioContext ??= new AudioContext();
+    audioContext ??= new AudioContext(audioSinkId ? { sinkId: audioSinkId } : {});
     // The voice mode's "I heard you" (#161): one short high note, unlike
     // every alert, so it never reads as "task done".
     if (kind === 'beep') {
@@ -1584,6 +1585,10 @@ sessionsContainer.addEventListener('click', (event) => {
 
 window.manager.onState((state) => {
   if (state.voiceLang) voiceLang = state.voiceLang;
+  if (typeof state.audioSinkId === 'string' && state.audioSinkId !== audioSinkId) {
+    audioSinkId = state.audioSinkId;
+    audioContext?.setSinkId?.(audioSinkId).catch(() => {});
+  }
   applyTheme(state.theme, state.palette);
   applyCrt(state.crt);
   applyShortcuts(state.shortcuts);

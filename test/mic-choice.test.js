@@ -41,3 +41,14 @@ describe('normalizeMic: what main accepts from the settings and the mic window',
     expect(normalizeMicList(Array.from({ length: 50 }, (_, index) => ({ id: `m${index}`, label: 'M' })))).toHaveLength(32);
   });
 });
+
+describe('listOutputs: the outputs as Chromium names them (for the bubble chimes)', async () => {
+  const { listOutputs } = await import('../src/renderer/mic-choice.js');
+  it('real outputs only', () => {
+    expect(listOutputs([
+      { kind: 'audiooutput', deviceId: 'default', label: 'Padrão' },
+      { kind: 'audiooutput', deviceId: 'o1', label: 'Alto-falantes' },
+      { kind: 'audioinput', deviceId: 'i1', label: 'Mic' },
+    ])).toEqual([{ id: 'o1', label: 'Alto-falantes' }]);
+  });
+});

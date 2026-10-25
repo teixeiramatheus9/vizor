@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import { playerCommand,
   predownloadVoice,
+  setAudioOutput,
   speak,
   speakNeural,
   stopSpeaking,
@@ -311,6 +312,26 @@ describe('the system voice speaks the chosen voice language while the model down
     const expected = systemVoiceCommand('hello', 100, process.platform, true, 'en');
     expect(calls[0].command).toBe(expected[0]);
     expect(calls[0].args).toEqual(expected[1]);
+    stopSpeaking();
+  });
+});
+
+describe('the voice plays on the chosen output (tray menu › saída de áudio)', () => {
+  it('linux: pw-play on the pinned sink; aplay on the system default; other platforms unchanged', () => {
+    expect(playerCommand('/t/x.wav', 'linux', { name: 'alsa_output.usb.h510', label: 'H510' })).toEqual(['pw-play', ['--target', 'alsa_output.usb.h510', '/t/x.wav']]);
+    expect(playerCommand('/t/x.wav', 'linux', null)).toEqual(['aplay', ['-q', '/t/x.wav']]);
+    expect(playerCommand('/t/x.wav', 'darwin', { name: 'x', label: 'x' })).toEqual(['afplay', ['/t/x.wav']]);
+  });
+});
+
+describe('setAudioOutput', () => {
+  it('the neural voice plays on the pinned output until it is cleared', () => {
+    const { calls, children, spawnFn } = recorder();
+    setAudioOutput({ name: 'alsa_output.usb.h510', label: 'H510' });
+    speak('oi', { voice: 'clara', spawnFn, installed: true });
+    children[0].emit('exit', 0, null);
+    expect(calls[1]).toMatchObject(process.platform === 'linux' ? { command: 'pw-play', args: ['--target', 'alsa_output.usb.h510', expect.any(String)] } : {});
+    setAudioOutput(null);
     stopSpeaking();
   });
 });

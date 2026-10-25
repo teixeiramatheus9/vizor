@@ -31,3 +31,9 @@ export function normalizeMic(value) {
 export function normalizeMicList(list) {
   return Array.isArray(list) ? list.map(normalizeMic).filter(Boolean).slice(0, 32) : [];
 }
+
+export function listOutputs(devices) {
+  return (devices ?? [])
+    .filter((device) => device.kind === 'audiooutput' && !ALIASES.has(device.deviceId))
+    .map((device) => ({ id: device.deviceId, label: device.label || device.deviceId }));
+}
