@@ -257,4 +257,10 @@ describe('rule guard hooks', () => {
     const commands = Object.values(result.hooks).flat().flatMap((group) => group.hooks.map((hook) => hook.command));
     expect(commands.filter((command) => command === GUARD)).toHaveLength(3);
   });
+
+  it('the sub-agent events are installed (#142)', () => {
+    const result = addHooks({}, COMMAND);
+    expect(result.hooks.SubagentStart).toBeDefined();
+    expect(result.hooks.SubagentStop).toBeDefined();
+  });
 });

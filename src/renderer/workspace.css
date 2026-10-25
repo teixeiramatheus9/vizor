@@ -1175,3 +1175,44 @@ svg.graph line.call.picked {
   color: var(--accent);
   font-size: 11px;
 }
+/* the backstage (#142): chips in the consequences strip, a detail on click */
+.backstage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.backstage-chip {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.backstage-chip.open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.backstage-detail {
+  max-height: 30vh;
+  overflow-y: auto;
+  margin: 4px 0;
+}
+.backstage-item {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--hairline, var(--border));
+}
+.backstage-state,
+.backstage-files {
+  color: var(--muted);
+  font-size: 11px;
+}
+.backstage-log {
+  margin: 3px 0 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: var(--muted);
+}

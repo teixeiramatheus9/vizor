@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification'];
+// SubagentStart/Stop: the Maestro's backstage (#142) shows a músico's sub-agents.
+const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification', 'SubagentStart', 'SubagentStop'];
 
 // The workspace tracks every file the AI edits, and the voice mode narrates
 // commands and sub-agents (#161). These fire on each tool call, so the

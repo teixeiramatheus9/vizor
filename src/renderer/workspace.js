@@ -26,7 +26,7 @@ import {
   onTask,
   stillWanted,
 } from './inspector-state.js';
-import { renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
+import { renderBackstage, renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
 import { ZOOM_MAX, ZOOM_OPEN, ZOOM_STEP, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
 
 const sidebar = document.getElementById('sidebar');
@@ -600,6 +600,7 @@ new ResizeObserver(() => fitActive()).observe(termHost);
 let maestroSaved = null; // the view before the stage, put back on leaving
 let maestroSaid = null; // { source, text } in the balloon
 let maestroSaidFull = false;
+let backstageOpen = null; // the backstage chip opened in the consequences strip (#142)
 let maestroOrderShown = null;
 let maestroOrderTimer = null;
 const maestroLines = new Map(); // sessionId → narration lines
@@ -785,7 +786,8 @@ function renderMaestro() {
   if (!maestro.on) return;
   orchestraEl.innerHTML = renderOrchestra(maestro.orchestra, maestro.focusedId, maestro.orders ?? {});
   renderGraphColumn();
-  consequencesEl.innerHTML = renderConsequences(maestroLines.get(maestro.focusedId) ?? []);
+  consequencesEl.innerHTML =
+    renderBackstage(maestro.backstage?.[maestro.focusedId], backstageOpen) + renderConsequences(maestroLines.get(maestro.focusedId) ?? []);
   balloonEl.innerHTML = renderBalloon(maestroSaid, musicianOf, { full: maestroSaidFull });
   orderEl.innerHTML = renderOrder(maestroOrderShown);
   placeBalloon();
@@ -903,6 +905,12 @@ document.addEventListener('click', async (event) => {
   const musician = target.closest('[data-musician]');
   if (musician) {
     window.vizor.focusMusician(musician.dataset.musician);
+    return;
+  }
+  const chip = target.closest('[data-backstage]');
+  if (chip) {
+    backstageOpen = backstageOpen === chip.dataset.backstage ? null : chip.dataset.backstage;
+    renderMaestro();
     return;
   }
   if (target.closest('[data-balloon-more]')) {

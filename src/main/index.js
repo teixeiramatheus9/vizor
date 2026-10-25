@@ -36,6 +36,8 @@ import { createPendingOrder } from './maestro/pending-order.js';
 import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
 import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
 import { createConductor } from './maestro/conductor.js';
+import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
+import { readTail } from './maestro/log-tail.js';
 import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
 import { testOutcomeOf } from './voice/narration.js';
@@ -739,6 +741,70 @@ function maestroTurnEnded(musician) {
   if (!graph || graph.unavailable || !impact) return;
   const offer = shouldSuggest(impact, criticalOf(graph), new Set());
   if (offer && voiceSession.onSuggestReviewer({ musician, ...offer })) reviewerOffered.add(offerKey);
+}
+
+// --- the backstage (#142): sub-agents, background logs, ports, per músico ---
+const backstage = createBackstage();
+const backstageLogs = new Map(); // output file → { lines, gone }
+const backstagePorts = new Map(); // sessionId → [{ port, process }]
+let backstageTimers = null;
+
+async function refreshBackstageLogs() {
+  let changed = false;
+  for (const musician of maestroOrchestra)
+    for (const item of backstage.backgroundOf(musician.sessionId)) {
+      const tail = await readTail(item.outputFile);
+      const before = JSON.stringify(backstageLogs.get(item.outputFile));
+      backstageLogs.set(item.outputFile, { lines: tail.lines, gone: tail.gone });
+      changed ||= before !== JSON.stringify(backstageLogs.get(item.outputFile));
+    }
+  if (changed) pushWorkspaceState();
+}
+
+// Who is whose parent, from /proc/<pid>/stat ("pid (comm) state ppid …").
+async function readParents() {
+  const parents = new Map();
+  for (const name of await fs.promises.readdir('/proc').catch(() => [])) {
+    if (!/^\d+$/.test(name)) continue;
+    const stat = await fs.promises.readFile(`/proc/${name}/stat`, 'utf8').catch(() => null);
+    if (stat) parents.set(Number(name), Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]));
+  }
+  return parents;
+}
+
+async function refreshBackstagePorts() {
+  if (!maestroOrchestra.length) return;
+  const listeners = parseListeners(await runText('ss', ['-ltnpH']).catch(() => ''));
+  const parents = listeners.length ? await readParents() : new Map();
+  let changed = false;
+  for (const musician of maestroOrchestra) {
+    const pid = readSessionPid(musician.sessionId);
+    const ports = pid && listeners.length ? portsFor(listeners, descendantsOf(pid, parents)) : [];
+    changed ||= JSON.stringify(ports) !== JSON.stringify(backstagePorts.get(musician.sessionId) ?? []);
+    backstagePorts.set(musician.sessionId, ports);
+  }
+  if (changed) pushWorkspaceState();
+}
+
+// Logs every 2 s and ports every 5 s, only while the Maestro is on.
+function syncBackstageTimers() {
+  if (maestroOn() && !backstageTimers) {
+    backstageTimers = [
+      setInterval(() => refreshBackstageLogs().catch((error) => log(`backstage logs failed: ${error}`)), 2000),
+      setInterval(() => refreshBackstagePorts().catch((error) => log(`backstage ports failed: ${error}`)), 5000),
+    ];
+  } else if (!maestroOn() && backstageTimers) {
+    backstageTimers.forEach(clearInterval);
+    backstageTimers = null;
+  }
+}
+
+function backstageOf(sessionId) {
+  return {
+    subagents: backstage.subagentsOf(sessionId),
+    background: backstage.backgroundOf(sessionId).map((item) => ({ id: item.id, command: item.command, ...(backstageLogs.get(item.outputFile) ?? { lines: [], gone: false }) })),
+    ports: backstagePorts.get(sessionId) ?? [],
+  };
 }
 
 function maestroFocus(sessionId) {
@@ -1757,6 +1823,15 @@ function pushWorkspaceStateNow() {
   maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
   maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
   if (maestroOn()) for (const musician of maestroOrchestra) graphFor(musician.root);
+  syncBackstageTimers();
+  // Sessions that are no músico (any more) leave the backstage.
+  if (maestroOn())
+    for (const sessionId of backstage.sessions())
+      if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) {
+        for (const item of backstage.backgroundOf(sessionId)) backstageLogs.delete(item.outputFile);
+        backstage.forget(sessionId);
+        backstagePorts.delete(sessionId);
+      }
   // A músico gone with an order pending: the gerente says it could not do it.
   for (const { sessionId } of maestroConductor.list())
     if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) queueMicrotask(() => runConductor(maestroConductor.sessionGone(sessionId)));
@@ -1777,6 +1852,7 @@ function pushWorkspaceStateNow() {
       focusedId: maestroFocusId,
       impacts: maestroOn() ? maestroImpacts() : [],
       orders: Object.fromEntries(maestroConductor.list().map((order) => [order.sessionId, order.label])),
+      backstage: maestroOn() ? Object.fromEntries(maestroOrchestra.map((musician) => [musician.sessionId, backstageOf(musician.sessionId)])) : {},
     },
     theme: managerConfig.theme,
     palette: managerConfig.palette,
@@ -2515,6 +2591,9 @@ function verifiedTerm(event) {
 }
 
 function onHookEvent(event, reply) {
+  backstage.onEvent(event);
+  // Sub-agent starts and stops are the backstage's only (#142).
+  if (event?.hook_event_name === 'SubagentStart' || event?.hook_event_name === 'SubagentStop') return;
   if (event?.type === 'guard-ask' || event?.type === 'guard-event') {
     onGuardMessage(event, reply);
     return;
