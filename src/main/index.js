@@ -688,14 +688,21 @@ function runConductor(actions) {
   for (const action of actions) {
     if (action.type === 'prompt') {
       turnTests.delete(action.sessionId); // a new turn starts with this prompt
-      // Not safe to type yet (a question on screen, just settling): tried again.
+      // Not safe to type yet (a question on screen, just settling, the user
+      // typing in that tab): tried again; never arrived, the order waits and
+      // you hear it (review C1, I1).
+      const userTyping = () => Date.now() - (userTypedAt.get(ptyOfSession(action.sessionId)) ?? 0) < USER_TYPING_MS;
       const deliver = (tries) =>
-        voiceDeliverPrompt(action.sessionId, action.text)
+        (userTyping() ? Promise.resolve('hold') : voiceDeliverPrompt(action.sessionId, action.text))
           .then((outcome) => {
-            if (outcome === 'hold' && tries < 5) setTimeout(() => deliver(tries + 1), 2000);
-            else if (outcome !== 'sent') log(`conductor prompt to ${action.sessionId.slice(0, 8)}: ${outcome}`);
+            if (outcome === 'hold' && tries < 5) return setTimeout(() => deliver(tries + 1), 2000);
+            if (outcome !== 'sent') log(`conductor prompt to ${action.sessionId.slice(0, 8)}: ${outcome}`);
+            return runConductor(maestroConductor.delivered(action.sessionId, outcome === 'sent'));
           })
-          .catch((error) => log(`conductor prompt failed: ${error}`));
+          .catch((error) => {
+            log(`conductor prompt failed: ${error}`);
+            runConductor(maestroConductor.delivered(action.sessionId, false));
+          });
       deliver(0);
     } else if (voiceSession) voiceSession.onConductorAction(action);
     else speakAsManager(action.text);
@@ -708,14 +715,14 @@ function runConductor(actions) {
 function maestroTurnEnded(musician) {
   runConductor(maestroConductor.turnEnded(musician.sessionId, { tests: turnTests.get(musician.sessionId) ?? null }));
   turnTests.delete(musician.sessionId);
-  if (!voiceSession || reviewerOffered.has(musician.sessionId)) return;
+  // Once per task (or per chat without one), and only if the voice could ask.
+  const offerKey = musician.number !== null ? `task:${musician.root}:${musician.number}` : musician.sessionId;
+  if (!voiceSession || reviewerOffered.has(offerKey)) return;
   const graph = musician.root ? graphIndexers.get(musician.root)?.graph() : null;
   const impact = maestroImpacts().find((item) => item.sessionId === musician.sessionId);
   if (!graph || graph.unavailable || !impact) return;
-  const offer = shouldSuggest(impact, criticalOf(graph), reviewerOffered);
-  if (!offer) return;
-  reviewerOffered.add(musician.sessionId);
-  voiceSession.onSuggestReviewer({ musician, ...offer });
+  const offer = shouldSuggest(impact, criticalOf(graph), new Set());
+  if (offer && voiceSession.onSuggestReviewer({ musician, ...offer })) reviewerOffered.add(offerKey);
 }
 
 function maestroFocus(sessionId) {
@@ -2010,8 +2017,13 @@ ipcMain.on('workspace:active-tab', (event, id) => {
   activeTerminalId = id;
   scheduleTabsSave();
 });
+// When the user last typed in each tab: the gerente never types over them (#162 review).
+const userTypedAt = new Map(); // pty id → time
+const USER_TYPING_MS = 5000;
 ipcMain.on('pty:write', (event, { id, data } = {}) => {
-  if (fromWorkspace(event) && typeof data === 'string') ptyHost?.write(id, data);
+  if (!fromWorkspace(event) || typeof data !== 'string') return;
+  userTypedAt.set(id, Date.now());
+  ptyHost?.write(id, data);
 });
 ipcMain.on('pty:resize', (event, { id, cols, rows } = {}) => {
   const size = fromWorkspace(event) ? clampTerminalSize(cols, rows) : null;
@@ -2468,7 +2480,7 @@ function onHookEvent(event, reply) {
     pendingNewChats.delete(event.term.VIZOR_PTY_ID);
     newChat({ sessionId: event.session_id });
   }
-  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
+  if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event?.hook_event_name)) {
     voiceSession?.onToolEvent(event);
     maestroNarrate(event);
     const verdict = testOutcomeOf(event);
@@ -2482,6 +2494,8 @@ function onHookEvent(event, reply) {
     onToolEvent(event);
     return;
   }
+  // A failed command: only the narration and the conductor read it (no edit landed).
+  if (event?.hook_event_name === 'PostToolUseFailure') return;
   if (event?.hook_event_name === 'Notification') {
     event = {
       ...event,
@@ -2695,6 +2709,7 @@ function applyConfig(partial) {
   if ('maestroEnabled' in allowed) {
     if (!allowed.maestroEnabled) {
       maestroOrder.cancel();
+      maestroConductor.clear(); // no order left to fire on a later, unrelated stop
       // The graphs go with the stage: rebuilt (from cache-less parse) on the next one.
       graphIndexers.clear();
       graphParser?.close();
@@ -3851,7 +3866,12 @@ function createVoiceSessionForApp() {
     interrupt: maestroInterrupt,
     pendingOrder: maestroOrder,
     conductor: maestroConductor,
-    startOrderNow: (sessionId) => runConductor(maestroConductor.turnEnded(sessionId, { tests: null })),
+    // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
+    startOrderNow: (sessionId) => {
+      const session = registry.sessions.get(sessionId);
+      if (!session || session.question || session.needsPermission) return;
+      if (session.status === 'done' || session.status === 'waiting') runConductor(maestroConductor.turnEnded(sessionId, { tests: null }));
+    },
     linkedSessions: (number) => {
       const root = voiceRoot();
       return root ? taskLinks.linksFor(root, number) : [];

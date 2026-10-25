@@ -10,7 +10,8 @@ const HOOK_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification'];
 // commands and sub-agents (#161). These fire on each tool call, so the
 // matcher keeps them off Read/Grep/Glob, and async keeps Claude Code from
 // waiting even for the hook's spawn.
-export const TOOL_HOOK_EVENTS = ['PreToolUse', 'PostToolUse'];
+// PostToolUseFailure: a command that fails (npm test exiting 1) reports there.
+export const TOOL_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
 export const EDIT_TOOL_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent';
 const ALL_EVENTS = [...HOOK_EVENTS, ...TOOL_HOOK_EVENTS];
 

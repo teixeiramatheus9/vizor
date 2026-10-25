@@ -679,7 +679,7 @@ describe('voice session — the conducting gerente', async () => {
     const opened = calls.find(([name]) => name === 'new');
     expect(opened[1].cwd).toBe('/r-wt/22');
     expect(opened[1].prompt).toContain('Revise o que a task 22 mudou');
-    expect(calls).toContainEqual(['link', 22, 'snew']);
+    expect(calls.some(([name]) => name === 'link')).toBe(false); // review I6
     expect(texts().at(-1)).toBe('Um avaliador vai revisar a 22.');
   });
 
@@ -703,5 +703,66 @@ describe('voice session — the conducting gerente', async () => {
     expect(texts().at(-1)).toBe("Got it: when 22 finishes, I'll send it.");
     session.onConductorAction({ type: 'done', sessionId: 's22', text: 'Done: abre a PR.' });
     expect(texts().at(-1)).toBe('Done: abre a PR.');
+  });
+});
+
+describe('voice session — the conducting gerente, review fixes', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const { createConductor } = await import('../src/main/maestro/conductor.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const musician = (sessionId, number, agent = null) => ({ sessionId, number, agent, name: number !== null ? `#${number}` : `A${agent}`, root: '/r', ptyId: `p-${sessionId}`, label: `chat ${sessionId}`, status: 'working', color: '#fff', files: [] });
+  function scene(overrides = {}) {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const conductor = createConductor();
+    const base = setup({ maestro: () => true, orchestra: () => [musician('s22', 22)], interrupt: () => true, focus: () => {}, pendingOrder, conductor, ...overrides });
+    return { ...base, conductor, fire: () => timer?.() };
+  }
+
+  it('I4: a second order for the same músico says it replaced the first', async () => {
+    const { session, fire, texts } = scene();
+    await session.onUtterance('quando a 22 terminar, roda os testes');
+    fire();
+    await tick();
+    await session.onUtterance('quando a 22 terminar, abre a PR');
+    fire();
+    await tick();
+    expect(texts().at(-1)).toBe('Troquei a ordem da 22: quando ela terminar, eu mando a nova.');
+  });
+
+  it('I5: no offer while another question waits, nor for the chat the voice is with', async () => {
+    const { session, texts, fire } = scene({ resolveTask: async () => ({ none: true, cwd: '/r' }) });
+    await session.onUtterance('retoma a task 40');
+    fire();
+    await tick();
+    const before = texts().length;
+    session.onSuggestReviewer({ musician: musician('s22', 22), touched: 4, critical: 0 });
+    expect(texts().length).toBe(before); // "Abro um chat novo pra 40?" is still the question
+    const bound = scene();
+    await bound.session.onUtterance('retoma a task 22');
+    bound.fire();
+    await tick();
+    const count = bound.texts().length;
+    bound.session.onSuggestReviewer({ musician: musician('s22', 22), touched: 4, critical: 0 });
+    expect(bound.texts().length).toBe(count);
+  });
+
+  it('I5: "sim" reaches the very músico offered, even if A-numbers moved', async () => {
+    let orchestra = [musician('x', null, 1)];
+    const { session, fire, calls } = scene({ orchestra: () => orchestra });
+    session.onSuggestReviewer({ musician: orchestra[0], touched: 3, critical: 0 });
+    orchestra = [musician('y', null, 1), musician('x', null, 2)]; // a new tab took A1
+    await session.onUtterance('sim');
+    fire();
+    await tick();
+    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('task A2');
+  });
+
+  it('I6: the reviewer is not linked to the task (it is not another músico of it)', async () => {
+    const { session, fire, calls } = scene();
+    await session.onUtterance('chama um avaliador pra 22');
+    fire();
+    await tick();
+    expect(calls.some(([name]) => name === 'link')).toBe(false);
   });
 });

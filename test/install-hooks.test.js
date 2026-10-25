@@ -95,6 +95,8 @@ describe('install-hooks', () => {
     const result = addHooks({}, COMMAND);
     expect(result.hooks.PreToolUse).toEqual([TOOL_GROUP]);
     expect(result.hooks.PostToolUse).toEqual([TOOL_GROUP]);
+    // A command that fails (npm test exiting 1) comes as PostToolUseFailure (#162 review).
+    expect(result.hooks.PostToolUseFailure).toEqual([TOOL_GROUP]);
   });
 
   it('an install with the old edit-only matcher is swapped for the new one', () => {

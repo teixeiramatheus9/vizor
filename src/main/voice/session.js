@@ -64,6 +64,10 @@ const LINES = {
     picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
     // The conducting gerente (#162).
     orderTaken: (musician) => `Combinado: quando ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`} terminar, eu mando.`,
+    orderReplaced: (musician) =>
+      musician.number !== null
+        ? `Troquei a ordem da ${musician.number}: quando ela terminar, eu mando a nova.`
+        : `Troquei a ordem do ${musician.name}: quando ele terminar, eu mando a nova.`,
     reviewerOn: (musician) => `Um avaliador vai revisar ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`}.`,
     suggestReviewer: (musician, touched, critical) =>
       `${musician.number !== null ? `A ${musician.number}` : `O ${musician.name}`} mexeu em ${touched} arquivos${
@@ -121,6 +125,7 @@ const LINES = {
     maestroOff: 'Maestro mode off.',
     picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
     orderTaken: (musician) => `Got it: when ${musician.number ?? musician.name} finishes, I'll send it.`,
+    orderReplaced: (musician) => `Replaced the order for ${musician.number ?? musician.name}: when it finishes, I'll send the new one.`,
     reviewerOn: (musician) => `A reviewer will look at ${musician.number ?? musician.name}.`,
     suggestReviewer: (musician, touched, critical) =>
       `${musician.number ?? musician.name} touched ${touched} files${critical ? `, ${critical} critical` : ''}. Should I call a reviewer?`,
@@ -241,12 +246,15 @@ export function createVoiceSession(deps) {
   // "interrompa a task 22" / "vai pra 22": none says so, two asks which.
   // A task linked to chats is found only among them (one outside the Vizor is
   // no músico); a number nobody links is a place in the orchestra.
-  // address: { number } (a task) or { agent } (A1, A2…).
+  // address: { number } (a task), { agent } (A1, A2…) or { sessionId } (an
+  // offer the Vizor made: A-numbers move when tabs come and go).
   function onMusicians(kind, address, run) {
     const orchestra = deps.orchestra?.() ?? [];
-    const { number, agent } = address;
-    const linked = agent ? [] : deps.linkedSessions?.(number) ?? [];
-    const found = agent
+    const { number, agent, sessionId } = address;
+    const linked = agent || sessionId ? [] : deps.linkedSessions?.(number) ?? [];
+    const found = sessionId
+      ? orchestra.filter((musician) => musician.sessionId === sessionId)
+      : agent
       ? findAgent(orchestra, agent)
       : linked.length
         ? orchestra.filter((musician) => linked.includes(musician.sessionId))
@@ -297,8 +305,8 @@ export function createVoiceSession(deps) {
   // stopped gets it now.
   function orderFor(musician, text) {
     return held(ORDER.whenDone(musician, text), () => {
-      deps.conductor?.order(musician.sessionId, { label: text, steps: parseSteps(text) });
-      say(lines().orderTaken(musician));
+      const { replaced } = deps.conductor?.order(musician.sessionId, { label: text, steps: parseSteps(text) }) ?? {};
+      say(replaced ? lines().orderReplaced(musician) : lines().orderTaken(musician));
       if (musician.status === 'done' || musician.status === 'waiting') deps.startOrderNow?.(musician.sessionId);
     });
   }
@@ -307,8 +315,8 @@ export function createVoiceSession(deps) {
   function reviewerFor(musician) {
     return held(ORDER.reviewer(musician), async () => {
       const opened = await deps.openNew({ cwd: musician.root ?? deps.projectRoot(), prompt: REVIEW_TASK_PROMPT(musician.number ?? musician.name) });
+      // Not linked to the task: the reviewer is no other músico of it (review I6).
       if (!opened?.sessionId) return say(lines().newChatFailed);
-      if (musician.number !== null && musician.number !== undefined) deps.linkTask(musician.number, opened.sessionId);
       return say(lines().reviewerOn(musician));
     });
   }
@@ -501,9 +509,14 @@ export function createVoiceSession(deps) {
     },
 
     // The Vizor offers a reviewer (#162): "sim" calls it.
+    // Never over another open question, nor for the chat the voice is with
+    // (its own "sim" belongs to it). True when it was offered (review I5).
     onSuggestReviewer({ musician, touched, critical }) {
-      pendingConfirm = { kind: 'intent', intent: { type: 'call-reviewer', number: musician.number, agent: musician.agent } };
+      if (pendingConfirm || pendingChoice || pendingAsk) return false;
+      if (target.kind === 'chat' && target.sessionId === musician.sessionId) return false;
+      pendingConfirm = { kind: 'intent', intent: { type: 'call-reviewer', sessionId: musician.sessionId } };
       say(lines().suggestReviewer(musician, touched, critical), 2, { source: 'manager' });
+      return true;
     },
 
     // What the conductor reports (done, or it needs you); prompts go elsewhere.

@@ -34,12 +34,14 @@ const SAID = {
     failed: (label) => `${label}: os testes não passaram depois de ${MAX_FIX_ATTEMPTS} tentativas. Precisa de você.`,
     noTests: (label) => `${label}: o músico não rodou os testes. Precisa de você.`,
     gone: (label) => `O chat fechou antes de eu cumprir: ${label}.`,
+    notSent: (label) => `${label}: não consegui mandar pro chat agora. Tento no próximo fim de turno.`,
   },
   en: {
     done: (label) => `Done: ${label}.`,
     failed: (label) => `${label}: the tests still fail after ${MAX_FIX_ATTEMPTS} tries. It needs you.`,
     noTests: (label) => `${label}: the músico did not run the tests. It needs you.`,
     gone: (label) => `The chat closed before I could do it: ${label}.`,
+    notSent: (label) => `${label}: I couldn't send it to the chat. I'll try at its next stop.`,
   },
 };
 
@@ -55,13 +57,16 @@ export function createConductor({ lang = () => 'pt' } = {}) {
     },
 
     // tests: what the turn's own test runs said ('passed' | 'failed' | null).
+    // A prompt is 'sending' until index.js says it reached the chat: an end
+    // of turn meanwhile belongs to an earlier turn (review C1).
     turnEnded(sessionId, { tests = null } = {}) {
       const order = orders.get(sessionId);
-      if (!order) return [];
-      if (order.waiting === 'turn') {
-        order.waiting = 'result';
-        return [{ type: 'prompt', sessionId, text: promptFor(order.steps, 0) }];
-      }
+      if (!order || order.waiting === 'sending') return [];
+      const send = (text) => {
+        order.waiting = 'sending';
+        return [{ type: 'prompt', sessionId, text }];
+      };
+      if (order.waiting === 'turn') return send(promptFor(order.steps, order.attempt));
       const finish = (type, text) => {
         orders.delete(sessionId);
         return [{ type, sessionId, text }];
@@ -70,13 +75,28 @@ export function createConductor({ lang = () => 'pt' } = {}) {
       if (tests === 'failed') {
         if (order.attempt >= MAX_FIX_ATTEMPTS) return finish('call-user', said().failed(order.label));
         order.attempt += 1;
-        return [{ type: 'prompt', sessionId, text: promptFor(order.steps, order.attempt) }];
+        return send(promptFor(order.steps, order.attempt));
       }
-      // A turn that ran no test at all: asked once more, then you decide.
+      // A turn that ran no test at all: the whole order once more, then you decide.
       if (order.askedForTests) return finish('call-user', said().noTests(order.label));
       order.askedForTests = true;
-      return [{ type: 'prompt', sessionId, text: 'Você não rodou os testes: rode e me diga o resultado.' }];
+      return send(`Você não rodou os testes. ${promptFor(order.steps, 0)}`);
     },
+
+    // Whether the prompt reached the chat. Not sent: the order waits for the
+    // next end of turn, and you hear it.
+    delivered(sessionId, sent) {
+      const order = orders.get(sessionId);
+      if (!order || order.waiting !== 'sending') return [];
+      if (sent) {
+        order.waiting = 'result';
+        return [];
+      }
+      order.waiting = 'turn';
+      return [{ type: 'call-user', sessionId, text: said().notSent(order.label) }];
+    },
+
+    clear: () => orders.clear(),
 
     sessionGone(sessionId) {
       const order = orders.get(sessionId);

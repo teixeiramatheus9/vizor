@@ -19,6 +19,7 @@ describe('the conducting gerente', () => {
     expect(conductor.ordersOf('s22')).toMatchObject({ label: 'rodar os testes e abrir a PR', attempt: 0, waiting: 'turn' });
     const sent = conductor.turnEnded('s22', { tests: null });
     expect(sent).toEqual([{ type: 'prompt', sessionId: 's22', text: promptFor(testsAndPr.steps, 0) }]);
+    conductor.delivered('s22', true);
     expect(conductor.ordersOf('s22').waiting).toBe('result');
     const done = conductor.turnEnded('s22', { tests: 'passed' });
     expect(done).toEqual([{ type: 'done', sessionId: 's22', text: expect.stringContaining('rodar os testes e abrir a PR') }]);
@@ -29,8 +30,11 @@ describe('the conducting gerente', () => {
     const conductor = createConductor();
     conductor.order('s22', testsAndPr);
     conductor.turnEnded('s22', { tests: null });
+    conductor.delivered('s22', true);
     expect(conductor.turnEnded('s22', { tests: 'failed' })).toEqual([{ type: 'prompt', sessionId: 's22', text: promptFor(testsAndPr.steps, 1) }]);
+    conductor.delivered('s22', true);
     expect(conductor.turnEnded('s22', { tests: 'failed' })).toEqual([{ type: 'prompt', sessionId: 's22', text: promptFor(testsAndPr.steps, 2) }]);
+    conductor.delivered('s22', true);
     const call = conductor.turnEnded('s22', { tests: 'failed' });
     expect(call).toEqual([{ type: 'call-user', sessionId: 's22', text: expect.stringContaining(`${MAX_FIX_ATTEMPTS} tentativas`) }]);
     expect(conductor.ordersOf('s22')).toBeNull();
@@ -41,12 +45,16 @@ describe('the conducting gerente', () => {
     const conductor = createConductor();
     conductor.order('s22', testsAndPr);
     conductor.turnEnded('s22', { tests: null });
+    conductor.delivered('s22', true);
     const again = conductor.turnEnded('s22', { tests: null });
-    expect(again).toEqual([{ type: 'prompt', sessionId: 's22', text: 'Você não rodou os testes: rode e me diga o resultado.' }]);
+    // The nudge carries the whole order (review I2: "abrir a PR" was dropped).
+    expect(again).toEqual([{ type: 'prompt', sessionId: 's22', text: `Você não rodou os testes. ${promptFor(testsAndPr.steps, 0)}` }]);
+    conductor.delivered('s22', true);
     expect(conductor.turnEnded('s22', { tests: null })).toEqual([{ type: 'call-user', sessionId: 's22', text: expect.stringContaining('não rodou os testes') }]);
     // An order without tests is done at the next end of turn.
     conductor.order('s9', { label: 'atualizar o README', steps: parseSteps('atualiza o README') });
     conductor.turnEnded('s9', { tests: null });
+    conductor.delivered('s9', true);
     expect(conductor.turnEnded('s9', { tests: null })[0].type).toBe('done');
   });
 
@@ -64,5 +72,36 @@ describe('the conducting gerente', () => {
     expect(conductor.sessionGone('s22')).toEqual([{ type: 'call-user', sessionId: 's22', text: expect.stringContaining('fechou antes') }]);
     expect(conductor.ordersOf('s22')).toBeNull();
     expect(conductor.sessionGone('nobody')).toEqual([]);
+  });
+});
+
+describe('the conductor, review fixes', () => {
+  it('C1: a prompt that never arrived does not move the order on, and says so', () => {
+    const conductor = createConductor();
+    conductor.order('s22', testsAndPr);
+    conductor.turnEnded('s22', { tests: null });
+    expect(conductor.ordersOf('s22').waiting).toBe('sending');
+    expect(conductor.delivered('s22', false)).toEqual([{ type: 'call-user', sessionId: 's22', text: expect.stringContaining('não consegui mandar') }]);
+    expect(conductor.ordersOf('s22').waiting).toBe('turn');
+    // The next end of turn tries again; this time it arrives.
+    conductor.turnEnded('s22', { tests: null });
+    expect(conductor.delivered('s22', true)).toEqual([]);
+    expect(conductor.ordersOf('s22').waiting).toBe('result');
+  });
+
+  it('C1: an end of turn while the prompt is still on its way is not its result', () => {
+    const conductor = createConductor();
+    conductor.order('s22', testsAndPr);
+    conductor.turnEnded('s22', { tests: null });
+    expect(conductor.turnEnded('s22', { tests: 'passed' })).toEqual([]);
+    expect(conductor.ordersOf('s22')).not.toBeNull();
+  });
+
+  it('M2: clear drops every order', () => {
+    const conductor = createConductor();
+    conductor.order('a', testsAndPr);
+    conductor.order('b', testsAndPr);
+    conductor.clear();
+    expect(conductor.list()).toEqual([]);
   });
 });

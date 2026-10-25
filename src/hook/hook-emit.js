@@ -47,7 +47,7 @@ function fallbackNotify(event) {
 // Edit-tool events carry whole file contents (Write) and tool output. The app
 // reads every file from disk anyway, so megabytes over the socket on each
 // edit would buy nothing but a slower hook.
-const TOOL_EVENTS = ['PreToolUse', 'PostToolUse'];
+const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
 const MAX_TOOL_STRING = 65536;
 
 function truncateLargeStrings(value) {
@@ -62,7 +62,9 @@ function truncateLargeStrings(value) {
 }
 
 function slimToolEvent(event) {
-  const { tool_response: response, ...rest } = event;
+  const { tool_response: response, error, ...rest } = event;
+  // A failed command (PostToolUseFailure) brings its output in the error text.
+  if (rest.tool_name === 'Bash' && typeof error === 'string' && error) rest.tool_output_tail = error.slice(-300);
   // Write reports whether it created the file: the one bit of the response
   // the app needs (a new file diffs against empty).
   if (response?.type === 'create' || response?.type === 'update')
