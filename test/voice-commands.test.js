@@ -230,3 +230,20 @@ describe('routeUtterance — músicos without a task are A1, A2…', () => {
     expect(routeUtterance('interrompa a task 2')).toEqual({ type: 'interrupt', number: 2 });
   });
 });
+
+describe('routeUtterance — the conducting gerente', () => {
+  it('quando a 22 terminar, … is a conditional order', () => {
+    expect(routeUtterance('Vizor, quando a 22 terminar, manda rodar os testes e abrir a PR')).toEqual({ type: 'when-done', number: 22, text: 'manda rodar os testes e abrir a PR' });
+    expect(routeUtterance('quando a task 7 acabar abre a PR')).toEqual({ type: 'when-done', number: 7, text: 'abre a PR' });
+  });
+
+  it('quando o A1 acabar …', () => {
+    expect(routeUtterance('quando o A1 acabar, roda os testes')).toEqual({ type: 'when-done', agent: 1, text: 'roda os testes' });
+  });
+
+  it('chama um avaliador pra 22 / pro A1', () => {
+    expect(routeUtterance('Vizor, chama um avaliador pra 22')).toEqual({ type: 'call-reviewer', number: 22 });
+    expect(routeUtterance('chame um avaliador para a task 22')).toEqual({ type: 'call-reviewer', number: 22 });
+    expect(routeUtterance('chama um avaliador pro A1')).toEqual({ type: 'call-reviewer', agent: 1 });
+  });
+});

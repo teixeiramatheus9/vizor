@@ -3,6 +3,8 @@ import { analyzeReply, createReplyCursor, needsSummary, spokenReply } from './re
 import { createNarrator } from './narration.js';
 import { closestPhrase } from './vocabulary.js';
 import { findAgent, findMusicians } from '../maestro/orchestra.js';
+import { parseSteps } from '../maestro/conductor.js';
+import { REVIEW_TASK_PROMPT } from '../maestro/reviewer.js';
 
 // The voice conversation (#161): who the voice talks to (the gerente or one
 // chat), what each utterance does, and what comes back spoken. Every side
@@ -60,6 +62,13 @@ const LINES = {
     maestroOn: 'Modo Maestro ativado.',
     maestroOff: 'Modo Maestro desativado.',
     picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
+    // The conducting gerente (#162).
+    orderTaken: (musician) => `Combinado: quando ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`} terminar, eu mando.`,
+    reviewerOn: (musician) => `Um avaliador vai revisar ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`}.`,
+    suggestReviewer: (musician, touched, critical) =>
+      `${musician.number !== null ? `A ${musician.number}` : `O ${musician.name}`} mexeu em ${touched} arquivos${
+        critical ? `, ${critical} ${critical === 1 ? 'crítico' : 'críticos'}` : ''
+      }. Chamo um avaliador?`,
     reviewing: (number) => `Um músico vai revisar a PR ${number}.`,
     cancelled: 'Cancelado.',
     alreadyRan: 'Já foi.',
@@ -71,6 +80,8 @@ const LINES = {
       resume: (number) => `retomar a ${number}`,
       newChat: (number) => `abrir um chat novo pra ${number}`,
       pick: (number) => `puxar a issue ${number}`,
+      whenDone: (musician, text) => `quando ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`} terminar: ${text}`,
+      reviewer: (musician) => `chamar um avaliador pra ${musician.number !== null ? musician.number : musician.name}`,
       review: (number) => `revisar a PR ${number}`,
       guard: { liberar: 'liberar', 'liberar-sessao': 'liberar nesta sessão', barrar: 'barrar' },
     },
@@ -109,6 +120,10 @@ const LINES = {
     maestroOn: 'Maestro mode on.',
     maestroOff: 'Maestro mode off.',
     picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
+    orderTaken: (musician) => `Got it: when ${musician.number ?? musician.name} finishes, I'll send it.`,
+    reviewerOn: (musician) => `A reviewer will look at ${musician.number ?? musician.name}.`,
+    suggestReviewer: (musician, touched, critical) =>
+      `${musician.number ?? musician.name} touched ${touched} files${critical ? `, ${critical} critical` : ''}. Should I call a reviewer?`,
     reviewing: (number) => `A músico will review PR ${number}.`,
     cancelled: 'Cancelled.',
     alreadyRan: 'It already went.',
@@ -239,7 +254,7 @@ export function createVoiceSession(deps) {
     if (!found.length) return say(lines().noMusician(address));
     if (found.length === 1) return run(found[0]);
     const candidates = found.slice(0, MAX_CANDIDATES);
-    pendingChoice = { kind, number, candidates };
+    pendingChoice = { kind, number, candidates, text: address.text };
     const list = candidates.map((item, index) => `${lines().musicianOrdinals[index]}, ${item.label}`).join('; ');
     return say(lines().musicians(candidates.length, number, list));
   }
@@ -278,6 +293,26 @@ export function createVoiceSession(deps) {
     return say(lines().reviewing(number));
   }
 
+  // "quando a 22 terminar, …": the conductor keeps it; a músico already
+  // stopped gets it now.
+  function orderFor(musician, text) {
+    return held(ORDER.whenDone(musician, text), () => {
+      deps.conductor?.order(musician.sessionId, { label: text, steps: parseSteps(text) });
+      say(lines().orderTaken(musician));
+      if (musician.status === 'done' || musician.status === 'waiting') deps.startOrderNow?.(musician.sessionId);
+    });
+  }
+
+  // The reviewer works in the músico's own folder (its worktree).
+  function reviewerFor(musician) {
+    return held(ORDER.reviewer(musician), async () => {
+      const opened = await deps.openNew({ cwd: musician.root ?? deps.projectRoot(), prompt: REVIEW_TASK_PROMPT(musician.number ?? musician.name) });
+      if (!opened?.sessionId) return say(lines().newChatFailed);
+      if (musician.number !== null && musician.number !== undefined) deps.linkTask(musician.number, opened.sessionId);
+      return say(lines().reviewerOn(musician));
+    });
+  }
+
   async function openNewChat(pending) {
     const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
     if (!opened?.sessionId) {
@@ -303,9 +338,11 @@ export function createVoiceSession(deps) {
       case 'choose': {
         const choice = pendingChoice?.candidates[intent.index - 1];
         if (!choice) return say(lines().noOption);
-        const { kind, number } = pendingChoice;
+        const { kind, number, text } = pendingChoice;
         pendingChoice = null;
         if (kind === 'interrupt') return interruptMusician(choice);
+        if (kind === 'when-done') return orderFor(choice, text);
+        if (kind === 'call-reviewer') return reviewerFor(choice);
         if (kind === 'focus') return focusMusician(choice);
         return openFound(number, choice);
       }
@@ -313,6 +350,10 @@ export function createVoiceSession(deps) {
         return held(ORDER.pick(intent.number), () => pickIssue(intent.number));
       case 'review-pr':
         return held(ORDER.review(intent.number), () => reviewPr(intent.number));
+      case 'when-done':
+        return onMusicians('when-done', intent, (musician) => orderFor(musician, intent.text));
+      case 'call-reviewer':
+        return onMusicians('call-reviewer', intent, reviewerFor);
       case 'interrupt':
         return onMusicians('interrupt', intent, interruptMusician);
       case 'focus':
@@ -457,6 +498,17 @@ export function createVoiceSession(deps) {
       if (!settings().narration || target.kind !== 'chat' || event?.session_id !== target.sessionId) return;
       const line = narrator().narrate(event);
       if (line) say(line.text, 3, { replaceKey: `${target.sessionId}:${line.replaceKey}`, source: target.sessionId });
+    },
+
+    // The Vizor offers a reviewer (#162): "sim" calls it.
+    onSuggestReviewer({ musician, touched, critical }) {
+      pendingConfirm = { kind: 'intent', intent: { type: 'call-reviewer', number: musician.number, agent: musician.agent } };
+      say(lines().suggestReviewer(musician, touched, critical), 2, { source: 'manager' });
+    },
+
+    // What the conductor reports (done, or it needs you); prompts go elsewhere.
+    onConductorAction(action) {
+      if (action.type !== 'prompt') say(action.text, 2, { source: 'manager' });
     },
 
     onGuardAsk({ speech }) {

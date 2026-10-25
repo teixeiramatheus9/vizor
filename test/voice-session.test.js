@@ -627,3 +627,81 @@ describe('the plan a picked músico declares (the Maestro graph lights it up)', 
     expect(prompt).toMatch(/Vizor-plano: \S+#\S+/);
   });
 });
+
+describe('voice session — the conducting gerente', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const { createConductor } = await import('../src/main/maestro/conductor.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const musician = (sessionId, number, status = 'working') => ({ sessionId, number, agent: null, name: `#${number}`, root: '/r-wt/22', ptyId: `p-${sessionId}`, label: `chat ${sessionId}`, status, color: '#fff', files: [] });
+
+  function scene(overrides = {}) {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const conductor = createConductor();
+    const startedNow = [];
+    const base = setup({
+      maestro: () => true,
+      orchestra: () => [musician('s22', 22)],
+      interrupt: () => true,
+      focus: () => {},
+      pendingOrder,
+      conductor,
+      startOrderNow: (sessionId) => startedNow.push(sessionId),
+      ...overrides,
+    });
+    return { ...base, conductor, startedNow, fire: () => timer?.() };
+  }
+
+  it('the conditional order is held, then given to the conductor', async () => {
+    const { session, conductor, fire, texts, startedNow } = scene();
+    await session.onUtterance('quando a 22 terminar, manda rodar os testes e abrir a PR');
+    expect(conductor.ordersOf('s22')).toBeNull();
+    fire();
+    await tick();
+    expect(conductor.ordersOf('s22')).toMatchObject({ label: 'manda rodar os testes e abrir a PR', waiting: 'turn' });
+    expect(texts().at(-1)).toBe('Combinado: quando a 22 terminar, eu mando.');
+    expect(startedNow).toEqual([]);
+  });
+
+  it('a músico already stopped gets it at once', async () => {
+    const { session, fire, startedNow } = scene({ orchestra: () => [musician('s22', 22, 'done')] });
+    await session.onUtterance('quando a 22 terminar, abre a PR');
+    fire();
+    await tick();
+    expect(startedNow).toEqual(['s22']);
+  });
+
+  it('"chama um avaliador pra 22" opens a reviewer músico in its folder', async () => {
+    const { session, fire, calls, texts } = scene();
+    await session.onUtterance('chama um avaliador pra 22');
+    fire();
+    await tick();
+    const opened = calls.find(([name]) => name === 'new');
+    expect(opened[1].cwd).toBe('/r-wt/22');
+    expect(opened[1].prompt).toContain('Revise o que a task 22 mudou');
+    expect(calls).toContainEqual(['link', 22, 'snew']);
+    expect(texts().at(-1)).toBe('Um avaliador vai revisar a 22.');
+  });
+
+  it('the suggestion asks, and "sim" calls the reviewer', async () => {
+    const { session, fire, calls, texts } = scene();
+    session.onSuggestReviewer({ musician: musician('s22', 22), touched: 4, critical: 1 });
+    expect(texts().at(-1)).toBe('A 22 mexeu em 4 arquivos, 1 crítico. Chamo um avaliador?');
+    await session.onUtterance('sim');
+    fire();
+    await tick();
+    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('task 22');
+  });
+
+  it('in English', async () => {
+    const { session, fire, texts } = scene({ lang: () => 'en' });
+    session.onSuggestReviewer({ musician: musician('s22', 22), touched: 3, critical: 0 });
+    expect(texts().at(-1)).toBe('22 touched 3 files. Should I call a reviewer?');
+    await session.onUtterance('quando a 22 terminar, abre a PR');
+    fire();
+    await tick();
+    expect(texts().at(-1)).toBe("Got it: when 22 finishes, I'll send it.");
+    session.onConductorAction({ type: 'done', sessionId: 's22', text: 'Done: abre a PR.' });
+    expect(texts().at(-1)).toBe('Done: abre a PR.');
+  });
+});

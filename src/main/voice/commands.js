@@ -50,6 +50,13 @@ const ALWAYS = [
   }],
   // The Maestro (#159): interrupting takes the whole phrase, never a bare
   // "para"; the mode only turns on when asked for by name.
+  // The conducting gerente (#162): an order kept until the músico finishes,
+  // and the reviewer. "o A1"/"a1" is a músico without a task, "a 22" a task.
+  [/^quando (o (a|agente) ?|a(?=\d)|agente ?)(\d+) (terminar|acabar) (.+)$/, (match, raw) => ({ type: 'when-done', agent: Number(match[3]), text: rawTail(raw, match[5]) })],
+  [/^quando (a |o )?(task |tarefa |issue )?(\d+) (terminar|acabar) (.+)$/, (match, raw) => ({ type: 'when-done', number: Number(match[3]), text: rawTail(raw, match[5]) })],
+  [/^(chama|chame|chamar) (um )?avaliador (pro |para o )(a|agente) ?(\d+)$/, (match) => ({ type: 'call-reviewer', agent: Number(match[5]) })],
+  [/^(chama|chame|chamar) (um )?avaliador (pra |para )(a(?=\d)|agente ?)(\d+)$/, (match) => ({ type: 'call-reviewer', agent: Number(match[5]) })],
+  [/^(chama|chame|chamar) (um )?avaliador (pra|para|pro) (a |o )?(task |tarefa |issue )?(\d+)$/, (match) => ({ type: 'call-reviewer', number: Number(match[6]) })],
   // A músico without a task is A1, A2… ("o A1", "o agente 1", "a2"); "a 2"
   // with a space stays the article before a task number.
   [/^(interrompa|interrompe|interromper) (o (a|agente) ?|a(?=\d)|agente ?)(\d+)$/, (match) => ({ type: 'interrupt', agent: Number(match[4]) })],
