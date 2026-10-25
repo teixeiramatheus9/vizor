@@ -72,6 +72,9 @@ const LINES = {
     noRoutine: (name) => `Não tenho a rotina ${name}.`,
     routineForgotten: (name) => `Esqueci a rotina ${name}.`,
     noNesting: 'Uma rotina não roda outra.',
+    routineStopped: (name) => `Parei a rotina ${name}.`,
+    routineAsked: (name, step) => `Parei a rotina ${name} no passo ${step}: responda e siga à mão.`,
+    routineHow: 'Pra gravar, diga: grava a rotina <nome>: passo, depois passo.',
     // The conducting gerente (#162).
     orderTaken: (musician) => `Combinado: quando ${musician.number !== null ? `a ${musician.number}` : `o ${musician.name}`} terminar, eu mando.`,
     orderReplaced: (musician) =>
@@ -144,6 +147,9 @@ const LINES = {
     noRoutine: (name) => `I don't have the routine ${name}.`,
     routineForgotten: (name) => `Forgot the routine ${name}.`,
     noNesting: "A routine doesn't run another one.",
+    routineStopped: (name) => `Stopped the routine ${name}.`,
+    routineAsked: (name, step) => `Stopped the routine ${name} at step ${step}: answer it and go on by hand.`,
+    routineHow: 'To save one, say: grava a rotina <nome>: passo, depois passo.',
     orderTaken: (musician) => `Got it: when ${musician.number ?? musician.name} finishes, I'll send it.`,
     orderReplaced: (musician) => `Replaced the order for ${musician.number ?? musician.name}: when it finishes, I'll send the new one.`,
     reviewerOn: (musician) => `A reviewer will look at ${musician.number ?? musician.name}.`,
@@ -176,7 +182,7 @@ export function createVoiceSession(deps) {
   let lastHeard = null;
   let lastHeardAt = -Infinity;
   let pendingChoice = null; // { kind, number, candidates } after "achei 2 conversas" or "tem 2 músicos"
-  let queuedPrompt = null;
+  let queuedPrompts = []; // prompts for a busy chat, sent one per finished turn, in order
   const now = deps.now ?? Date.now;
   const CORRECTION_WINDOW_MS = 15000;
   const MAX_CANDIDATES = 5;
@@ -201,7 +207,7 @@ export function createVoiceSession(deps) {
     target = { kind: 'chat', sessionId };
     boundTask = number;
     cursor = null;
-    queuedPrompt = null;
+    queuedPrompts = [];
   }
 
   async function openFound(number, found) {
@@ -238,10 +244,14 @@ export function createVoiceSession(deps) {
   const ORDER = LINES.pt.order;
   // Off the Maestro the order runs at once and its errors reach the caller,
   // as before; held, nobody awaits it, so a failure is logged and said.
-  // Inside a routine the steps run straight: the routine itself was held once.
-  let inRoutine = false;
+  // A routine's own steps run straight (the routine was held once); a real
+  // utterance meanwhile is held as usual and stops the routine (review).
+  // directStep is only true while a step's act() runs its synchronous part,
+  // which is where held() is called.
+  let directStep = false;
+  let routineRun = null; // { name, stopped }
   const held = (label, run) => {
-    if (!deps.maestro?.() || !deps.pendingOrder || inRoutine) return run();
+    if (!deps.maestro?.() || !deps.pendingOrder || directStep) return run();
     deps.pendingOrder.hold({ label }, () =>
       Promise.resolve()
         .then(run)
@@ -356,16 +366,23 @@ export function createVoiceSession(deps) {
   }
 
   async function runRoutine(name) {
-    if (inRoutine) return say(lines().noNesting);
+    if (routineRun) return say(lines().noNesting);
     const routine = deps.routines?.get(name);
     if (!routine) return say(lines().noRoutine(name));
     return held(ORDER.routine(routine.name), async () => {
       say(lines().routineRunning(routine.name));
-      inRoutine = true;
+      const run = { name: routine.name, stopped: false };
+      routineRun = run;
       try {
-        for (const step of routine.steps) await api.onUtterance(step);
+        for (const [index, step] of routine.steps.entries()) {
+          if (run.stopped) return say(lines().routineStopped(routine.name));
+          await handleUtterance(step, { direct: true });
+          // A step that asked something waits for you: the routine stops there.
+          if (pendingConfirm || pendingChoice) return say(lines().routineAsked(routine.name, index + 1));
+        }
+        if (run.stopped) say(lines().routineStopped(routine.name));
       } finally {
-        inRoutine = false;
+        if (routineRun === run) routineRun = null;
       }
     });
   }
@@ -412,6 +429,8 @@ export function createVoiceSession(deps) {
       case 'save-routine':
         deps.routines?.save(intent.name, intent.steps);
         return say(lines().routineSaved(intent.name, intent.steps.length));
+      case 'save-routine-invalid':
+        return say(lines().routineHow);
       case 'run-routine':
         return runRoutine(intent.name);
       case 'list-routines':
@@ -474,7 +493,7 @@ export function createVoiceSession(deps) {
         return held(ORDER.prompt(musicianOfSession(sessionId), preview), async () => {
           const outcome = await deps.deliverPrompt(sessionId, text);
           if (outcome === 'hold') {
-            queuedPrompt = text;
+            queuedPrompts.push(text);
             return say(lines().hold);
           }
           if (outcome !== 'sent') say(lines().sendFailed);
@@ -498,44 +517,55 @@ export function createVoiceSession(deps) {
     }
   }
 
+  // One utterance, spoken or a routine's step (direct: no hold of its own).
+  async function handleUtterance(heard, { direct = false } = {}) {
+    const corrected = deps.correct(heard).text;
+    const intent = routeUtterance(corrected, {
+      target: target.kind,
+      pendingAsk,
+      hasLastReply: Boolean(cursor),
+      pendingConfirm: Boolean(pendingConfirm),
+      pendingChoice: Boolean(pendingChoice),
+      pendingOrder: Boolean(deps.pendingOrder?.pending()),
+      canCorrect: Boolean(lastHeard) && now() - lastHeardAt < CORRECTION_WINDOW_MS,
+    });
+    // Only the wake word ("Vizor" … and a pause): nothing to do yet.
+    if ((intent.type === 'prompt' || intent.type === 'ask-manager') && !intent.text.trim()) {
+      deps.keepListening?.();
+      return;
+    }
+    if (intent.type !== 'confirm' && intent.type !== 'correct') pendingConfirm = null;
+    if (intent.type !== 'choose' && intent.type !== 'resume-task') pendingChoice = null;
+    // "cancela"/"manda" just after the order went: too late, and not a prompt.
+    const ORDER_WORDS_LATE_MS = 5000;
+    if (
+      (intent.type === 'prompt' || intent.type === 'ask-manager') &&
+      now() - (deps.pendingOrder?.ranAt() ?? -Infinity) < ORDER_WORDS_LATE_MS &&
+      routeUtterance(corrected, { pendingOrder: true }).type === 'order'
+    ) {
+      say(lines().alreadyRan);
+      return;
+    }
+    // Anything said while an order waits replaces it: never both.
+    if (intent.type !== 'order' && deps.pendingOrder?.pending()) deps.pendingOrder.cancel();
+    directStep = direct;
+    const acting = act(intent, heard);
+    directStep = false;
+    await acting;
+    // A routine's step is not what you said: "não, é X" corrects your own words.
+    if (!direct && intent.type !== 'correct' && intent.type !== 'confirm') {
+      lastHeard = heard;
+      lastHeardAt = now();
+    }
+  }
+
   const api = {
     target: () => ({ ...target }),
 
+    // A real utterance: if a routine is running, it stops after its current step.
     async onUtterance(heard) {
-      const corrected = deps.correct(heard).text;
-      const intent = routeUtterance(corrected, {
-        target: target.kind,
-        pendingAsk,
-        hasLastReply: Boolean(cursor),
-        pendingConfirm: Boolean(pendingConfirm),
-        pendingChoice: Boolean(pendingChoice),
-        pendingOrder: Boolean(deps.pendingOrder?.pending()),
-        canCorrect: Boolean(lastHeard) && now() - lastHeardAt < CORRECTION_WINDOW_MS,
-      });
-      // Only the wake word ("Vizor" … and a pause): nothing to do yet.
-      if ((intent.type === 'prompt' || intent.type === 'ask-manager') && !intent.text.trim()) {
-        deps.keepListening?.();
-        return;
-      }
-      if (intent.type !== 'confirm' && intent.type !== 'correct') pendingConfirm = null;
-      if (intent.type !== 'choose' && intent.type !== 'resume-task') pendingChoice = null;
-      // "cancela"/"manda" just after the order went: too late, and not a prompt.
-      const ORDER_WORDS_LATE_MS = 5000;
-      if (
-        (intent.type === 'prompt' || intent.type === 'ask-manager') &&
-        now() - (deps.pendingOrder?.ranAt() ?? -Infinity) < ORDER_WORDS_LATE_MS &&
-        routeUtterance(corrected, { pendingOrder: true }).type === 'order'
-      ) {
-        say(lines().alreadyRan);
-        return;
-      }
-      // Anything said while an order waits replaces it: never both.
-      if (intent.type !== 'order' && deps.pendingOrder?.pending()) deps.pendingOrder.cancel();
-      await act(intent, heard);
-      if (intent.type !== 'correct' && intent.type !== 'confirm') {
-        lastHeard = heard;
-        lastHeardAt = now();
-      }
+      if (routineRun) routineRun.stopped = true;
+      return handleUtterance(heard, { direct: false });
     },
 
     // The bound chat finished a turn: its answer, spoken. True when handled,
@@ -554,10 +584,9 @@ export function createVoiceSession(deps) {
         cursor = analysis.items ? createReplyCursor(analysis.items, lang()) : null;
         say(reply.speech, 3, { source: session.id });
       }
-      if (queuedPrompt) {
-        const text = queuedPrompt;
-        queuedPrompt = null;
-        if ((await deps.deliverPrompt(session.id, text)) === 'hold') queuedPrompt = text;
+      if (queuedPrompts.length) {
+        const text = queuedPrompts.shift();
+        if ((await deps.deliverPrompt(session.id, text)) === 'hold') queuedPrompts.unshift(text);
       }
       return true;
     },
@@ -598,7 +627,7 @@ export function createVoiceSession(deps) {
       const number = boundTask;
       target = { kind: 'manager' };
       cursor = null;
-      queuedPrompt = null;
+      queuedPrompts = [];
       say(lines().chatClosed(number));
     },
   };

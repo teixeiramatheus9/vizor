@@ -271,3 +271,29 @@ describe('routeUtterance — memory (#163)', () => {
     expect(routeUtterance('esquece a rotina fim do dia')).toEqual({ type: 'forget-routine', name: 'fim do dia' });
   });
 });
+
+describe('routeUtterance — routines, review fixes', () => {
+  it('a "quando … terminar" step stays whole; ";" always splits', () => {
+    expect(routeUtterance('grava a rotina fim: quando a 22 terminar, roda os testes e depois abre a PR; desative o modo maestro')).toEqual({
+      type: 'save-routine',
+      name: 'fim',
+      steps: ['quando a 22 terminar, roda os testes e depois abre a PR', 'desative o modo maestro'],
+    });
+  });
+
+  it('without a colon: "com os passos" or the first comma; unclear, it says how', () => {
+    expect(routeUtterance('grava a rotina dia com os passos o que temos pra hoje, depois revisa a PR 166')).toEqual({
+      type: 'save-routine',
+      name: 'dia',
+      steps: ['o que temos pra hoje', 'revisa a PR 166'],
+    });
+    expect(routeUtterance('grava a rotina dia, o que temos pra hoje')).toEqual({ type: 'save-routine', name: 'dia', steps: ['o que temos pra hoje'] });
+    expect(routeUtterance('grava a rotina')).toEqual({ type: 'save-routine-invalid' });
+  });
+
+  it('"do deploy" and "deploy" are the same routine to save, run and forget', () => {
+    expect(routeUtterance('grava a rotina do deploy: roda os testes').name).toBe('deploy');
+    expect(routeUtterance('roda a rotina do deploy').name).toBe('deploy');
+    expect(routeUtterance('esquece a rotina do deploy').name).toBe('deploy');
+  });
+});

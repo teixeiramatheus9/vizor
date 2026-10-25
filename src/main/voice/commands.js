@@ -52,10 +52,10 @@ const ALWAYS = [
   // "para"; the mode only turns on when asked for by name.
   // Memory (#163): where a task stopped, and routines of spoken steps.
   [/^onde (a gente |nos |voces )?(paramos|parou|parei) na (task |tarefa |issue )?(\d+)$/, (match) => ({ type: 'where-stopped', number: Number(match[4]) })],
-  [/^(grava|grave|gravar|salva|salve|salvar) (a |uma )?rotina .+$/, (match, raw) => saveRoutine(raw)],
-  [/^(roda|rode|rodar|comeca|comecar|executa|execute) (a )?rotina (de |do |da )?(.+)$/, (match, raw) => ({ type: 'run-routine', name: rawTail(raw, match[4]) })],
+  [/^(grava|grave|gravar|salva|salve|salvar) (a |uma )?rotina( .*)?$/, (match, raw) => saveRoutine(raw)],
+  [/^(roda|rode|rodar|comeca|comecar|executa|execute) (a )?rotina (.+)$/, (match, raw) => ({ type: 'run-routine', name: routineName(rawTail(raw, match[3])) })],
   [/^quais (sao )?(as )?rotinas( eu tenho| que eu tenho| temos)?$/, () => ({ type: 'list-routines' })],
-  [/^(esquece|esqueca|apaga|apague|remove) (a )?rotina (.+)$/, (match, raw) => ({ type: 'forget-routine', name: rawTail(raw, match[3]) })],
+  [/^(esquece|esqueca|apaga|apague|remove) (a )?rotina (.+)$/, (match, raw) => ({ type: 'forget-routine', name: routineName(rawTail(raw, match[3])) })],
   // The conducting gerente (#162): an order kept until the músico finishes,
   // and the reviewer. "o A1"/"a1" is a músico without a task, "a 22" a task.
   [/^quando (o (a|agente) ?|a(?=\d)|agente ?)(\d+) (terminar|acabar) (.+)$/, (match, raw) => ({ type: 'when-done', agent: Number(match[3]), text: rawTail(raw, match[5]) })],
@@ -120,20 +120,27 @@ const WHEN_REPLY = [
   }],
 ];
 
-// "grava a rotina <nome>: passo, depois passo; e depois passo". Steps split
-// on ";" and "depois" only: a step may hold a comma ("quando a 22 terminar, …").
-const STEP_BREAK = /\s*;\s*(?:e\s+)?(?:depois\s+)?|,?\s+e\s+depois\s+|,?\s+depois\s+/i;
+// "grava a rotina <nome>: passo, depois passo; e depois passo". The name ends
+// at ":", at "com os passos" or, failing those, at the first comma. ";" always
+// splits; "depois" splits too, except inside a "quando … terminar" order,
+// which keeps its own "e depois" (review).
+const DEPOIS = /,?\s+e\s+depois\s+|,?\s+depois\s+/i;
+const routineName = (name) => name.trim().replace(/^(de|do|da)\s+/i, '').trim();
+
 function saveRoutine(raw) {
-  const colon = raw.indexOf(':');
   const named = raw.search(/rotina/i);
-  if (colon === -1 || named === -1 || colon < named) return null;
-  const name = raw.slice(named + 'rotina'.length, colon).trim();
-  const steps = raw
-    .slice(colon + 1)
-    .split(STEP_BREAK)
+  if (named === -1) return { type: 'save-routine-invalid' };
+  const rest = raw.slice(named + 'rotina'.length);
+  const cut = rest.match(/:|\s+com os passos\s+|,/i);
+  if (!cut) return { type: 'save-routine-invalid' };
+  const name = routineName(rest.slice(0, cut.index));
+  const steps = rest
+    .slice(cut.index + cut[0].length)
+    .split(/\s*;\s*(?:e\s+)?(?:depois\s+)?/)
+    .flatMap((clause) => (/^\s*quando\b/i.test(clause) ? [clause] : clause.split(DEPOIS)))
     .map((step) => step.trim().replace(/[.!]+$/, ''))
     .filter(Boolean);
-  return name && steps.length ? { type: 'save-routine', name, steps } : null;
+  return name && steps.length ? { type: 'save-routine', name, steps } : { type: 'save-routine-invalid' };
 }
 
 // The original spelling of a matched tail (a file name keeps its case).

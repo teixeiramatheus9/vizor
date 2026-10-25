@@ -833,3 +833,66 @@ describe('voice session — memory (#163)', async () => {
     expect(texts()).toContain('Uma rotina não roda outra.');
   });
 });
+
+describe('voice session — routines, review fixes', async () => {
+  const { createRoutines } = await import('../src/main/voice/routines.js');
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const routinesFor = () => {
+    const files = {};
+    const store = createRoutines({ file: '/v/r.json', readFile: (f) => { if (!(f in files)) throw new Error('x'); return files[f]; }, writeFile: (f, c) => (files[f] = c), rename: (a, b) => ((files[b] = files[a]), delete files[a]) });
+    return { save: (name, steps) => store.save('/r', name, steps), get: (name) => store.get('/r', name), list: () => store.list('/r'), remove: (name) => store.remove('/r', name) };
+  };
+
+  it('I1: a real utterance while a routine runs is held as usual, and it stops the routine', async () => {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    let release;
+    const slow = new Promise((resolve) => (release = resolve));
+    const routines = routinesFor();
+    routines.save('dia', ['o que temos pra hoje', 'retoma a task 22']);
+    const { session, calls, texts } = setup({ routines, maestro: () => true, orchestra: () => [], pendingOrder, ghDigest: async () => (await slow, { speech: 'ok', lines: [] }) });
+    await session.onUtterance('roda a rotina dia');
+    timer();
+    await tick();
+    // The routine is waiting on its first step; the user speaks an order.
+    await session.onUtterance('retoma a task 40');
+    expect(pendingOrder.pending().label).toBe('retomar a 40');
+    release();
+    await tick();
+    await tick();
+    expect(texts()).toContain('Parei a rotina dia.');
+    expect(calls.some(([name, target]) => name === 'open' && target.sessionId === 's22')).toBe(false);
+  });
+
+  it('I2: back-to-back prompts to a busy chat all arrive, in order', async () => {
+    const delivered = [];
+    let busy = true;
+    const { session } = setup({ deliverPrompt: async (sessionId, text) => (busy ? 'hold' : (delivered.push(text), 'sent')) });
+    await session.onUtterance('retoma a task 22');
+    await session.onUtterance('roda os testes');
+    await session.onUtterance('abre a PR');
+    busy = false;
+    await session.onSessionStop({ id: 's22', lastMessage: 'Feito.' });
+    await session.onSessionStop({ id: 's22', lastMessage: 'Feito.' });
+    expect(delivered).toEqual(['roda os testes', 'abre a PR']);
+  });
+
+  it('I3: a step that asks a question stops the routine there and says where', async () => {
+    const routines = routinesFor();
+    routines.save('dia', ['retoma a task 40', 'roda os testes']);
+    const { session, texts, calls } = setup({ routines, resolveTask: async () => ({ none: true, cwd: '/r' }) });
+    await session.onUtterance('roda a rotina dia');
+    await tick();
+    expect(texts().at(-1)).toBe('Parei a rotina dia no passo 1: responda e siga à mão.');
+    expect(calls.some(([name]) => name === 'deliver')).toBe(false);
+    await session.onUtterance('sim');
+    expect(calls).toContainEqual(['new', { cwd: '/r', prompt: 'Vamos trabalhar na issue #40.' }]);
+  });
+
+  it('I4: a routine that cannot be read says how to say it', async () => {
+    const { session, texts } = setup({ routines: routinesFor() });
+    await session.onUtterance('grava a rotina');
+    expect(texts().at(-1)).toBe('Pra gravar, diga: grava a rotina <nome>: passo, depois passo.');
+  });
+});
