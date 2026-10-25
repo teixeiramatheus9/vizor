@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseConversationTitle, readConversationTitle } from '../src/main/transcript.js';
+import { createCustomTitleScanner, parseConversationTitle, readConversationTitle } from '../src/main/transcript.js';
 import { listConversations, resolveClaudeProjectDir } from '../src/main/conversations.js';
 import { claudeProjectDir } from '../src/main/cc-sessions.js';
 
@@ -119,6 +119,81 @@ describe('resolveClaudeProjectDir (#157)', () => {
   it('nothing that proves it: the computed name (lists nothing, as before)', async () => {
     const deps = fakeFs({ [projects]: [`${prefix}x`], [path.join(projects, `${prefix}x`)]: [] });
     expect(await resolveClaudeProjectDir(longCwd, deps)).toBe(claudeProjectDir(longCwd, { home }));
+  });
+});
+
+describe('createCustomTitleScanner (#157 review)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vizor-scan-'));
+  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filler = (count, size = 500) =>
+    Array.from({ length: count }, (_, index) => line({ type: 'user', message: { content: `${index} ${'x'.repeat(size)}` } }));
+  const write = (name, lines) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, `${lines.join('\n')}\n`);
+    return file;
+  };
+  // Records every read and how many handles are open at once.
+  const spyOpen = () => {
+    const spy = { reads: [], opens: [], active: 0, maxActive: 0 };
+    spy.open = async (file, flags) => {
+      const handle = await fs.promises.open(file, flags);
+      spy.opens.push(file);
+      spy.active += 1;
+      spy.maxActive = Math.max(spy.maxActive, spy.active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return {
+        read: (buffer, offset, length, position) => {
+          spy.reads.push({ buffer: buffer.length, length });
+          return handle.read(buffer, offset, length, position);
+        },
+        close: async () => {
+          spy.active -= 1;
+          await handle.close();
+        },
+      };
+    };
+    return spy;
+  };
+
+  it('reads a small append with a buffer the size of the append, not a whole chunk', async () => {
+    const spy = spyOpen();
+    const scanner = createCustomTitleScanner({ open: spy.open, chunkBytes: 1024 * 1024 });
+    const file = write('append.jsonl', [line({ type: 'custom-title', customTitle: 'um' }), ...filler(20)]);
+    expect(await scanner.lookup(file)).toBe('um');
+    spy.reads.length = 0;
+    const extra = `${line({ type: 'custom-title', customTitle: 'dois' })}\n`;
+    fs.appendFileSync(file, extra);
+    expect(await scanner.lookup(file)).toBe('dois');
+    expect(spy.reads).toEqual([{ buffer: Buffer.byteLength(extra), length: Buffer.byteLength(extra) }]);
+  });
+
+  it('does not wait on a file past the size limit: it scans in the background for the next open', async () => {
+    const scanner = createCustomTitleScanner({ fullScanLimit: 10 * 1024 });
+    const file = write('big.jsonl', [line({ type: 'custom-title', customTitle: 'grande' }), ...filler(100)]);
+    expect(await scanner.lookup(file)).toBe(null); // the caller falls back to the tail
+    await scanner.idle();
+    expect(await scanner.lookup(file)).toBe('grande');
+  });
+
+  it('starts over when the file at that path was replaced', async () => {
+    const scanner = createCustomTitleScanner();
+    const file = write('replaced.jsonl', [line({ type: 'custom-title', customTitle: 'antigo' }), ...filler(5)]);
+    expect(await scanner.lookup(file)).toBe('antigo');
+    const temp = write('replaced.tmp', [...filler(10), line({ type: 'ai-title', aiTitle: 'sem rename' })]);
+    fs.renameSync(temp, file);
+    expect(await scanner.lookup(file)).toBe(null);
+  });
+
+  it('concurrent calls share one scan per file, and at most 2 files are scanned at once', async () => {
+    const spy = spyOpen();
+    const scanner = createCustomTitleScanner({ open: spy.open, concurrency: 2 });
+    const files = Array.from({ length: 5 }, (_, index) =>
+      write(`c${index}.jsonl`, [line({ type: 'custom-title', customTitle: `t${index}` }), ...filler(5)]),
+    );
+    const results = await Promise.all([...files, files[0], files[0]].map((file) => scanner.lookup(file)));
+    expect(results).toEqual(['t0', 't1', 't2', 't3', 't4', 't0', 't0']);
+    expect(spy.opens.filter((file) => file === files[0])).toHaveLength(1);
+    expect(spy.maxActive).toBeLessThanOrEqual(2);
   });
 });
 

@@ -73,7 +73,7 @@ export function parseConversationTitle(jsonlText) {
 export async function readConversationTitle(transcriptPath) {
   try {
     const tail = await readTail(transcriptPath);
-    const custom = await findLastCustomTitle(transcriptPath).catch(() => null);
+    const custom = await customTitles.lookup(transcriptPath).catch(() => null);
     return custom ?? parseConversationTitle(tail);
   } catch {
     return null;
@@ -81,29 +81,92 @@ export async function readConversationTitle(transcriptPath) {
 }
 
 // A /rename can sit anywhere in a chat, the tail alone misses an early one
-// (#157). The whole file is scanned once, in chunks, and only short lines that
-// mention custom-title are parsed: memory stays bounded however long the chat
-// or its lines. Transcripts only grow, so the next scan starts where the last
-// complete line ended.
-const SCAN_CHUNK_BYTES = 1024 * 1024;
-const MAX_TITLE_LINE_BYTES = 16 * 1024;
-const MAX_SCAN_CACHE = 200;
-const customTitleScans = new Map();
+// (#157). The file is scanned in chunks and only short lines that mention
+// custom-title are parsed, so memory stays bounded however long the chat or
+// its lines. Transcripts only grow: the next scan starts where the last
+// complete line ended, unless the file was replaced (another inode) or shrank.
+// The menu never waits on a big scan: past fullScanLimit it gets what is known
+// so far (the caller falls back to the tail) and the scan runs in the
+// background for the next open. At most `concurrency` files are read at once,
+// and one scan per file is ever in flight.
+export function createCustomTitleScanner({
+  open: openFile = open,
+  stat: statFile = stat,
+  chunkBytes = 1024 * 1024,
+  fullScanLimit = 20 * 1024 * 1024,
+  concurrency = 2,
+  maxEntries = 200,
+} = {}) {
+  const scanned = new Map(); // path → { ino, offset, custom }
+  const inflight = new Map(); // path → promise of the custom title
+  const waiting = [];
+  let running = 0;
 
-async function findLastCustomTitle(transcriptPath) {
-  const { size } = await stat(transcriptPath);
-  let scan = customTitleScans.get(transcriptPath);
-  if (!scan || size < scan.offset) scan = { offset: 0, custom: null };
-  if (size === scan.offset) return scan.custom;
-  const handle = await open(transcriptPath, 'r');
+  const acquire = () =>
+    running < concurrency ? ((running += 1), Promise.resolve()) : new Promise((resolve) => waiting.push(resolve));
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next();
+    else running -= 1;
+  };
+  const resumable = (prior, info) => Boolean(prior) && prior.ino === info.ino && info.size >= prior.offset;
+
+  async function scan(file) {
+    await acquire();
+    try {
+      const info = await statFile(file);
+      const prior = scanned.get(file);
+      const from = resumable(prior, info) ? prior : { ino: info.ino, offset: 0, custom: null };
+      const result = await scanCustomTitles(openFile, file, from, info.size, chunkBytes);
+      scanned.delete(file);
+      scanned.set(file, result);
+      if (scanned.size > maxEntries) scanned.delete(scanned.keys().next().value);
+      return result.custom;
+    } finally {
+      release();
+    }
+  }
+
+  function scanOnce(file) {
+    let promise = inflight.get(file);
+    if (!promise) {
+      promise = scan(file).finally(() => inflight.delete(file));
+      inflight.set(file, promise);
+    }
+    return promise;
+  }
+
+  return {
+    async lookup(file) {
+      const info = await statFile(file);
+      const prior = scanned.get(file);
+      const known = resumable(prior, info) ? prior : null;
+      if (known && known.offset === info.size) return known.custom;
+      const pending = scanOnce(file);
+      if (info.size - (known?.offset ?? 0) <= fullScanLimit) return pending;
+      pending.catch(() => {}); // background: the next open reads the result
+      return known?.custom ?? null;
+    },
+    idle: () => Promise.allSettled([...inflight.values()]).then(() => undefined),
+  };
+}
+
+const MAX_TITLE_LINE_BYTES = 16 * 1024;
+const customTitles = createCustomTitleScanner();
+
+// Scans [from.offset, size) and returns a new state; `from` is never mutated.
+async function scanCustomTitles(openFile, file, from, size, chunkBytes) {
+  const scan = { ...from };
+  if (size <= scan.offset) return scan;
+  const handle = await openFile(file, 'r');
   try {
-    const chunk = Buffer.alloc(SCAN_CHUNK_BYTES);
+    const chunk = Buffer.alloc(Math.min(chunkBytes, size - scan.offset));
     let position = scan.offset;
     let pending = [];
     let pendingBytes = 0;
     let overflow = false;
     while (position < size) {
-      const { bytesRead } = await handle.read(chunk, 0, Math.min(SCAN_CHUNK_BYTES, size - position), position);
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, size - position), position);
       if (!bytesRead) break;
       let from = 0;
       for (let newline = chunk.indexOf(10, from); newline !== -1 && newline < bytesRead; newline = chunk.indexOf(10, from)) {
@@ -131,10 +194,7 @@ async function findLastCustomTitle(transcriptPath) {
   } finally {
     await handle.close();
   }
-  customTitleScans.delete(transcriptPath);
-  customTitleScans.set(transcriptPath, scan);
-  if (customTitleScans.size > MAX_SCAN_CACHE) customTitleScans.delete(customTitleScans.keys().next().value);
-  return scan.custom;
+  return scan;
 }
 
 function customTitleOf(line) {
