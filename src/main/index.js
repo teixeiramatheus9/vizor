@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand, installGuardScript } from './guard-runtime.js';
 import { createGuardAsks, isGuardChoice } from './guard-asks.js';
-import { createRulesStore } from './rules-store.js';
+import { createRulesStore, pruneSeenSessions } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, validateEditedRule } from './rules-compiler.js';
@@ -3110,10 +3110,12 @@ ipcMain.handle('rules:state', (event) => (fromRules(event) ? rulesState() : null
 ipcMain.handle('rules:save', async (event, { scope, markdown } = {}) => {
   if (!fromRules(event) || !validScope(scope) || typeof markdown !== 'string') return rulesState();
   writeRulesFile(scope, markdown);
-  if (scope !== 'global') rulesStore.markSeenRepo(scope);
+  // Saved from the window: the user's own text, so it is never shown as "de
+  // fora" while the first compile runs (or when it fails), and it compiles
+  // right away.
+  if (scope !== 'global') rulesStore.markOwnedRepo(scope);
   syncRulesScope(scope);
   syncGuardHook();
-  // Saved from the window: the user's own text, so it compiles right away.
   autoCompile(scope, { force: true });
   return rulesState();
 });
@@ -3196,6 +3198,13 @@ function bootSyncRules() {
       log(`rules sync failed for ${scope}: ${error}`);
     }
   }
+  pruneSeenSessions({
+    dir: path.join(rulesDir, 'sessoes'),
+    now: Date.now(),
+    readdir: (dir) => fs.readdirSync(dir),
+    stat: (file) => fs.statSync(file),
+    unlink: (file) => fs.unlinkSync(file),
+  });
 }
 
 // crossSessionInbound decides what a session does with the quick reply this app
