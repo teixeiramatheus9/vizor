@@ -42,6 +42,9 @@ App Electron (src/main/index.js)
   ├── maestro/             → modo Maestro (#159): orquestra (chats do workspace
   │                          endereçados por issue ou posição) e ordens que
   │                          esperam 3 s ("entendi: …") antes de agir
+  ├── graph/               → grafo do Maestro: extrai funções/imports/chamadas
+  │                          (@babel/parser, num worker), liga em módulos e
+  │                          chamadas, e calcula o que cada músico tocou/planejou
   ├── warp.js              → FALLBACK: foco de janela/aba do terminal (xdotool)
   └── renderer (app.*)     → bolha, tooltip, painel, chat, configurações
 ```
