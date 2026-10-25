@@ -1047,3 +1047,13 @@ body[data-maestro='true'] #inspector {
   color: var(--accent);
   border-color: var(--accent);
 }
+body[data-maestro='true'] #detail:empty::before {
+  content: 'o código aparece aqui quando o músico em foco mexer num arquivo';
+  display: block;
+  padding: 40px 24px;
+  color: var(--muted);
+  text-align: center;
+}
+body[data-maestro='true'] #topbar .toggle-chat {
+  display: none;
+}
