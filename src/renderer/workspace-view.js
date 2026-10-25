@@ -26,6 +26,7 @@ export const ICONS = {
   folder: svg('<path d="M1.5 3.5a1 1 0 0 1 1-1h2.2l1 1.2h3.8a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1z"/>'),
   writing: svg('<path d="M8 2l2 2-5.5 5.5H2.5V7.5z"/>'),
   skipped: svg('<circle cx="6" cy="6" r="4.5"/><path d="M3 9l6-6"/>'),
+  command: svg('<path d="M2 3.5l3 2.5-3 2.5M6.5 9h3.5"/>'),
 };
 
 const STATUS_LABEL = {
@@ -155,6 +156,8 @@ const NOTE_COPY = {
   binary: 'arquivo binário',
   unreadable: 'não deu pra ler o arquivo',
   writing: 'a IA está escrevendo neste arquivo…',
+  deleted: 'arquivo apagado',
+  dropped: 'conteúdo antigo descartado pra economizar memória',
 };
 
 function clock(time) {
@@ -164,15 +167,18 @@ function clock(time) {
 }
 
 export function editStatusIcon(edit) {
+  if (edit.status === 'by-command') return ICONS.command;
   if (edit.status === 'writing') return ICONS.writing;
   if (edit.status === 'not-applied') return ICONS.skipped;
   return ICONS.done;
 }
 
 function editStatusLabel(edit) {
+  const owner = edit.uncertainOwner ? '<span class="tag uncertain">dono incerto</span>' : '';
+  if (edit.status === 'by-command') return `<span class="edit-state command">por comando</span>${owner}`;
   if (edit.status === 'writing') return '<span class="edit-state">escrevendo…</span>';
   if (edit.status === 'not-applied') return '<span class="edit-state">não aplicada</span>';
-  return '';
+  return owner;
 }
 
 function editCounts(edit) {

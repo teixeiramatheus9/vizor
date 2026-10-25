@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { listWorktrees, parseWorktreeList, repoRootOf } from '../src/main/worktrees.js';
+import { listWorktrees, parseWorktreeList, repoRootOf, worktreeRootOf } from '../src/main/worktrees.js';
 
 const FIXTURE = `worktree /r/main
 HEAD 1111111111111111111111111111111111111111
@@ -72,5 +72,11 @@ describe('git worktrees on disk', () => {
       { path: plain, branch: null, head: null, detached: false, bare: false, prunable: false },
     ]);
     expect(await repoRootOf(plain)).toBeNull();
+  });
+
+  it('resolves a folder to its OWN worktree root, linked ones included (#94 review)', async () => {
+    expect(real(await worktreeRootOf(path.join(linked, 'sub')))).toBe(real(linked));
+    expect(real(await worktreeRootOf(repo))).toBe(real(repo));
+    expect(await worktreeRootOf(os.tmpdir())).toBeNull();
   });
 });

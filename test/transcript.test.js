@@ -10,6 +10,8 @@ import {
   readLastAssistantMessage,
   readAiTitle,
   parseEditReason,
+  parseLastBashCommand,
+  parseInterrupted,
   readEditReason,
 } from '../src/main/transcript.js';
 
@@ -249,5 +251,38 @@ describe('parseEditReason', () => {
     await writeFile(file, [block('m1', { type: 'text', text: 'why' }), block('m1', tool('t1'))].join('\n'));
     expect(await readEditReason(file, 't1')).toBe('why');
     expect(await readEditReason(path.join(dir, 'missing.jsonl'), 't1')).toBeNull();
+  });
+});
+
+describe('parseLastBashCommand (#94)', () => {
+  const bash = (command, extra = {}) =>
+    JSON.stringify({ type: 'assistant', ...extra, message: { id: 'm', role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'Bash', input: { command } }] } });
+
+  it('takes the last Bash command since the prompt', () => {
+    const jsonl = [userLine('faz'), bash('ls'), bash('sed -i   s/x/y/\n b.txt')].join('\n');
+    expect(parseLastBashCommand(jsonl)).toBe('sed -i s/x/y/ b.txt');
+  });
+
+  it('ignores commands from before the prompt and from subagents', () => {
+    expect(parseLastBashCommand([bash('antigo'), userLine('novo pedido')].join('\n'))).toBeNull();
+    expect(parseLastBashCommand([userLine('p'), bash('sub', { isSidechain: true })].join('\n'))).toBeNull();
+  });
+
+  it('cuts long commands', () => {
+    expect(parseLastBashCommand([userLine('p'), bash('x'.repeat(300))].join('\n'))).toBe(`${'x'.repeat(200)}…`);
+  });
+});
+
+describe('parseInterrupted (#94 review)', () => {
+  const interrupt = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } });
+  const reply = assistantLine('feito');
+
+  it('sees a user interrupt as the last word of the turn', () => {
+    expect(parseInterrupted([userLine('faz'), reply, interrupt].join('\n'))).toBe(true);
+  });
+
+  it('is false once the conversation moved on, or never stopped', () => {
+    expect(parseInterrupted([userLine('faz'), interrupt, userLine('de novo'), reply].join('\n'))).toBe(false);
+    expect(parseInterrupted([userLine('faz'), reply].join('\n'))).toBe(false);
   });
 });

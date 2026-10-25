@@ -11,17 +11,29 @@ import { diffHunks } from './edit-hunks.js';
 // already known is ignored, and a Post always wins over a provisional
 // "not applied".
 
-export const EDIT_STATUS = { WRITING: 'writing', APPLIED: 'applied', NOT_APPLIED: 'not-applied' };
+export const EDIT_STATUS = {
+  WRITING: 'writing',
+  APPLIED: 'applied',
+  NOT_APPLIED: 'not-applied',
+  BY_COMMAND: 'by-command', // a change no Edit/Write made (sed, formatter…)
+};
+
+// A file that keeps changing (a log, a watch build) updates its open card
+// instead of piling a new one every poll (#94 review).
+const COMMAND_COALESCE_MS = 30000;
+const DEFAULT_MAX_SNAPSHOT_BYTES = 200 * 1024 * 1024;
+const bytesOf = (text) => (typeof text === 'string' ? text.length * 2 : 0);
 
 export function editTargetPath(toolName, toolInput) {
   return toolInput?.file_path ?? toolInput?.notebook_path ?? null;
 }
 
 export class EditTracker extends EventEmitter {
-  constructor({ now = Date.now, maxTasksPerSession = 10 } = {}) {
+  constructor({ now = Date.now, maxTasksPerSession = 10, maxSnapshotBytes = DEFAULT_MAX_SNAPSHOT_BYTES } = {}) {
     super();
     this.now = now;
     this.maxTasksPerSession = maxTasksPerSession;
+    this.maxSnapshotBytes = maxSnapshotBytes;
     this.sessions = new Map(); // sessionId → { tasks: Task[], taskCount: number }
   }
 
@@ -39,9 +51,11 @@ export class EditTracker extends EventEmitter {
       endedAt: null,
       edits: [],
       files: new Map(),
+      snapshotsDropped: false,
     };
     session.tasks.push(task);
     while (session.tasks.length > this.maxTasksPerSession) session.tasks.shift();
+    this.emit('task', { sessionId, ended: false });
     return task;
   }
 
@@ -49,6 +63,7 @@ export class EditTracker extends EventEmitter {
     const task = this.currentTask(sessionId);
     if (!task || task.endedAt !== null) return null;
     this.closeTask(task);
+    this.emit('task', { sessionId, ended: true });
     return task;
   }
 
@@ -87,6 +102,42 @@ export class EditTracker extends EventEmitter {
     if (!edit) edit = this.newEdit(task, event, filePath);
 
     edit.status = EDIT_STATUS.APPLIED;
+    this.applyContent(task, edit, { before, after, baseline, reason, note });
+    this.emit('change', { sessionId, edit });
+    this.enforceMemoryCeiling();
+    return edit;
+  }
+
+  // A change on disk no Edit/Write hook made (#94): a card of its own, with
+  // the command that probably did it as the reason.
+  addCommandEdit(sessionId, { filePath, before, after, baseline = null, reason = null, note = null, uncertainOwner = false }) {
+    const task = this.openTask(sessionId);
+    const open = task.edits.findLast(
+      (edit) =>
+        edit.filePath === filePath &&
+        edit.status === EDIT_STATUS.BY_COMMAND &&
+        this.now() - edit.endedAt <= COMMAND_COALESCE_MS,
+    );
+    if (open) {
+      // Same card, diffed from where it started.
+      this.applyContent(task, open, { before: open.commandBefore, after, baseline: open.baseline, reason, note });
+      open.uncertainOwner = open.uncertainOwner || uncertainOwner;
+      this.emit('change', { sessionId, edit: open });
+      this.enforceMemoryCeiling();
+      return open;
+    }
+    const seq = task.edits.length + 1;
+    const edit = this.newEdit(task, { tool_name: 'Bash', tool_use_id: `${task.id}#cmd${seq}` }, filePath);
+    edit.status = EDIT_STATUS.BY_COMMAND;
+    edit.uncertainOwner = uncertainOwner;
+    edit.commandBefore = before ?? null;
+    this.applyContent(task, edit, { before, after, baseline, reason, note });
+    this.emit('change', { sessionId, edit });
+    this.enforceMemoryCeiling();
+    return edit;
+  }
+
+  applyContent(task, edit, { before, after, baseline, reason, note }) {
     edit.endedAt = this.now();
     edit.baseline = baseline;
     edit.reason = reason;
@@ -102,14 +153,62 @@ export class EditTracker extends EventEmitter {
         else edit.note = 'too-large';
       }
     }
-
     if (task) {
-      const file = task.files.get(filePath);
-      if (!file) task.files.set(filePath, { start: before ?? null, current: after ?? null });
+      const file = task.files.get(edit.filePath);
+      if (!file) task.files.set(edit.filePath, { start: before ?? null, current: after ?? null });
       else file.current = after ?? null;
     }
-    this.emit('change', { sessionId, edit });
-    return edit;
+  }
+
+  // An edit still in flight (any session) accounts for a change on disk. A
+  // landed edit is matched by content instead (contentsAnywhere): a time
+  // window would swallow a formatter run right after it.
+  explains(filePath) {
+    for (const session of this.sessions.values())
+      for (const edit of session.tasks.at(-1)?.edits ?? [])
+        if (edit.filePath === filePath && edit.status === EDIT_STATUS.WRITING) return true;
+    return false;
+  }
+
+  // What each session's current task last saw in a file: a change on disk
+  // equal to one of these is that edit's own write, not a command's.
+  contentsAnywhere(filePath) {
+    const contents = new Set();
+    for (const session of this.sessions.values()) {
+      const current = session.tasks.at(-1)?.files.get(filePath)?.current;
+      if (typeof current === 'string') contents.add(current);
+    }
+    return [...contents];
+  }
+
+  snapshotBytes() {
+    let total = 0;
+    for (const session of this.sessions.values())
+      for (const task of session.tasks)
+        for (const file of task.files.values()) total += bytesOf(file.start) + bytesOf(file.current);
+    return total;
+  }
+
+  // Over the ceiling, the oldest finished tasks give up their file contents
+  // first; their cards and counts stay. A session's current task is never
+  // touched — it is what the inspector is showing live.
+  enforceMemoryCeiling() {
+    let total = this.snapshotBytes();
+    if (total <= this.maxSnapshotBytes) return;
+    const current = new Set([...this.sessions.values()].map((session) => session.tasks.at(-1)));
+    const candidates = [...this.sessions.values()]
+      .flatMap((session) => session.tasks)
+      .filter((task) => !current.has(task) && !task.snapshotsDropped)
+      .sort((a, b) => a.startedAt - b.startedAt);
+    for (const task of candidates) {
+      if (total <= this.maxSnapshotBytes) break;
+      for (const file of task.files.values()) {
+        total -= bytesOf(file.start) + bytesOf(file.current);
+        file.start = null;
+        file.current = null;
+      }
+      task.snapshotsDropped = true;
+    }
   }
 
   // The transcript can lag the hook; the reason then arrives after the edit.
