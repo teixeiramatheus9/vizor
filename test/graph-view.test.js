@@ -62,7 +62,8 @@ describe('the Maestro graph view', () => {
     const fill = (id) => svg.match(new RegExp(`data-module="${id.replace(/[/.]/g, (char) => `\\${char}`)}"[^>]*fill="([^"]+)"`))[1];
     expect(fill('src/main/voice/pick.js')).toBe(fill('src/main/voice/<odd>.js'.replace(/[<>]/g, (char) => (char === '<' ? '&lt;' : '&gt;'))));
     expect(fill('src/main/tts.js')).not.toBe(fill('src/main/voice/pick.js'));
-    expect(GROUP_COLORS.length).toBeGreaterThanOrEqual(8);
+    expect(GROUP_COLORS.length).toBeGreaterThanOrEqual(12);
+    expect(new Set(GROUP_COLORS).size).toBe(GROUP_COLORS.length);
   });
 
   it('only folder names are written; a file or function name shows when it is selected', () => {

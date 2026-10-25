@@ -15,7 +15,7 @@ const LABEL = 22; // label size at zoom 1, in drawing units (~13 px in the colum
 const DANGER = '#bf616a';
 // One color per folder (a part of the system), its files carry it. Soft, so a
 // músico's ring in its own color stands out on top.
-export const GROUP_COLORS = ['#5e81ac', '#8fbcbb', '#b48ead', '#d08770', '#a3be8c', '#ebcb8b', '#88c0d0', '#bf8a6e', '#7b88a8', '#9fb08a'];
+export const GROUP_COLORS = ['#5e81ac', '#a3be8c', '#b48ead', '#d08770', '#88c0d0', '#ebcb8b', '#c97fa0', '#8fbcbb', '#9a8fd1', '#d4a373', '#6fb37a', '#7aa6d6', '#c2b36b', '#a88a7a'];
 
 // What many depend on: a file imported by many (at least 4, or the top 5%),
 // a function called by many (at least 8, or the top 5%). Changing it
