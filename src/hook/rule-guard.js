@@ -192,8 +192,54 @@ export function splitCommand(command, depth = 0) {
   return segments;
 }
 
+// Directories as the command names them: '' = the session's cwd, null = one
+// the guard cannot follow ($VAR, cd -). The caller resolves them.
+const ABSOLUTE_DIR = /^(?:~|[A-Za-z]:)?[\\/]|^~$/;
+
+function joinDir(base, next) {
+  if (next === '') return base;
+  if (base === null || typeof next !== 'string' || next === '-' || /[$`*?]/.test(next)) return null;
+  if (ABSOLUTE_DIR.test(next) || base === '') return next;
+  return `${base}/${next}`;
+}
+
+// Each git action in the command with every directory it may run in: the
+// cwd plus each cd before it. A subshell or a failed cd can undo a cd, so all
+// of them count — a guard that is unsure asks.
+function gitActions(command) {
+  const actions = [];
+  const dirs = [''];
+  let current = '';
+  for (const segment of splitCommand(command)) {
+    const tokens = withoutRedirections(words(segment)).map((token) => token.text);
+    if (tokens[0] === 'cd' || tokens[0] === 'pushd') {
+      const target = tokens.slice(1).find((token) => !token.startsWith('-') || token === '-') ?? '~';
+      current = joinDir(current, target);
+      if (!dirs.includes(current)) dirs.push(current);
+      continue;
+    }
+    const parsed = parseGitAction(segment);
+    if (parsed) actions.push({ parsed, dirs: dirs.map((dir) => joinDir(dir, parsed.dir)) });
+  }
+  return actions;
+}
+
 function branchName(ref) {
   return ref.replace(/^\+/, '').replace(/^refs\/heads\//, '');
+}
+
+// git's global options that take a value (git --git-dir .git push … is still
+// a push).
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix']);
+
+// A .git directory stands for the checkout around it; any other git dir (a
+// bare repo) is where git runs.
+function checkoutOf(gitDir) {
+  if (gitDir === null) return null;
+  if (gitDir === '.git') return '';
+  const match = /^(.*)[\\/]\.git[\\/]?$/.exec(gitDir);
+  if (!match) return gitDir;
+  return match[1] === '' ? '/' : match[1];
 }
 
 // target: the branch named (null = the current one); targets: every branch a
@@ -202,17 +248,35 @@ function branchName(ref) {
 export function parseGitAction(segment) {
   const tokens = withoutRedirections(words(segment)).map((token) => token.text);
   if (tokens[0] === 'gh' && tokens[1] === 'pr' && tokens[2] === 'merge')
-    return { action: 'pr-merge', target: null, targets: [], force: false, unknown: true };
+    return { action: 'pr-merge', target: null, targets: [], force: false, unknown: true, dir: '' };
   if (tokens[0] !== 'git') return null;
   let index = 1;
-  // Global options before the subcommand (-C dir, -c key=value).
+  let cDir = ''; // git -C: relative to the shell's directory
+  let workTree;
+  let gitDir;
+  // Global options before the subcommand; the value-taking ones come as
+  // "--opt value" or "--opt=value", and must not be read as the subcommand.
   while (index < tokens.length && tokens[index].startsWith('-')) {
-    index += tokens[index] === '-C' || tokens[index] === '-c' ? 2 : 1;
+    const token = tokens[index];
+    const equals = token.startsWith('--') ? token.indexOf('=') : -1;
+    const name = equals === -1 ? token : token.slice(0, equals);
+    if (!GIT_VALUE_OPTIONS.has(name)) {
+      index += 1;
+      continue;
+    }
+    const value = equals === -1 ? (tokens[index + 1] ?? null) : token.slice(equals + 1);
+    index += equals === -1 ? 2 : 1;
+    if (name === '-C') cDir = joinDir(cDir, value);
+    else if (name === '--work-tree') workTree = value;
+    else if (name === '--git-dir') gitDir = value;
   }
+  // Where it runs: the work tree, else the checkout around the git dir.
+  const place = workTree !== undefined ? workTree : gitDir !== undefined ? checkoutOf(gitDir) : '';
+  const dir = joinDir(cDir, place);
   const sub = tokens[index];
   const args = tokens.slice(index + 1);
   const positional = args.filter((arg) => !arg.startsWith('-'));
-  const base = { targets: [], force: false, unknown: false };
+  const base = { targets: [], force: false, unknown: false, dir };
   if (sub === 'push') {
     const force = args.some((arg) => arg === '-f' || arg === '--force' || arg.startsWith('--force-with-lease'));
     const refspecs = positional.slice(1);
@@ -228,6 +292,7 @@ export function parseGitAction(segment) {
       targets,
       force: force || refspecs.some((ref) => ref.startsWith('+')),
       unknown,
+      dir,
     };
   }
   if (sub === 'merge') return { ...base, action: 'merge', target: null };
@@ -313,8 +378,10 @@ function sqlPattern(statements) {
 }
 
 // Unknown facts count as matching: a guard that is unsure asks.
-function gitTargetMatches(match, parsed, git) {
+// gitAt() reads the repo's facts only when the target needs them.
+function gitTargetMatches(match, parsed, gitAt) {
   if (match.target === 'any' || match.target === undefined) return true;
+  const git = gitAt();
   if (match.target === 'others') return git?.ownBranch !== true;
   if (parsed.unknown) return true;
   const wanted = match.target === 'default' ? (git?.defaultBranch ?? 'main') : match.target;
@@ -338,11 +405,13 @@ function matchHits(match, call, git) {
     }
     case 'git': {
       if (call.tool !== 'Bash' || !Array.isArray(match.actions)) return false;
-      return splitCommand(call.input?.command).some((segment) => {
-        const parsed = parseGitAction(segment);
-        if (!parsed || !match.actions.includes(parsed.action)) return false;
+      // git: the facts of one repo, or dir → facts (dir as the command names
+      // it, '' = the cwd, null = unknown).
+      const contextAt = typeof git === 'function' ? git : () => git;
+      return gitActions(call.input?.command).some(({ parsed, dirs }) => {
+        if (!match.actions.includes(parsed.action)) return false;
         if (match.force && !parsed.force) return false;
-        return gitTargetMatches(match, parsed, git);
+        return dirs.some((dir) => gitTargetMatches(match, parsed, () => contextAt(dir)));
       });
     }
     case 'keyword': {
@@ -419,12 +488,26 @@ function deny(reason) {
   };
 }
 
-// gitContext is lazy: git only runs when some rule needs it.
+// A directory as the command names it, made absolute against the session's.
+function resolveDir(cwd, dir) {
+  if (dir === null) return null;
+  if (dir === '~' || dir.startsWith('~/')) return path.join(os.homedir(), dir.slice(1));
+  if (path.isAbsolute(dir)) return dir;
+  return cwd ? path.resolve(cwd, dir) : null;
+}
+
+// gitContext(absoluteDir) runs only for a git action a rule looks at, once
+// per directory; the facts themselves are read lazily (gitContextOf).
 export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {} }) {
   const list = applicable(rules, repoRoot);
   const call = toolCall(event);
-  const needsGit = list.some((rule) => (rule.match ?? []).some((match) => match?.type === 'git'));
-  const git = needsGit ? gitContext() : null;
+  const contexts = new Map();
+  const git = (dir) => {
+    const absolute = resolveDir(event.cwd, dir);
+    if (absolute === null) return null;
+    if (!contexts.has(absolute)) contexts.set(absolute, gitContext(absolute));
+    return contexts.get(absolute);
+  };
   const hit = evaluate({ rules: list, call, git });
   if (!hit) return null;
   const { rule } = hit;
@@ -517,23 +600,41 @@ export function repoRootOf(cwd) {
   return common.endsWith(`${path.sep}.git`) ? path.dirname(common) : common;
 }
 
-export function gitContextOf(cwd) {
+// Each fact costs git processes (tens of ms in all), so each runs only when a
+// rule reads it, and once. Outside a repo every fact is unknown (null), which
+// the evaluator treats as matching.
+export function gitContextOf(cwd, run = git) {
   if (!cwd) return null;
-  const currentBranch = git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  if (!currentBranch) return null;
-  const remoteHead = git(cwd, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-  const defaultBranch = remoteHead ? remoteHead.replace(/^[^/]+\//, '') : 'main';
-  const email = git(cwd, ['config', 'user.email']);
-  let ownBranch = null;
-  for (const base of [defaultBranch, `origin/${defaultBranch}`]) {
-    const authors = git(cwd, ['log', '--format=%ae', `${base}..HEAD`]);
-    if (authors === null) continue;
-    const list = authors.split('\n').filter(Boolean);
-    // Nothing of its own yet: the next commit makes it yours.
-    ownBranch = email ? list.every((author) => author === email) : null;
-    break;
-  }
-  return { currentBranch, defaultBranch, ownBranch };
+  const facts = new Map();
+  const once = (name, read) => {
+    if (!facts.has(name)) facts.set(name, read());
+    return facts.get(name);
+  };
+  return {
+    get currentBranch() {
+      return once('currentBranch', () => run(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']) || null);
+    },
+    get defaultBranch() {
+      return once('defaultBranch', () => {
+        const remoteHead = run(cwd, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+        return remoteHead ? remoteHead.replace(/^[^/]+\//, '') : 'main';
+      });
+    },
+    get ownBranch() {
+      return once('ownBranch', () => {
+        const defaultBranch = this.defaultBranch;
+        const email = run(cwd, ['config', 'user.email']);
+        if (!email) return null;
+        for (const base of [defaultBranch, `origin/${defaultBranch}`]) {
+          const authors = run(cwd, ['log', '--format=%ae', `${base}..HEAD`]);
+          if (authors === null) continue;
+          // Nothing of its own yet: the next commit makes it yours.
+          return authors.split('\n').filter(Boolean).every((author) => author === email);
+        }
+        return null;
+      });
+    },
+  };
 }
 
 function askVizor(request, waitMs) {
@@ -563,7 +664,8 @@ function askVizor(request, waitMs) {
       if (newline === -1) return;
       try {
         const { answer } = JSON.parse(buffer.slice(0, newline));
-        finish(answer === 'liberar' || answer === 'barrar' ? answer : 'timeout');
+        // offline: the Vizor is quitting with the question open.
+        finish(answer === 'liberar' || answer === 'barrar' || answer === 'offline' ? answer : 'timeout');
       } catch {
         finish('timeout');
       }
@@ -635,7 +737,7 @@ async function main(raw) {
       event,
       rules,
       repoRoot,
-      gitContext: () => gitContextOf(event.cwd),
+      gitContext: (dir) => gitContextOf(dir),
       ask: (request) => askVizor(request, waitMs),
       notify: tellVizor,
       // claude -p and the Agent SDK (sdk-*) have nobody to ask; IDE

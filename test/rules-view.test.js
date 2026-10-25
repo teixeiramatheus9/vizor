@@ -47,6 +47,16 @@ describe('renderReview', () => {
     for (const action of ['approve', 'edit', 'discard']) expect(html).toContain(`data-rule-action="${action}"`);
   });
 
+  it('a refused draft shows why and offers no aprovar, only editar and descartar (#165)', () => {
+    const html = renderReview({
+      ...scope,
+      drafts: [{ id: 'r1', source: 'x', kind: 'forbid', irreversible: false, explain: 'e', match: [], refused: 'regex arriscada: <repetição>' }],
+    });
+    expect(html).toContain('regex arriscada: &lt;repetição&gt;');
+    expect(html).not.toContain('data-rule-action="approve"');
+    for (const action of ['edit', 'discard']) expect(html).toContain(`data-rule-action="${action}"`);
+  });
+
   it('lists approved rules and escapes their text', () => {
     const html = renderReview(scope);
     expect(html).toContain('proibido');

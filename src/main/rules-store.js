@@ -77,6 +77,8 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
     return scope.lines.filter((line) => !approved.has(line));
   }
 
+  const isOpenLine = (scope, source) => pendingOf(scope).includes(source);
+
   function view(scope) {
     return { approved: scope.approved, drafts: scope.drafts, pending: pendingOf(scope), compiled: scope.compiled };
   }
@@ -104,8 +106,11 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
       return result.pending;
     },
 
-    setDrafts(key, drafts) {
+    // A compile can take a while: drafts for a line edited away (or approved)
+    // meanwhile are stale and never offered (#165).
+    setDrafts(key, compiled) {
       const scope = scopeOf(key);
+      const drafts = compiled.filter((draft) => isOpenLine(scope, draft.source));
       const incoming = new Set(drafts.map((draft) => draft.source));
       scope.drafts = [...scope.drafts.filter((draft) => !incoming.has(draft.source)), ...drafts];
       scope.compiled = true;
@@ -115,8 +120,12 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
     approve(key, ruleId, edited = null) {
       const scope = scopeOf(key);
       const draft = scope.drafts.find((candidate) => candidate.id === ruleId);
-      if (!draft) return false;
-      const rule = edited ? { ...draft, ...edited, id: draft.id, source: draft.source } : draft;
+      if (!draft || !scope.lines.includes(draft.source)) return false;
+      // A refused draft (risky regex) goes through only as an edit, which the
+      // caller validated again.
+      if (draft.refused && !edited) return false;
+      const { refused: _refused, ...base } = draft;
+      const rule = edited ? { ...base, ...edited, id: draft.id, source: draft.source } : draft;
       scope.drafts = scope.drafts.filter((candidate) => candidate.id !== ruleId);
       scope.approved = [...scope.approved.filter((candidate) => candidate.source !== rule.source), rule];
       scope.compiled = true;
@@ -138,6 +147,15 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
       }
     },
 
+    // A file the user starts from the rules screen is theirs: it never waits
+    // for the "de fora" first compile (#165).
+    markOwnedRepo(root) {
+      const scope = scopeOf(root);
+      if (scope.compiled) return;
+      scope.compiled = true;
+      saveDrafts();
+    },
+
     addHistory(entry) {
       history = [...history, entry].slice(-HISTORY_CAP);
       writeAtomic('historico.json', JSON.stringify(history));
@@ -147,4 +165,27 @@ export function createRulesStore({ dir, readFile, writeFile, rename }) {
       return history.slice(-limit).reverse();
     },
   };
+}
+
+// The guard keeps one sessoes/<id> file per session with the rules version it
+// last showed it. Nothing ends a session for the guard, so the app sweeps the
+// ones untouched for a week; a session still alive just gets its rules again.
+export const SEEN_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function pruneSeenSessions({ dir, now, readdir, stat, unlink, maxAgeMs = SEEN_MAX_AGE_MS }) {
+  let names;
+  try {
+    names = readdir(dir);
+  } catch {
+    return; // no folder yet
+  }
+  for (const name of names) {
+    const file = path.join(dir, name);
+    try {
+      const info = stat(file);
+      if (info.isFile() && now - info.mtimeMs > maxAgeMs) unlink(file);
+    } catch {
+      // gone already, or not ours to read
+    }
+  }
 }

@@ -5,6 +5,11 @@ import { randomUUID } from 'node:crypto';
 // which carry the answer back to the waiting hook.
 const SUMMARY_CHARS = 200;
 
+// The only answers the screens can give. Anything else leaves the ask open:
+// a typo or a prototype key must never count as "liberar" (#165).
+export const GUARD_CHOICES = ['liberar', 'liberar-sessao', 'barrar'];
+export const isGuardChoice = (choice) => GUARD_CHOICES.includes(choice);
+
 function summaryOf(request) {
   const input = request.input ?? {};
   const text =
@@ -15,27 +20,49 @@ function summaryOf(request) {
 }
 
 const grantKey = (sessionId, ruleId, target) => JSON.stringify([sessionId, ruleId, target]);
+const keyOf = (request) => grantKey(request.sessionId, request.ruleId, request.target);
 
-export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange = () => {} } = {}) {
-  const asks = new Map(); // id → { ask, request, reply }
+// Equal asks (same session, rule and target: parallel identical calls) are
+// announced once. onReleased(request, choice): a twin answered along with the
+// announced one, for the history. onPromote(ask): the announced one left
+// without settling its twins, so the next twin must be announced now.
+export function createGuardAsks({
+  now = Date.now,
+  newId = randomUUID,
+  onChange = () => {},
+  onReleased = () => {},
+  onPromote = () => {},
+} = {}) {
+  const asks = new Map(); // id → { ask, request, reply, shown }
   const grants = new Set();
 
-  function settle(id, answer) {
+  function promoteTwinOf(entry) {
+    if (!entry.shown) return;
+    const twin = [...asks.values()].find((other) => keyOf(other.request) === keyOf(entry.request));
+    if (!twin) return;
+    twin.shown = true;
+    onPromote(twin.ask);
+  }
+
+  function settle(id, answer, { quiet = false } = {}) {
     const entry = asks.get(id);
     if (!entry) return null;
     asks.delete(id);
     if (answer) entry.reply(answer);
     else entry.reply.end?.();
-    onChange();
+    if (!quiet) onChange();
     return entry.request;
   }
 
   return {
+    // duplicate: an equal ask (same session, rule and target) is already
+    // waiting, so the caller should not announce this one again.
     add(request, reply) {
-      if (!request.irreversible && grants.has(grantKey(request.sessionId, request.ruleId, request.target))) {
+      if (!request.irreversible && grants.has(keyOf(request))) {
         reply({ answer: 'liberar' });
         return { answered: 'liberar' };
       }
+      const duplicate = [...asks.values()].some((entry) => keyOf(entry.request) === keyOf(request));
       const id = newId();
       const ask = {
         id,
@@ -48,22 +75,43 @@ export function createGuardAsks({ now = Date.now, newId = randomUUID, onChange =
         irreversible: Boolean(request.irreversible),
         at: now(),
       };
-      asks.set(id, { ask, request, reply });
+      const entry = { ask, request, reply, shown: !duplicate };
+      asks.set(id, entry);
       // The guard gave up (its own timeout) or Claude Code killed it.
       reply.onClose?.(() => {
-        if (asks.delete(id)) onChange();
+        if (!asks.delete(id)) return;
+        promoteTwinOf(entry);
+        onChange();
       });
       onChange();
-      return { id };
+      return { id, duplicate };
     },
 
     answer(id, choice) {
+      if (!isGuardChoice(choice)) return null;
       const entry = asks.get(id);
       if (!entry) return null;
       const { request } = entry;
-      if (choice === 'liberar-sessao' && !request.irreversible)
-        grants.add(grantKey(request.sessionId, request.ruleId, request.target));
-      return settle(id, { answer: choice === 'barrar' ? 'barrar' : 'liberar' });
+      if (choice === 'liberar-sessao' && !request.irreversible) grants.add(keyOf(request));
+      const answer = { answer: choice === 'barrar' ? 'barrar' : 'liberar' };
+      const answered = settle(id, answer);
+      // The twins get the same answer, except that a liberar of something
+      // irreversible only ever covers the call the user saw.
+      if (choice === 'barrar' || !request.irreversible) {
+        for (const [otherId, other] of [...asks]) {
+          if (keyOf(other.request) !== keyOf(request)) continue;
+          onReleased(settle(otherId, answer), choice);
+        }
+      }
+      promoteTwinOf(entry);
+      return answered;
+    },
+
+    // Every waiting ask gets the same answer at once (the app is quitting).
+    releaseAll(answer) {
+      if (asks.size === 0) return;
+      for (const id of [...asks.keys()]) settle(id, { answer }, { quiet: true });
+      onChange();
     },
 
     dropSession(sessionId) {
