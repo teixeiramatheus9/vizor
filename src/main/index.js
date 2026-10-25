@@ -3843,7 +3843,7 @@ async function voiceResolveTask(number) {
   const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
   const conversations = [];
   for (const folder of folders) {
-    for (const conversation of await listConversations(claudeProjectDir(folder), { limit: 200 }))
+    for (const conversation of await listConversations(await resolveClaudeProjectDir(folder), { limit: 200 }))
       conversations.push({ ...conversation, cwd: folder });
   }
   const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees });

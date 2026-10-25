@@ -317,3 +317,11 @@ describe('routeUtterance — starting work on an issue, said naturally (live tes
     expect(routeUtterance('atribui a issue 162 pra mim')).not.toMatchObject({ type: 'pick-issue' });
   });
 });
+
+describe('routeUtterance — "issue" as the transcriber writes it (live test)', () => {
+  it('"isue", "issu" and "issues" are issues too', () => {
+    expect(routeUtterance('Vamos desenvolver a isue 169.')).toEqual({ type: 'pick-issue', number: 169 });
+    expect(routeUtterance('Sim, pega isue 169 para desenvolvermos.')).toEqual({ type: 'pick-issue', number: 169 });
+    expect(routeUtterance('puxa a issu 169')).toEqual({ type: 'pick-issue', number: 169 });
+  });
+});

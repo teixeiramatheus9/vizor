@@ -21,7 +21,8 @@ const norm = (text) =>
 const WORK_VERB =
   /\b(puxa|puxar|puxe|pega|pegar|pegue|comeca|comecar|comece|desenvolve|desenvolver|desenvolva|implementa|implementar|implemente|trabalhar|trabalha|trabalhe|faz|fazer|faca|analisa|analisar|analise|resolve|resolver|resolva)\b/;
 const NOT_WORK = /\b(revis\w*|fecha\w*|atribu\w*|assign\w*)\b/;
-export const ISSUE_NUMBER = /\b(issue|task|tarefa)\s+(numero\s+)?(\d+)\b/;
+// "isue"/"issu": how the transcriber writes it (live test).
+export const ISSUE_NUMBER = /\b(issues?|isues?|issu|task|tarefa)\s+(numero\s+)?(\d+)\b/;
 const HANDOVER = /\b(da|de|passa|passe|manda|mande|entrega|entregue)\b.*\b(ela|essa|isso|esta)\b.*\b(musico|chat|agente)\b/;
 
 const NOT_A_NAME = new Set(['e', 'me', 'pra', 'para', 'que', 'com', 'mas', 'depois', 'ai', 'entao', 've', 'olha']);
@@ -39,7 +40,7 @@ const ALWAYS = [
   [{ test: (text) => STATUS.some((pattern) => pattern.test(text)) }, () => ({ type: 'status' })],
   // The músicos act on the GitHub (#159): a new chat starts the issue, or
   // reviews the PR.
-  [/^(puxa|puxe|puxar|pega|pegue|pegar) a (issue|task|tarefa) (numero )?(\d+)$/, (match) => ({ type: 'pick-issue', number: Number(match[4]) })],
+  [/^(puxa|puxe|puxar|pega|pegue|pegar) a (issue|isue|issu|task|tarefa) (numero )?(\d+)$/, (match) => ({ type: 'pick-issue', number: Number(match[4]) })],
   [/^(revisa|revise|revisar|manda revisar|pede (a )?revisao d[ae]) (a )?(pr|pull request) (numero )?(\d+)$/, (match) => ({ type: 'review-pr', number: Number(match[6]) })],
   [/^(retoma|retomar|volta (pra|para)|abre|abrir|continua|continuar) (a |o )?(task|tarefa|issue|pr|demanda) (numero )?(\d+)$/, (match) => ({ type: 'resume-task', number: Number(match[6]) })],
   [/^(fala|falar|conversa) com o chat (da |do |de )?(.+)$/, (match, raw) => ({ type: 'talk-to-chat', query: rawTail(raw, match[3]) })],
