@@ -157,6 +157,12 @@ export function createPtyHost({
     flush(entry);
     return entry.buffer;
   };
+  // The terminal device of a live pty (/dev/pts/N): with the session's pid,
+  // it tells whether that claude is the job in front (pty-foreground.js).
+  host.ttyPath = (id) => {
+    const entry = terminals.get(id);
+    return entry?.info.alive ? (entry.child._pty ?? null) : null;
+  };
   host.aliveCount = () => [...terminals.values()].filter((entry) => entry.info.alive).length;
 
   host.killAll = () => {

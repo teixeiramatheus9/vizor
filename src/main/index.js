@@ -50,6 +50,10 @@ import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.
 import { loadPty } from './pty-loader.js';
 import { createPtyHost } from './pty-host.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
+import { buildCommentMessage, validateComment } from './comment-message.js';
+import { createCommentStore } from './comment-store.js';
+import { createCommentDelivery } from './comment-delivery.js';
+import { inForeground } from './pty-foreground.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
@@ -1429,6 +1433,7 @@ ipcMain.handle('edits:task', (event, { sessionId, taskId = null } = {}) => {
   return {
     task: serializeTask(pickTask(sessionId, taskId), sessionWorktree(sessionId)),
     summaries: taskSummaries(editTracker.tasks(sessionId)),
+    comments: commentStore.list(sessionId),
   };
 });
 
@@ -1635,6 +1640,71 @@ function scheduleCommandRoots() {
 editTracker.on('task', scheduleCommandRoots);
 editTracker.on('change', scheduleCommandRoots);
 
+// --- 💬 comments on a change (#95) -----------------------------------------
+const commentStore = createCommentStore();
+// Is the session's own claude the job in front of that Vizor terminal? Its
+// pid comes from Claude Code's session registry; /proc says whether it leads
+// the terminal's foreground group, on THAT pty, and isn't stopped.
+function claudeInPty(session, ptyId) {
+  const tty = ptyHost?.ttyPath(ptyId);
+  const pid = session?.id ? readSessionPid(session.id) : null;
+  if (!tty || !pid) return false;
+  try {
+    return inForeground({ stat: fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), ttyRdev: fs.statSync(tty).rdev });
+  } catch {
+    return false;
+  }
+}
+
+const commentDelivery = createCommentDelivery({
+  store: commentStore,
+  sessionOf: (sessionId) => registry.sessions.get(sessionId) ?? null,
+  claudeInPty,
+  writePty: (ptyId, data) => ptyHost?.write(ptyId, data),
+  sendPeer: (session, text) => sendPeerMessage(session, text),
+  typeReply: (session, text) => typeIntoTerminal(session, text),
+  log,
+});
+
+// Same ping as the edits: the inspector re-reads the session.
+commentStore.on('change', ({ sessionId }) => {
+  if (workspaceWindow?.isReady()) workspaceWindow.send('edits:changed', { sessionId });
+});
+
+ipcMain.handle('comments:add', async (event, { sessionId, editId, text } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof editId !== 'string')
+    return { ok: false, error: 'pedido inválido' };
+  const valid = validateComment(text);
+  if (!valid.ok) return valid;
+  const task = editTracker.tasks(sessionId).find((item) => item.edits.some((edit) => edit.id === editId));
+  const edit = task
+    ? serializeTask({ ...task, edits: task.edits.filter((item) => item.id === editId) }, sessionWorktree(sessionId)).edits[0]
+    : null;
+  if (!edit) return { ok: false, error: 'mudança não encontrada' };
+  commentStore.add({ sessionId, editId, text: valid.text, message: buildCommentMessage(edit, valid.text) });
+  // immediate: the user just pressed Enviar — the only moment typing into a
+  // terminal window is acceptable.
+  commentDelivery.flush(sessionId, { immediate: true }).catch((error) => log(`comment flush failed: ${error}`));
+  return { ok: true };
+});
+
+// "copiar" on a comment that could not be delivered: the clipboard is only
+// ever written because the user asked.
+ipcMain.handle('comments:copy', (event, { sessionId, commentId } = {}) => {
+  if (!fromWorkspace(event)) return false;
+  const comment = commentStore.list(sessionId).find((item) => item.id === commentId);
+  if (!comment) return false;
+  clipboard.writeText(comment.message);
+  return true;
+});
+
+// A session that stops waiting gets its held comments.
+function flushHeldComments() {
+  for (const session of registry.list())
+    if (commentStore.nextToSend(session.id, session))
+      commentDelivery.flush(session.id).catch((error) => log(`comment flush failed: ${error}`));
+}
+
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
 function onToolEvent(event) {
@@ -1684,6 +1754,7 @@ ipcMain.on('panel:opened', () => registry.markAllRead());
 ipcMain.on('session:remove', (_event, sessionId) => {
   registry.remove(sessionId);
   editTracker.forgetSession(sessionId);
+  commentStore.forgetSession(sessionId);
 });
 
 // Renaming a chat also becomes the folder's default nickname, so the next
@@ -2089,18 +2160,25 @@ ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
 //    cannot deliver to the wrong chat because it is addressed by session id.
 // 2. The terminal window (xdotool), for builds where the messaging channel is
 //    gated off or the session predates it.
-async function replyToSession(session, text) {
+async function sendPeerMessage(session, text, { priority = null } = {}) {
   const channel = session?.id ? readSessionChannel(session.id) : null;
-  if (channel) {
-    // A panel reply is the user reacting to this chat right now — jump the
-    // queue instead of waiting for whatever turn is in flight to finish.
-    const outcome = await sendUserMessage(channel.socketPath, text, {
-      token: channel.token,
-      priority: 'now',
-    });
-    if (outcome === 'sent') return 'sent';
-    log(`peer channel unusable for ${session.id} (${outcome}) — falling back to the terminal`);
-  }
+  if (!channel) return 'no-channel';
+  const outcome = await sendUserMessage(channel.socketPath, text, {
+    token: channel.token,
+    ...(priority ? { priority } : {}),
+  });
+  if (outcome !== 'sent') log(`peer channel unusable for ${session.id} (${outcome}) — falling back to the terminal`);
+  return outcome;
+}
+
+async function replyToSession(session, text) {
+  // A panel reply is the user reacting to this chat right now — jump the
+  // queue instead of waiting for whatever turn is in flight to finish.
+  if ((await sendPeerMessage(session, text, { priority: 'now' })) === 'sent') return 'sent';
+  return typeIntoTerminal(session, text);
+}
+
+async function typeIntoTerminal(session, text) {
   return terminal.sendReplyToWarp(await sessionSearchKeys(session), text, {
     writeClipboard: (value) => clipboard.writeText(value),
     terminal: managerConfig.terminal,
@@ -2284,7 +2362,10 @@ function reapDeadSessions() {
   const before = [...registry.sessions.keys()];
   registry.reconcileLiveSessions(readLiveSessionIds());
   for (const sessionId of before)
-    if (!registry.sessions.has(sessionId)) editTracker.forgetSession(sessionId);
+    if (!registry.sessions.has(sessionId)) {
+      editTracker.forgetSession(sessionId);
+      commentStore.forgetSession(sessionId);
+    }
 }
 
 let saveTimer = null;
@@ -2329,6 +2410,7 @@ app.whenReady().then(() => {
   setupTray();
   registry.on('change', sendState);
   registry.on('change', scheduleCommandRoots);
+  registry.on('change', flushHeldComments);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);

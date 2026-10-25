@@ -212,7 +212,40 @@ function renderHunkLines(lines) {
     .join('');
 }
 
-export function renderCards(task, selectedId) {
+const COMMENT_STATE = {
+  queued: 'na fila — sai quando a sessão liberar',
+  sending: 'enviando…',
+  sent: 'enviado',
+  copied: 'copiado — cola no terminal da sessão',
+  failed: 'não deu pra entregar',
+};
+
+const commentButton = (id) =>
+  `<button class="comment-button" data-comment="${escapeHtml(id)}" title="Comentar esta mudança">💬</button>`;
+
+export function renderComments(comments) {
+  if (!comments?.length) return '';
+  return `<ul class="comments">${comments
+    .map(
+      (comment) =>
+        `<li class="comment status-${comment.status}"><span class="comment-text">💬 ${escapeHtml(
+          comment.text,
+        )}</span><span class="comment-state">${COMMENT_STATE[comment.status] ?? ''}${
+          comment.status === 'failed'
+            ? ` <button class="copy-comment" data-copy-comment="${escapeHtml(comment.id)}" title="Copiar o comentário">copiar</button>`
+            : ''
+        }</span></li>`,
+    )
+    .join('')}</ul>`;
+}
+
+export function renderComposer({ edit, draft, error }) {
+  return `<header>Comentando #${edit.seq} · ${escapeHtml(edit.relPath)}</header><textarea data-comment-draft rows="3" placeholder="O que o Claude deve saber sobre essa mudança?">${escapeHtml(
+    draft ?? '',
+  )}</textarea>${error ? `<p class="composer-error">${escapeHtml(error)}</p>` : ''}<div class="composer-actions"><button data-comment-cancel>Cancelar</button><button data-comment-send>Enviar</button></div>`;
+}
+
+export function renderCards(task, selectedId, commentsByEdit = {}) {
   if (!task?.edits.length) return '<p class="empty">Nenhuma mudança nesta tarefa ainda.</p>';
   return task.edits
     .map((edit) => {
@@ -223,22 +256,22 @@ export function renderCards(task, selectedId) {
         edit.id === selectedId ? ' aria-current="true"' : ''
       }><header>${editStatusIcon(edit)}<span>#${edit.seq} · ${escapeHtml(edit.relPath)} · ${clock(
         edit.startedAt,
-      )}</span>${editStatusLabel(edit)}</header>${
+      )}</span>${editStatusLabel(edit)}${commentButton(edit.id)}</header>${
         edit.reason ? `<p class="reason">${escapeHtml(edit.reason)}</p>` : ''
-      }${body}</article>`;
+      }${body}${renderComments(commentsByEdit[edit.id])}</article>`;
     })
     .join('');
 }
 
-export function renderFileView(file, editsById, selectedId) {
+export function renderFileView(file, editsById, selectedId, commentsByEdit = {}) {
   const head = `<header class="file-head">${escapeHtml(file.relPath)}</header>`;
   if (file.note) return `${head}<p class="note">${NOTE_COPY[file.note] ?? file.note}</p>`;
   const banner = (id) => {
     const edit = editsById[id];
     if (!edit) return '';
-    return `<div class="banner" data-banner="${escapeHtml(id)}"${id === selectedId ? ' aria-current="true"' : ''}>#${
+    return `<div class="banner" data-banner="${escapeHtml(id)}"${id === selectedId ? ' aria-current="true"' : ''}><span>#${
       edit.seq
-    }${edit.reason ? ` · ${escapeHtml(edit.reason)}` : ''}</div>`;
+    }${edit.reason ? ` · ${escapeHtml(edit.reason)}` : ''}</span>${commentButton(id)}${renderComments(commentsByEdit[id])}</div>`;
   };
   const seal = file.seal ? `<p class="note seal">${NOTE_COPY[file.seal] ?? file.seal}</p>` : '';
   const unplaced = file.unplaced?.length
