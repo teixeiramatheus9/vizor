@@ -540,7 +540,7 @@ describe('voice session — the gerente reads, the músicos act', () => {
     expect(session.target()).toEqual({ kind: 'manager' });
   });
 
-  it('English proposals work the same, and the order is held in the Maestro', async () => {
+  it('English proposals work the same; in the Maestro a review runs at once', async () => {
     const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
     let timer = null;
     const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
@@ -553,10 +553,83 @@ describe('voice session — the gerente reads, the músicos act', () => {
     });
     await session.onUtterance('alguma PR parada?');
     await session.onUtterance('sim');
-    expect(pendingOrder.pending().label).toBe('revisar a PR 166');
+    await tick();
+    expect(pendingOrder.pending()).toBeNull();
+    expect(timer).toBeNull();
+    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('PR #166');
+  });
+});
+
+describe('voice session — only what cannot be undone is held', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('in the Maestro, opening work runs at once: picking an issue, resuming one, reviewing a PR', async () => {
+    const pendingOrder = createPendingOrder({ setTimer: () => null, clearTimer: () => {} });
+    const { session, calls } = setup({ maestro: () => true, orchestra: () => [], pendingOrder, resolveTask: async () => ({ none: true, cwd: '/r' }) });
+    await session.onUtterance('pega a issue 169 pra desenvolver');
+    await tick();
+    expect(pendingOrder.pending()).toBeNull();
+    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('issue #169');
+    await session.onUtterance('revisa a PR 166');
+    await tick();
+    expect(pendingOrder.pending()).toBeNull();
+    expect(calls.filter(([name]) => name === 'new').at(-1)[1].prompt).toContain('PR #166');
+  });
+
+  it('interrupting a músico is still held', async () => {
+    const pendingOrder = createPendingOrder({ setTimer: () => null, clearTimer: () => {} });
+    const musician = { sessionId: 's22', ptyId: 'p22', number: 22, agent: null, name: '#22', label: 'login' };
+    const { session } = setup({ maestro: () => true, orchestra: () => [musician], interrupt: () => true, focus: () => {}, pendingOrder, linkedSessions: () => ['s22'] });
+    await session.onUtterance('interrompe a task 22');
+    expect(pendingOrder.pending().label).toBe('interromper a 22');
+  });
+});
+
+describe('voice session — the plan by voice', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const musician = { sessionId: 's169', ptyId: 'p169', number: 169, agent: null, name: '#169', label: 'menu' };
+
+  it('"aprova o plano" goes to the músico in focus, held like any order typed into it', async () => {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const actions = [];
+    const { session, texts } = setup({
+      maestro: () => true,
+      orchestra: () => [musician],
+      focusedSession: () => 's169',
+      pendingOrder,
+      planAction: async (sessionId, action) => (actions.push([sessionId, action]), 'sent'),
+    });
+    await session.onUtterance('aprova o plano');
+    expect(pendingOrder.pending().label).toBe('aprovar o plano da 169');
     timer();
     await tick();
-    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('PR #166');
+    expect(actions).toEqual([['s169', 'approve']]);
+    expect(texts().at(-1)).toBe('Mandei seguir com o plano.');
+  });
+
+  it('"abre a PR da 169" finds the chat of the task; no chat to act on, it asks which', async () => {
+    const actions = [];
+    const { session, texts } = setup({
+      orchestra: () => [musician],
+      linkedSessions: (number) => (number === 169 ? ['s169'] : []),
+      planAction: async (sessionId, action) => (actions.push([sessionId, action]), 'sent'),
+    });
+    await session.onUtterance('abre a PR da 169');
+    await tick();
+    expect(actions).toEqual([['s169', 'pr']]);
+    expect(texts().at(-1)).toBe('Pedi pra rodar os testes e abrir a PR.');
+    await session.onUtterance('abre a PR');
+    expect(texts().at(-1)).toBe('De qual chat? Diga o número da task.');
+  });
+
+  it('a chat that cannot be reached is said so', async () => {
+    const { session, texts } = setup({ focusedSession: () => 's169', planAction: async () => 'failed' });
+    await session.onUtterance('aprova o plano');
+    await tick();
+    expect(texts().at(-1)).toBe('Não consegui falar com esse chat.');
   });
 });
 
@@ -845,20 +918,29 @@ describe('voice session — routines, review fixes', async () => {
     return { save: (name, steps) => store.save('/r', name, steps), get: (name) => store.get('/r', name), list: () => store.list('/r'), remove: (name) => store.remove('/r', name) };
   };
 
-  it('I1: a real utterance while a routine runs is held as usual, and it stops the routine', async () => {
+  it('I1: a real order while a routine runs is held as usual, and it stops the routine', async () => {
     let timer = null;
     const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
     let release;
     const slow = new Promise((resolve) => (release = resolve));
     const routines = routinesFor();
     routines.save('dia', ['o que temos pra hoje', 'retoma a task 22']);
-    const { session, calls, texts } = setup({ routines, maestro: () => true, orchestra: () => [], pendingOrder, ghDigest: async () => (await slow, { speech: 'ok', lines: [] }) });
+    const musician = { sessionId: 's40', ptyId: 'p40', number: 40, agent: null, name: '#40', label: 'x' };
+    const { session, calls, texts } = setup({
+      routines,
+      maestro: () => true,
+      orchestra: () => [musician],
+      interrupt: () => true,
+      linkedSessions: (number) => (number === 40 ? ['s40'] : []),
+      pendingOrder,
+      ghDigest: async () => (await slow, { speech: 'ok', lines: [] }),
+    });
     await session.onUtterance('roda a rotina dia');
     timer();
     await tick();
     // The routine is waiting on its first step; the user speaks an order.
-    await session.onUtterance('retoma a task 40');
-    expect(pendingOrder.pending().label).toBe('retomar a 40');
+    await session.onUtterance('interrompe a task 40');
+    expect(pendingOrder.pending().label).toBe('interromper a 40');
     release();
     await tick();
     await tick();
@@ -872,11 +954,11 @@ describe('voice session — routines, review fixes', async () => {
     const { session } = setup({ deliverPrompt: async (sessionId, text) => (busy ? 'hold' : (delivered.push(text), 'sent')) });
     await session.onUtterance('retoma a task 22');
     await session.onUtterance('roda os testes');
-    await session.onUtterance('abre a PR');
+    await session.onUtterance('commita tudo');
     busy = false;
     await session.onSessionStop({ id: 's22', lastMessage: 'Feito.' });
     await session.onSessionStop({ id: 's22', lastMessage: 'Feito.' });
-    expect(delivered).toEqual(['roda os testes', 'abre a PR']);
+    expect(delivered).toEqual(['roda os testes', 'commita tudo']);
   });
 
   it('I3: a step that asks a question stops the routine there and says where', async () => {
@@ -921,9 +1003,10 @@ describe('voice session — understanding a garbled order (live test)', async ()
 
   it('the Vizor says what it understood when it holds an order', async () => {
     const pendingOrder = createPendingOrder({ setTimer: () => null, clearTimer: () => {} });
-    const { session, said } = setup({ maestro: () => true, orchestra: () => [], pendingOrder });
-    await session.onUtterance('pega a issue 169 pra desenvolver');
-    expect(said.at(-1)).toMatchObject({ text: 'Entendi: puxar a issue 169.', kind: 'filler' });
+    const musician = { sessionId: 's169', ptyId: 'p169', number: 169, agent: null, name: '#169', label: 'menu' };
+    const { session, said } = setup({ maestro: () => true, orchestra: () => [musician], interrupt: () => true, linkedSessions: () => ['s169'], pendingOrder });
+    await session.onUtterance('interrompe a task 169');
+    expect(said.at(-1)).toMatchObject({ text: 'Entendi: interromper a 169.', kind: 'filler' });
   });
 
   it('a work order nothing matched goes to the interpreter; a valid answer is acted on', async () => {

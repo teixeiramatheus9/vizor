@@ -902,16 +902,18 @@ ipcMain.handle('workspace:command', async (_event, action = {}) => {
 });
 
 // The plan card's buttons: the ok, and the PR once every step is done.
-ipcMain.handle('workspace:plan', async (_event, { sessionId, action } = {}) => {
-  if (typeof sessionId !== 'string' || !workPlans.planOf(sessionId)) return 'failed';
+function planAction(sessionId, action) {
+  if (typeof sessionId !== 'string') return 'failed';
   if (action === 'approve') {
+    if (!workPlans.planOf(sessionId)) return 'failed';
     workPlans.approve(sessionId);
     pushWorkspaceState();
     return deliverWhenFree(sessionId, APPROVE_PROMPT);
   }
   if (action === 'pr') return deliverWhenFree(sessionId, OPEN_PR_PROMPT);
   return 'failed';
-});
+}
+ipcMain.handle('workspace:plan', (_event, { sessionId, action } = {}) => planAction(sessionId, action));
 ipcMain.on('maestro:focus', (_event, sessionId) => {
   if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
 });
@@ -4178,6 +4180,8 @@ function createVoiceSessionForApp() {
       remove: (name) => routinesStore.remove(routinesHere(), name),
     },
     interpret: voiceInterpret,
+    planAction: async (sessionId, action) => planAction(sessionId, action),
+    focusedSession: () => (maestroOn() ? maestroFocusId : workspaceSelectedSession ?? null),
     conductor: maestroConductor,
     // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
     startOrderNow: (sessionId) => {
