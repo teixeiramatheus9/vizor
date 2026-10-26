@@ -21,8 +21,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand, installGuardScript } from './guard-runtime.js';
-import { createGuardAsks } from './guard-asks.js';
-import { createRulesStore } from './rules-store.js';
+import { createGuardAsks, isGuardChoice } from './guard-asks.js';
+import { createRulesStore, pruneSeenSessions } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
 import { normalizeMic, normalizeMicList } from '../renderer/mic-choice.js';
 import { chromiumSinkId, listSinks, normalizeOutput } from './audio-devices.js';
@@ -38,7 +38,7 @@ import { runClaude } from './claude-cli.js';
 import { ASR_MODELS, KWS_MODEL, VAD_MODEL, installVoiceModels, missingVoiceModels, voiceModelPaths } from './voice/models.js';
 import { otherRecorders, parsePwDump } from './voice/meeting.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
-import { compileRules, validateEditedRule } from './rules-compiler.js';
+import { compileRules, editProblem, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
@@ -70,13 +70,13 @@ import {
 import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
 import { loadPty } from './pty-loader.js';
 import { createPtyHost, withoutClaudeSession } from './pty-host.js';
-import { linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
-import { listConversations } from './conversations.js';
+import { createQuitFreeze, linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
+import { listConversations, resolveClaudeProjectDir } from './conversations.js';
 import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
 import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
 import { createCommentStore } from './comment-store.js';
 import { createCommentDelivery } from './comment-delivery.js';
-import { inForeground, onTerminal } from './pty-foreground.js';
+import { createPtyIdentityCheck, inForeground } from './pty-foreground.js';
 import {
   answerKeys,
   answerRoute,
@@ -135,9 +135,8 @@ import {
   readLiveSessionIds,
   readAdoptableSessions,
   claudeTranscriptPath,
-  claudeProjectDir,
 } from './cc-sessions.js';
-import { readInboundPolicy, setInboundPolicy } from './claude-settings.js';
+import { readClaudeSettingsFile, readInboundPolicy, setInboundPolicy } from './claude-settings.js';
 import {
   probeSystemEventsAutomation,
   accessibilityLostAfterUpdate,
@@ -416,7 +415,18 @@ const guardAsks = createGuardAsks({
     updateNotificationHalo();
     if (guardAsks.pending().length === 0) voiceSession?.onGuardAnswered();
   },
+  // An equal ask answered along with the one the user saw.
+  onReleased: (request, choice) => recordGuardOutcome({ ...request, summary: guardSummary(request) }, GUARD_OUTCOMES[choice]),
+  // The announced ask left without settling its twin: announce the twin.
+  onPromote: (ask) => announceGuardAsk(ask),
 });
+
+// Guard state read by guardStatus(), which sendState() calls: declared here,
+// before anything can send state, instead of next to the guard code at the
+// end of the file (a let read before its line throws).
+let guardOffline = false;
+let guardInstalled = false;
+let rulesUnreadable = false;
 
 function recordGuardOutcome(request, outcome) {
   try {
@@ -443,8 +453,14 @@ function onGuardMessage(message, reply) {
     recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
     return;
   }
+  // The same question already waiting (parallel calls): its answer settles
+  // this one too, and saying it twice is noise.
+  if (result.duplicate) return;
   const ask = guardAsks.pending().find((candidate) => candidate.id === result.id);
-  if (!ask) return;
+  if (ask) announceGuardAsk(ask);
+}
+
+function announceGuardAsk(ask) {
   // The balloon announces; the choices live in the panel and the workspace.
   // In voice mode the session speaks it (priority 2) and takes the answer.
   if (voiceSession) voiceSession.onGuardAsk({ speech: guardSpeech(ask, spokenLang()) });
@@ -464,7 +480,7 @@ function guardSummary(message) {
 
 const GUARD_OUTCOMES = { liberar: 'liberado', 'liberar-sessao': 'liberado nesta sessão', barrar: 'barrado' };
 ipcMain.handle('guard:answer', (_event, { id, choice } = {}) => {
-  if (!GUARD_OUTCOMES[choice]) return false;
+  if (!isGuardChoice(choice) || !Object.hasOwn(GUARD_OUTCOMES, choice)) return false;
   const ask = guardAsks.pending().find((candidate) => candidate.id === id);
   const request = guardAsks.answer(id, choice);
   if (request) recordGuardOutcome({ ...request, summary: ask?.summary ?? guardSummary(request) }, GUARD_OUTCOMES[choice]);
@@ -824,7 +840,7 @@ ipcMain.on('bubble:activate', () => activateBubble());
 // The balloon of a session born in the Vizor opens its workspace tab, like
 // its panel card (spec §9.1, #144); any other balloon opens the panel.
 ipcMain.on('tooltip:click', (_event, sessionId) => {
-  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  const session = linkedSession(sessionId);
   if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
     hideOverlay();
     workspaceWindow.focusSession(session.id);
@@ -1649,6 +1665,15 @@ function linkedSessions(sessions) {
   return linkTerminals(sessions, ids, resumedChats);
 }
 
+// One session with the tab it runs in NOW (#157): a pty id left over from an
+// earlier run doesn't count as "in the Vizor", and a chat resumed in a tab is
+// reachable there before its first hook event. Every path that types into a
+// tab or focuses one goes through this, never the raw registry term.
+function linkedSession(sessionId) {
+  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  return session ? linkedSessions([session])[0] : null;
+}
+
 // kind: 'shell' | 'claude' | 'resume' (with sessionId) — #154.
 function openTerminal({ cwd, kind, sessionId, prompt = null }) {
   const { command, error: invalid } = terminalCommand({ kind, sessionId, prompt });
@@ -1687,7 +1712,7 @@ ipcMain.handle('workspace:conversations', async (event, cwd) => {
     ...[...resumedChats].map(([ptyId, sessionId]) => [sessionId, ptyId]),
     ...linked.map((session) => [session.id, session.term.VIZOR_PTY_ID]),
   ]);
-  const list = await listConversations(claudeProjectDir(cwd));
+  const list = await listConversations(await resolveClaudeProjectDir(cwd));
   return list.map((conversation) => ({
     ...conversation,
     open: Boolean(live?.has(conversation.sessionId)),
@@ -1785,6 +1810,25 @@ function freezeWorkspaceTabs() {
   saveWorkspaceTabs();
   tabsFrozen = true;
 }
+
+// The thaw only brings tab saving back. appQuitting stays set on purpose:
+// cleared, the workspace and rules windows would go back to hiding on close,
+// and a quit that was merely slow (not cancelled) would then be cancelled by
+// them. The rest of before-quit (socket, hooks, tray) isn't undone either.
+const quitFreeze = createQuitFreeze({
+  freeze: freezeWorkspaceTabs,
+  thaw: () => {
+    if (!tabsFrozen) return;
+    log('quit did not go through: workspace tab saves resume');
+    tabsFrozen = false;
+    scheduleTabsSave();
+  },
+  hold: () => {
+    clearTimeout(tabsSaveTimer);
+    tabsSaveTimer = null;
+    tabsFrozen = true;
+  },
+});
 
 function restoreWorkspaceTabs() {
   if (!workspaceWindow) return;
@@ -2131,7 +2175,7 @@ function claudeInPty(session, ptyId) {
 
 const commentDelivery = createCommentDelivery({
   store: commentStore,
-  sessionOf: (sessionId) => registry.sessions.get(sessionId) ?? null,
+  sessionOf: (sessionId) => linkedSession(sessionId),
   claudeInPty,
   writePty: (ptyId, data) => ptyHost?.write(ptyId, data),
   sendPeer: (session, text) => sendPeerMessage(session, text),
@@ -2230,23 +2274,25 @@ function logEdit(edit) {
 // A VIZOR_PTY_ID that doesn't hold (no such tab in this run, or the session
 // runs on another terminal — e.g. a terminal app started from a tab) is
 // dropped: the session is treated as an outside one (#140).
+const ptyIdentityHolds = createPtyIdentityCheck({
+  ttyPath: (ptyId) => ptyHost?.ttyPath(ptyId) ?? null,
+  ttyRdev: (tty) => fs.statSync(tty).rdev,
+  readSessionPid: (sessionId) => readSessionPid(sessionId),
+  readStat: (pid) => fs.readFileSync(`/proc/${pid}/stat`, 'utf8'),
+  pidAlive: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code === 'EPERM';
+    }
+  },
+});
+
 function verifiedTerm(event) {
   const ptyId = event?.term?.VIZOR_PTY_ID;
   if (!ptyId) return event;
-  const tty = ptyHost?.ttyPath(ptyId);
-  let holds = Boolean(tty);
-  if (tty) {
-    const pid = readSessionPid(event.session_id);
-    if (pid) {
-      try {
-        holds =
-          onTerminal({ stat: fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), ttyRdev: fs.statSync(tty).rdev }) !== false;
-      } catch {
-        holds = true; // can't tell: keep what the hook saw
-      }
-    }
-  }
-  if (holds) return event;
+  if (ptyIdentityHolds(event.session_id, ptyId)) return event;
   const { VIZOR_PTY_ID: _dropped, ...rest } = event.term;
   return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
 }
@@ -2692,7 +2738,7 @@ async function huntSessionTab(session) {
 }
 
 ipcMain.handle('warp:focus', (_event, sessionId) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   // A session born in the Vizor lives in a workspace tab: no window hunt.
   if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
     if (overlayMode === 'panel') hideOverlay();
@@ -2711,7 +2757,7 @@ ipcMain.handle('transcript:tail', async (_event, sessionId) => {
 });
 
 ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   const index = Number(optionIndex);
   if (!session || !Number.isInteger(index) || index < 0) return 'failed';
 
@@ -2809,7 +2855,7 @@ async function typeIntoTerminal(session, text) {
 }
 
 ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   const reply = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!reply) return 'failed';
   const ptyId = session?.term?.VIZOR_PTY_ID;
@@ -2888,12 +2934,12 @@ ipcMain.on('drag:end', () => {
 // app's own binary into the hook runtime — no system Node required.
 const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
 
+// null = the file exists but does not read as settings: every writer below
+// leaves it alone rather than replace the user's config with only our hooks.
 function readClaudeSettings() {
-  try {
-    return JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
-  } catch {
-    return {}; // no settings yet — start from empty
-  }
+  const settings = readClaudeSettingsFile(() => fs.readFileSync(claudeSettingsPath, 'utf8'));
+  if (!settings) log(`${claudeSettingsPath} is unreadable: left untouched`);
+  return settings;
 }
 
 // Every write backs the file up first: this is the user's global Claude Code
@@ -2909,6 +2955,7 @@ function writeClaudeSettings(next) {
 function removeHooksInstalled() {
   try {
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = removeAppHooks(settings);
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
     writeClaudeSettings(next);
@@ -2932,6 +2979,7 @@ function ensureHooksInstalled() {
       fs.writeFileSync(shim.path, shim.content);
     }
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = ensureHooks(settings, command);
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
     writeClaudeSettings(next);
@@ -2942,10 +2990,8 @@ function ensureHooksInstalled() {
 }
 
 // The rule guard (#160) lives in its own hook, copied to a stable path so it
-// keeps working with the app closed (an AppImage mount vanishes on quit).
-let guardOffline = false;
-let guardInstalled = false;
-
+// keeps working with the app closed (an AppImage mount vanishes on quit). Its
+// state flags (guardInstalled, guardOffline, rulesUnreadable) sit near the top.
 function approvedRuleCount() {
   const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
   if (!rules) return 0;
@@ -2978,6 +3024,7 @@ function syncGuardHook() {
     const compiledFile = path.join(rulesDir, 'compiladas.json');
     rulesUnreadable = fs.existsSync(compiledFile) && !loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
     const settings = readClaudeSettings();
+    if (!settings) return;
     let next;
     if (managerConfig.guardEnabled !== false && approvedRuleCount() > 0) {
       const { command, offline, shim } = guardCommand({
@@ -3011,6 +3058,7 @@ function removeGuardIfOnlineOnly() {
   if (!guardInstalled || guardOffline) return;
   try {
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = removeGuard(settings);
     if (JSON.stringify(next) !== JSON.stringify(settings)) writeClaudeSettings(next);
     log('rule guard removed on quit (no offline runtime)');
@@ -3018,8 +3066,6 @@ function removeGuardIfOnlineOnly() {
     log(`removeGuardIfOnlineOnly failed: ${error}`);
   }
 }
-
-let rulesUnreadable = false;
 
 function guardStatus() {
   const snapshot = rulesStore.snapshot();
@@ -3241,10 +3287,12 @@ ipcMain.handle('rules:state', (event) => (fromRules(event) ? rulesState() : null
 ipcMain.handle('rules:save', async (event, { scope, markdown } = {}) => {
   if (!fromRules(event) || !validScope(scope) || typeof markdown !== 'string') return rulesState();
   writeRulesFile(scope, markdown);
-  if (scope !== 'global') rulesStore.markSeenRepo(scope);
+  // Saved from the window: the user's own text, so it is never shown as "de
+  // fora" while the first compile runs (or when it fails), and it compiles
+  // right away.
+  if (scope !== 'global') rulesStore.markOwnedRepo(scope);
   syncRulesScope(scope);
   syncGuardHook();
-  // Saved from the window: the user's own text, so it compiles right away.
   autoCompile(scope, { force: true });
   return rulesState();
 });
@@ -3272,7 +3320,8 @@ ipcMain.handle('rules:approve', async (event, { scope, ruleId, edited = null } =
     const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
     const draft = view?.drafts.find((candidate) => candidate.id === ruleId);
     clean = draft ? validateEditedRule(draft, edited) : null;
-    if (!clean) return { ...(await rulesState()), error: 'edicao-invalida' };
+    // A risky regex says why, instead of the generic message.
+    if (!clean) return { ...(await rulesState()), error: 'edicao-invalida', reason: editProblem(edited) ?? undefined };
   }
   rulesStore.approve(scope, ruleId, clean);
   syncGuardHook();
@@ -3327,6 +3376,13 @@ function bootSyncRules() {
       log(`rules sync failed for ${scope}: ${error}`);
     }
   }
+  pruneSeenSessions({
+    dir: path.join(rulesDir, 'sessoes'),
+    now: Date.now(),
+    readdir: (dir) => fs.readdirSync(dir),
+    stat: (file) => fs.statSync(file),
+    unlink: (file) => fs.unlinkSync(file),
+  });
 }
 
 // --- Voice (#161) -------------------------------------------------------------
@@ -3871,6 +3927,7 @@ ipcMain.handle('inbound:get', () => readInboundPolicy(readClaudeSettings()));
 
 ipcMain.handle('inbound:set', (_event, value) => {
   const settings = readClaudeSettings();
+  if (!settings) return readInboundPolicy(null);
   const next = setInboundPolicy(settings, value);
   if (!next) {
     log(`inbound policy refused: ${value}`);
@@ -3996,6 +4053,7 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
+  quitFreeze.willQuit();
   globalShortcut.unregisterAll();
   ptyHost?.killAll();
   commandWatcher.stopAll();
@@ -4030,12 +4088,16 @@ async function requestQuit() {
 app.on('before-quit', () => {
   appQuitting = true;
   // Before will-quit kills the terminals: their chats are still alive here.
-  freezeWorkspaceTabs();
+  // A quit cancelled after this point thaws the saves again (#157).
+  quitFreeze.beforeQuit();
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
   removeGuardIfOnlineOnly();
   stopVoice();
+  // A question still on screen would end in a deny when the socket closes;
+  // "offline" sends it to the terminal's own permission prompt instead.
+  guardAsks.releaseAll('offline');
   tts.stopSpeaking();
   killPendingClaude();
   stopSocketServer(socketServer, socketPath);

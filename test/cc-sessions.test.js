@@ -10,6 +10,7 @@ import {
   readLiveSessionIds,
   readAdoptableSessions,
   claudeTranscriptPath,
+  claudeProjectDir,
 } from '../src/main/cc-sessions.js';
 
 const SESSION_ID = '4b706711-9840-4931-8b0f-d6d51518d6ba';
@@ -344,6 +345,20 @@ describe('transcript path convention', () => {
     expect(file).toBe(
       path.join('/home/u', '.claude', 'projects', '-home-u-orca-workspaces-bio-Adapta--o-Filgrastim', 'abc.jsonl'),
     );
+  });
+
+  it('cuts a very long flattened name at 200 chars and appends a hash of the path, like Claude Code (#157)', () => {
+    const cwd = `/home/u/${'pasta-com-nome-muito-comprido/'.repeat(8)}fim`;
+    expect(claudeProjectDir(cwd, { home: '/home/u' })).toBe(
+      path.join(
+        '/home/u',
+        '.claude',
+        'projects',
+        '-home-u-pasta-com-nome-muito-comprido-pasta-com-nome-muito-comprido-pasta-com-nome-muito-comprido-pasta-com-nome-muito-comprido-pasta-com-nome-muito-comprido-pasta-com-nome-muito-comprido-pasta-com-no-3d8v3d',
+      ),
+    );
+    const exact = `/${'a'.repeat(199)}`;
+    expect(path.basename(claudeProjectDir(exact, { home: '/h' }))).toBe(`-${'a'.repeat(199)}`);
   });
 
   it('flattens win32 drive letters and backslashes the way Claude Code does', () => {

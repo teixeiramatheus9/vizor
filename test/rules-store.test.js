@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createRulesStore } from '../src/main/rules-store.js';
+import { createRulesStore, pruneSeenSessions } from '../src/main/rules-store.js';
 
 function memoryFs() {
   const files = {};
@@ -134,5 +134,80 @@ describe('rules store', () => {
     store.syncFile('/repo', null);
     expect(compiled(fs).repos['/repo']).toHaveLength(1);
     expect(store.snapshot().repos['/repo'].approved).toHaveLength(1);
+  });
+
+  it('a draft that comes back after its line was edited is dropped, not offered for approval (#165)', () => {
+    const fs = memoryFs();
+    const store = createRulesStore({ dir: '/d', ...fs });
+    store.syncFile('global', '- regra velha\n');
+    // compiling 'regra velha'… meanwhile the user rewrites the line
+    store.syncFile('global', '- regra nova\n');
+    store.setDrafts('global', [draft('regra velha')]);
+    expect(store.snapshot().global.drafts).toEqual([]);
+    expect(store.approve('global', 'id-regra velha')).toBe(false);
+    expect(store.snapshot().global.approved).toEqual([]);
+  });
+
+  it('a refused draft (risky regex) is approved only through an edit, which clears the refusal (#165)', () => {
+    const fs = memoryFs();
+    const store = createRulesStore({ dir: '/d', ...fs });
+    store.syncFile('global', '- regra r\n');
+    store.setDrafts('global', [{ ...draft('regra r', 'forbid'), refused: 'regex arriscada: x' }]);
+    expect(store.approve('global', 'id-regra r')).toBe(false);
+    expect(store.snapshot().global.pending).toEqual(['regra r']);
+    expect(store.approve('global', 'id-regra r', { kind: 'forbid', match: [{ type: 'keyword', words: ['r'] }] })).toBe(true);
+    expect(compiled(fs).global[0].refused).toBeUndefined();
+  });
+
+  it('a draft for a line already approved does not come back as a draft (#165)', () => {
+    const { store } = setup();
+    store.setDrafts('global', [draft('regra a', 'forbid')]);
+    expect(store.snapshot().global.drafts).toEqual([]);
+  });
+
+  it('approve refuses a saved draft whose line is no longer in the file (#165)', () => {
+    const fs = memoryFs();
+    fs.files['/d/rascunhos.json'] = JSON.stringify({
+      scopes: { global: { drafts: [draft('sumiu')], lines: ['outra'], compiled: true } },
+    });
+    const store = createRulesStore({ dir: '/d', ...fs });
+    expect(store.approve('global', 'id-sumiu')).toBe(false);
+    expect(fs.files['/d/compiladas.json']).toBeUndefined();
+  });
+
+  it('a project file started from the rules screen is the user\'s own, not "de fora" (#165)', () => {
+    const fs = memoryFs();
+    const store = createRulesStore({ dir: '/d', ...fs });
+    store.markOwnedRepo('/novo');
+    store.syncFile('/novo', '- regra minha\n');
+    expect(store.snapshot().repos['/novo']).toMatchObject({ compiled: true, pending: ['regra minha'] });
+    const again = createRulesStore({ dir: '/d', ...fs });
+    expect(again.snapshot().repos['/novo'].compiled).toBe(true);
+  });
+});
+
+describe('seen-version files of old sessions (#165)', () => {
+  it('removes the files untouched for longer than the limit, and nothing else', () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = 100 * day;
+    const files = { old: now - 8 * day, fresh: now - day };
+    const removed = [];
+    pruneSeenSessions({
+      dir: '/d/sessoes',
+      now,
+      readdir: () => Object.keys(files),
+      stat: (file) => ({ mtimeMs: files[file.split('/').pop()], isFile: () => true }),
+      unlink: (file) => removed.push(file),
+    });
+    expect(removed).toEqual(['/d/sessoes/old']);
+  });
+
+  it('a missing folder or a file that vanishes midway is fine', () => {
+    expect(() =>
+      pruneSeenSessions({ dir: '/x', now: 0, readdir: () => { throw new Error('ENOENT'); }, stat: () => null, unlink: () => {} }),
+    ).not.toThrow();
+    expect(() =>
+      pruneSeenSessions({ dir: '/x', now: 0, readdir: () => ['a'], stat: () => { throw new Error('ENOENT'); }, unlink: () => {} }),
+    ).not.toThrow();
   });
 });
