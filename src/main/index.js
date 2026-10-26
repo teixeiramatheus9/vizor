@@ -856,6 +856,7 @@ async function startIssue(number) {
   const root = voiceRoot();
   if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
   const found = await voiceResolveTask(number, { byTitle: false });
+  log(`issue ${number}: ${found.sessionId ? `its chat ${found.sessionId}` : `new chat in ${found.cwd ?? root}`}`);
   const existing = found.sessionId ? found : null;
   if (existing?.sessionId) {
     await voiceOpenOrFocus({ sessionId: existing.sessionId, cwd: existing.cwd });
@@ -881,7 +882,12 @@ ipcMain.handle('workspace:catalog', async (event) => {
 ipcMain.handle('workspace:command', async (event, action = {}) => {
   if (!fromWorkspace(event)) return { error: 'Ação desconhecida.' };
   try {
-    if (action.type === 'pick-issue' && Number.isInteger(action.number)) return await startIssue(action.number);
+    if (action.type === 'pick-issue' && Number.isInteger(action.number)) {
+      log(`command: pick issue ${action.number}`);
+      const started = await startIssue(action.number);
+      log(`command: issue ${action.number} → ${started.error ?? `chat ${started.sessionId}`}`);
+      return started;
+    }
     if (action.type === 'review-pr' && Number.isInteger(action.number)) {
       const root = voiceRoot();
       if (!root) return { error: 'Abra um projeto no workspace primeiro.' };

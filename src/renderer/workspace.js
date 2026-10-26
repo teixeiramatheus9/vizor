@@ -46,6 +46,11 @@ let maestro = { on: false, orchestra: [], focusedId: null };
 let voiceInfo = null;
 let terminals = [];
 let selectedId = null; // selected session
+// While Ctrl+K is open nothing takes the keyboard from it (live test: a tab
+// restored at boot focused its terminal and "169⏎" ran in the shell).
+function commandBarOpen() {
+  return document.getElementById('command-bar')?.hidden === false;
+}
 let plans = {}; // sessionId → { steps, approved }
 let planNote = null; // { sessionId, text } after a button that did not land
 const planCardEl = document.getElementById('plan-card');
@@ -292,7 +297,7 @@ async function renderTerminalArea() {
   if (wanted !== activeTab || views.get(wanted) !== view) return;
   for (const [id, other] of views) other.el.hidden = id !== activeTab;
   fitActive();
-  view.term.focus();
+  if (!commandBarOpen()) view.term.focus();
 }
 
 function render() {
@@ -439,7 +444,7 @@ function closeComposer() {
   composerEl.hidden = true;
   composerEl.innerHTML = '';
   // Back to the terminal the user was typing in.
-  views.get(activeTab)?.term.focus();
+  if (!commandBarOpen()) views.get(activeTab)?.term.focus();
 }
 
 async function sendComposer() {
@@ -529,7 +534,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !newMenu.hidden) {
     event.preventDefault();
     closeMenu();
-    views.get(activeTab)?.term.focus();
+    if (!commandBarOpen()) views.get(activeTab)?.term.focus();
     return;
   }
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'e') {
@@ -1265,6 +1270,9 @@ window.addEventListener(
 );
 
 commandInput.addEventListener('input', refreshCommandList);
+commandInput.addEventListener('blur', () => {
+  if (commandBarOpen()) queueMicrotask(() => commandBarOpen() && commandInput.focus());
+});
 commandInput.addEventListener('keydown', (event) => {
   const step = (delta) => {
     if (!commandShown.length) return;

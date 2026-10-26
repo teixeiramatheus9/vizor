@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The end-to-end run, in a nested X server whose window is unmapped at once:
+# The end-to-end run, in a nested X server whose window shrinks to 1x1 at once:
 # nothing shows up over the desktop (Electron 42 has no working headless).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,7 +11,7 @@ xephyr=$!
 trap 'kill $xephyr 2>/dev/null || true' EXIT
 for _ in $(seq 50); do
   window=$(xdotool search --name "vizor-e2e$display" 2>/dev/null | head -1 || true)
-  [ -n "$window" ] && { xdotool windowunmap "$window"; break; }
+  [ -n "$window" ] && { xdotool windowsize "$window" 1 1 windowmove "$window" 0 0; break; }
   sleep 0.05
 done
 DISPLAY="$display" node test/e2e/flow.e2e.mjs
