@@ -7,11 +7,13 @@ export const storeKey = (worktreePath) => createHash('sha1').update(worktreePath
 
 const defaultPrefs = () => ({ tab: null, drawerHeight: null, drawerOpen: null, openFiles: [] });
 
-export function createReviewStore({ readFile, writeFile, rename, dir, key, debounceMs = 500, setTimeout, clearTimeout }) {
+export function createReviewStore({ readFile, writeFile, rename, mkdir, onError, dir, key, debounceMs = 500, setTimeout, clearTimeout }) {
   const file = `${dir}/${key}.json`;
   let approved = new Set();
   let prefs = defaultPrefs();
   let timer = null;
+  let dirty = false;
+  let chain = Promise.resolve(); // flushes run one at a time: they share the tmp file
 
   async function load() {
     approved = new Set();
@@ -27,15 +29,30 @@ export function createReviewStore({ readFile, writeFile, rename, dir, key, debou
   }
 
   const schedule = () => {
+    dirty = true;
     if (timer != null) clearTimeout(timer);
-    timer = setTimeout(() => { timer = null; flush().catch(() => {}); }, debounceMs);
+    timer = setTimeout(() => { timer = null; flush().catch((error) => onError?.(error)); }, debounceMs);
   };
 
-  async function flush() {
-    if (timer != null) { clearTimeout(timer); timer = null; }
+  async function write() {
+    if (!dirty) return; // an earlier queued flush already wrote the latest state
+    dirty = false;
     const tmp = `${file}.tmp`;
-    await writeFile(tmp, JSON.stringify({ approved: [...approved], prefs }));
-    await rename(tmp, file);
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(tmp, JSON.stringify({ approved: [...approved], prefs }));
+      await rename(tmp, file);
+    } catch (error) {
+      dirty = true; // keep the change so the next flush retries
+      throw error;
+    }
+  }
+
+  function flush() {
+    if (timer != null) { clearTimeout(timer); timer = null; }
+    const run = chain.then(write);
+    chain = run.catch(() => {});
+    return run;
   }
 
   return {
