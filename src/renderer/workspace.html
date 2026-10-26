@@ -26,6 +26,7 @@
       </section>
       <aside class="pane" id="inspector" aria-label="Mudanças">
         <div class="pane-bar" id="inspector-head"></div>
+        <div id="plan-card"></div>
         <div id="task-picker"></div>
         <div id="timeline"></div>
         <div id="maestro-order" class="maestro-only"></div>
@@ -37,6 +38,11 @@
       </aside>
       <aside id="maestro-impact" class="maestro-only" aria-label="Área de impacto"></aside>
     </main>
+    <div id="command-bar" hidden>
+      <input id="command-input" placeholder="puxar issue, ir para um chat, aprovar o plano…" autocomplete="off" spellcheck="false" />
+      <ul id="command-list" role="listbox"></ul>
+    </div>
+    <div id="command-toast" hidden></div>
     <script type="module" src="workspace.js"></script>
   </body>
 </html>

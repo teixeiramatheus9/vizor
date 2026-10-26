@@ -221,6 +221,18 @@ describe('listConversations', () => {
     ]);
   });
 
+  it("the Vizor's own `claude -p` runs are no chats to resume (live test: they matched 'issue 169')", async () => {
+    const ID4 = '44444444-4444-4444-4444-444444444444';
+    const withHeadless = { ...files, [`${ID4}.jsonl`]: { mtimeMs: 600, size: 10, title: 'Você interpreta um pedido… issue 169', entrypoint: 'sdk-cli' } };
+    const list = await listConversations('/p', {
+      readdir: async () => Object.keys(withHeadless),
+      stat: async (file) => withHeadless[file.split('/').pop()],
+      readTitle: async (file) => withHeadless[file.split('/').pop()].title,
+      readEntrypoint: async (file) => withHeadless[file.split('/').pop()].entrypoint ?? 'cli',
+    });
+    expect(list.map((item) => item.sessionId)).toEqual([ID2, ID1]);
+  });
+
   it('caps the list', async () => {
     expect(await listConversations('/p', { ...deps, limit: 1 })).toHaveLength(1);
   });

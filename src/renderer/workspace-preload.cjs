@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('vizor', {
   onState: (callback) => ipcRenderer.on('workspace:state', (_event, state) => callback(state)),
   addProject: () => ipcRenderer.invoke('workspace:add-project'),
+  openActionMenu: (rect) => ipcRenderer.send('workspace:action-menu', rect),
   removeProject: (root) => ipcRenderer.send('workspace:remove-project', root),
   openTerminal: (cwd, kind, sessionId = null) => ipcRenderer.invoke('pty:open', { cwd, kind, sessionId }),
   listConversations: (cwd) => ipcRenderer.invoke('workspace:conversations', cwd),
@@ -38,4 +39,8 @@ contextBridge.exposeInMainWorld('vizor', {
   focusMusician: (sessionId) => ipcRenderer.send('maestro:focus', sessionId),
   onMaestroGraph: (callback) => ipcRenderer.on('maestro:graph', (_event, payload) => callback(payload)),
   maestroGraph: (root) => ipcRenderer.invoke('maestro:graph', root),
+  // The core flow: the músico's plan and the Ctrl+K bar.
+  planAction: (sessionId, action) => ipcRenderer.invoke('workspace:plan', { sessionId, action }),
+  commandCatalog: () => ipcRenderer.invoke('workspace:catalog'),
+  runCommand: (action) => ipcRenderer.invoke('workspace:command', action),
 });

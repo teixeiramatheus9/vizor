@@ -201,7 +201,7 @@ export function renderTopBar(tree, { chatHidden = false, voice = null, maestro =
         VOICE_STATES[voice.state] ?? voice.state,
       )}${voice.target ? ` · ${escapeHtml(voice.target)}` : ''}</span>`
     : '';
-  return `<span class="brand">vzr · workspace</span><span class="count-item" title="rodando">${ICONS.working}${
+  return `<button class="brand" data-action-menu title="Menu do Vizor">vzr · workspace</button><span class="count-item" title="rodando">${ICONS.working}${
     tree.counts.working
   } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span>${voiceLabel}<span class="spacer"></span><button class="toggle-maestro" data-toggle-maestro aria-pressed="${maestro}" title="${
     maestro ? 'Sair do modo Maestro' : 'Modo Maestro: o código no centro, você rege pela voz'
@@ -215,7 +215,7 @@ export function renderTopBar(tree, { chatHidden = false, voice = null, maestro =
 export function renderTabs(terminals, activeId, titles) {
   const tabs = terminals
     .map((terminal, index) => {
-      const title = titles?.[terminal.id] || `terminal ${index + 1}`;
+      const title = terminal.taskTitle || titles?.[terminal.id] || `terminal ${index + 1}`;
       const ended = terminal.alive ? '' : ` · encerrado (${terminal.exitCode ?? '?'})`;
       return `<button class="tab${terminal.alive ? '' : ' exited'}" data-tab="${escapeHtml(terminal.id)}" aria-selected="${
         terminal.id === activeId

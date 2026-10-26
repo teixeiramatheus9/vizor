@@ -347,3 +347,19 @@ describe('the issue number, however it was transcribed (live test)', async () =>
     expect(routeUtterance('vamos fazer o deploy em 2 minutos')).not.toMatchObject({ type: 'pick-issue' });
   });
 });
+
+describe('voice commands — the plan by voice', () => {
+  it('approving the plan, of the chat in front or of a task', () => {
+    expect(routeUtterance('aprova o plano')).toEqual({ type: 'approve-plan', number: null });
+    expect(routeUtterance('plano aprovado')).toEqual({ type: 'approve-plan', number: null });
+    expect(routeUtterance('aprova o plano da 169')).toEqual({ type: 'approve-plan', number: 169 });
+    expect(routeUtterance('aprova o plano da task 169')).toEqual({ type: 'approve-plan', number: 169 });
+  });
+
+  it('opening the PR, never mistaken for resuming one', () => {
+    expect(routeUtterance('abre a PR')).toEqual({ type: 'open-pr', number: null });
+    expect(routeUtterance('abre a PR da 169')).toEqual({ type: 'open-pr', number: 169 });
+    expect(routeUtterance('abre a PR 12')).toEqual({ type: 'resume-task', number: 12 });
+  });
+});
+

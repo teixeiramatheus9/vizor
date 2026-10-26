@@ -1,0 +1,11 @@
+#!/usr/bin/env node
+// gh for the end-to-end run: two open issues, nothing else.
+const args = process.argv.slice(2).join(' ');
+const ISSUES = [
+  { number: 169, title: 'Menu de ação ao clicar no ícone do Vizor', labels: [], assignees: [] },
+  { number: 149, title: 'tmux numa aba conta como no Vizor?', labels: [], assignees: [] },
+];
+if (args.startsWith('issue list')) process.stdout.write(JSON.stringify(args.includes('@me') ? [] : ISSUES));
+else if (args.startsWith('pr list') || args.startsWith('run list')) process.stdout.write('[]');
+else if (args.startsWith('issue view')) process.stdout.write('Menu de ação ao clicar no ícone do Vizor\n');
+else process.exit(1);

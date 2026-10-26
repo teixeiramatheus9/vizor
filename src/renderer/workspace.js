@@ -26,6 +26,8 @@ import {
   onTask,
   stillWanted,
 } from './inspector-state.js';
+import { renderPlan } from './plan-view.js';
+import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
 import { ZOOM_MAX, ZOOM_OPEN, ZOOM_STEP, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
 
@@ -44,6 +46,14 @@ let maestro = { on: false, orchestra: [], focusedId: null };
 let voiceInfo = null;
 let terminals = [];
 let selectedId = null; // selected session
+// While Ctrl+K is open nothing takes the keyboard from it (live test: a tab
+// restored at boot focused its terminal and "169⏎" ran in the shell).
+function commandBarOpen() {
+  return document.getElementById('command-bar')?.hidden === false;
+}
+let plans = {}; // sessionId → { steps, approved }
+let planNote = null; // { sessionId, text } after a button that did not land
+const planCardEl = document.getElementById('plan-card');
 let selectedWorktree = null;
 let activeTab = null;
 // worktree path → why its terminal could not open; '*' when the native module
@@ -287,7 +297,7 @@ async function renderTerminalArea() {
   if (wanted !== activeTab || views.get(wanted) !== view) return;
   for (const [id, other] of views) other.el.hidden = id !== activeTab;
   fitActive();
-  view.term.focus();
+  if (!commandBarOpen()) view.term.focus();
 }
 
 function render() {
@@ -434,7 +444,7 @@ function closeComposer() {
   composerEl.hidden = true;
   composerEl.innerHTML = '';
   // Back to the terminal the user was typing in.
-  views.get(activeTab)?.term.focus();
+  if (!commandBarOpen()) views.get(activeTab)?.term.focus();
 }
 
 async function sendComposer() {
@@ -475,7 +485,41 @@ function selectInspectorSession(sessionId) {
   inspectorTask = null;
   fileView = null;
   refreshInspector({ scroll: true });
+  renderPlanCard();
 }
+
+// --- The plan (core flow) ----------------------------------------------------
+// The checklist the chat keeps in .vizor/plano.md: of the inspected chat, or
+// of the músico in focus on the stage.
+// The inspected chat, else the chat running in the tab in front (live test: the
+// inspector lost its session when the chat's worktree moved in the tree, and
+// the card went blank mid-task).
+const planSessionId = () => {
+  if (maestro.on) return maestro.focusedId;
+  if (inspector.sessionId) return inspector.sessionId;
+  if (!activeTab) return null;
+  return treeSessions().find((session) => session.ptyId === activeTab)?.id ?? null;
+};
+function renderPlanCard() {
+  const sessionId = planSessionId();
+  const note = planNote?.sessionId === sessionId ? `<div class="plan-note">${planNote.text}</div>` : '';
+  planCardEl.innerHTML = sessionId ? renderPlan(plans[sessionId]) + (plans[sessionId] ? note : '') : '';
+}
+const PLAN_NOTES = {
+  failed: 'não achei a aba desse chat',
+  timeout: 'o chat não ficou livre em 1 minuto; tente de novo quando ele parar',
+  busy: 'já estou esperando o chat ficar livre pra mandar',
+  'no-plan': 'esse chat não tem plano',
+};
+planCardEl.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-plan]');
+  const sessionId = planSessionId();
+  if (!button || !sessionId) return;
+  button.disabled = true;
+  const result = await window.vizor.planAction(sessionId, button.dataset.plan);
+  planNote = PLAN_NOTES[result] ? { sessionId, text: PLAN_NOTES[result] } : null;
+  renderPlanCard();
+});
 
 async function savePrefs(change) {
   Object.assign(prefs, change);
@@ -498,7 +542,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !newMenu.hidden) {
     event.preventDefault();
     closeMenu();
-    views.get(activeTab)?.term.focus();
+    if (!commandBarOpen()) views.get(activeTab)?.term.focus();
     return;
   }
   if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'e') {
@@ -528,7 +572,8 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage }) => {
+window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState }) => {
+  plans = planState ?? {};
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;
@@ -566,6 +611,7 @@ window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, g
   }
   render();
   applyMaestro(stage);
+  renderPlanCard();
 });
 
 // Flow control (#113): tell main how much each terminal has actually drawn,
@@ -902,6 +948,12 @@ document.addEventListener('click', async (event) => {
     window.vizor.setMaestro(!maestro.on);
     return;
   }
+  const brand = target.closest('[data-action-menu]');
+  if (brand) {
+    const { left, bottom } = brand.getBoundingClientRect();
+    window.vizor.openActionMenu({ left, bottom });
+    return;
+  }
   const musician = target.closest('[data-musician]');
   if (musician) {
     window.vizor.focusMusician(musician.dataset.musician);
@@ -1118,4 +1170,140 @@ window.vizor.onFocusSession(({ sessionId }) => {
     return;
   }
   if (sessionId) selectSession(sessionId);
+});
+
+// --- Ctrl+K (core flow) ------------------------------------------------------
+// The same actions as the voice, by keyboard. Ctrl+K is taken before the
+// terminal sees it.
+const commandBar = document.getElementById('command-bar');
+const commandInput = document.getElementById('command-input');
+const commandList = document.getElementById('command-list');
+const commandToast = document.getElementById('command-toast');
+let commandCatalog = null; // { issues, prs, error } once main answered
+let commandShown = [];
+let commandSelected = 0;
+let commandToastTimer = null;
+
+function treeSessions() {
+  const placed = (lastTree?.projects ?? []).flatMap((project) => project.worktrees.flatMap((worktree) => worktree.sessions));
+  return [...placed, ...(lastTree?.unplacedSessions ?? [])];
+}
+
+function commandChats() {
+  return treeSessions().map((session) => {
+    const musician = musicianOf(session.id);
+    const name = session.name || 'chat';
+    return { sessionId: session.id, name: musician ? `${musician.name} ${name}` : name, status: session.status };
+  });
+}
+
+function refreshCommandList() {
+  const items = buildCommands({
+    issues: commandCatalog?.issues ?? [],
+    prs: commandCatalog?.prs ?? [],
+    issuesError: Boolean(commandCatalog?.error),
+    issuesLoading: !commandCatalog,
+    chats: commandChats(),
+    plans,
+    focusedId: planSessionId(),
+    maestroOn: maestro.on,
+  });
+  commandShown = filterCommands(items, commandInput.value);
+  commandSelected = Math.max(0, commandShown.findIndex((item) => !item.disabled));
+  drawCommandList();
+}
+
+function drawCommandList() {
+  commandList.innerHTML = renderCommandList(commandShown, commandSelected);
+  commandList.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+}
+
+function openCommandBar() {
+  commandBar.hidden = false;
+  commandInput.value = '';
+  commandCatalog = null;
+  refreshCommandList();
+  commandInput.focus();
+  window.vizor
+    .commandCatalog()
+    .catch(() => ({ issues: [], prs: [], error: true }))
+    .then((catalog) => {
+      commandCatalog = catalog;
+      if (!commandBar.hidden) refreshCommandList();
+    });
+}
+
+function closeCommandBar() {
+  commandBar.hidden = true;
+  if (!maestro.on) views.get(activeTab)?.term.focus();
+}
+
+function toast(text) {
+  commandToast.textContent = text;
+  commandToast.hidden = false;
+  clearTimeout(commandToastTimer);
+  commandToastTimer = setTimeout(() => (commandToast.hidden = true), 5000);
+}
+
+async function runCommandItem(item) {
+  if (!item || item.disabled) return;
+  closeCommandBar();
+  const { action } = item;
+  if (action.type === 'focus') {
+    if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
+    else selectSession(action.sessionId);
+    return;
+  }
+  if (action.type === 'approve' || action.type === 'open-pr') {
+    const result = await window.vizor.planAction(action.sessionId, action.type === 'approve' ? 'approve' : 'pr');
+    if (PLAN_NOTES[result]) toast(PLAN_NOTES[result]);
+    return;
+  }
+  if (action.type === 'pick-issue') toast(`abrindo a #${action.number}…`);
+  const result = await window.vizor.runCommand(action);
+  if (result?.error) toast(result.error);
+  else if (action.type === 'pick-issue') commandToast.hidden = true;
+}
+
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'k') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (commandBar.hidden) openCommandBar();
+    else closeCommandBar();
+  },
+  true,
+);
+
+commandInput.addEventListener('input', refreshCommandList);
+commandInput.addEventListener('blur', () => {
+  if (commandBarOpen()) queueMicrotask(() => commandBarOpen() && commandInput.focus());
+});
+commandInput.addEventListener('keydown', (event) => {
+  const step = (delta) => {
+    if (!commandShown.length) return;
+    let next = commandSelected;
+    for (let index = 0; index < commandShown.length; index++) {
+      next = (next + delta + commandShown.length) % commandShown.length;
+      if (!commandShown[next].disabled) break;
+    }
+    commandSelected = next;
+    drawCommandList();
+  };
+  if (event.key === 'ArrowDown') step(1);
+  else if (event.key === 'ArrowUp') step(-1);
+  else if (event.key === 'Enter') runCommandItem(commandShown[commandSelected]);
+  else if (event.key === 'Escape') closeCommandBar();
+  else return;
+  event.preventDefault();
+});
+commandList.addEventListener('mousedown', (event) => {
+  event.preventDefault();
+  const row = event.target.closest('[data-command-index]');
+  if (row) runCommandItem(commandShown[Number(row.dataset.commandIndex)]);
+});
+document.addEventListener('mousedown', (event) => {
+  if (!commandBar.hidden && !commandBar.contains(event.target)) closeCommandBar();
 });

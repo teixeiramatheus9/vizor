@@ -1,0 +1,8 @@
+{
+  "name": "vizor-e2e",
+  "private": true,
+  "description": "Kept apart from the app's own tree: only the end-to-end run needs it.",
+  "devDependencies": {
+    "playwright-core": "1.64.1"
+  }
+}

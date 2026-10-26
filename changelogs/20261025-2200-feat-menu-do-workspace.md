@@ -1,0 +1,1 @@
+- Clicar no "vzr · workspace", no topo do workspace, abre o mesmo menu da bandeja: workspace, painel, configurações, regras, microfone, saída de áudio, esconder ou mostrar a bolha, encontrar a bolha e encerrar. Quem não tem a bandeja visível também chega em tudo isso. Sem bandeja, o menu não oferece esconder a bolha, que ficaria sem volta.

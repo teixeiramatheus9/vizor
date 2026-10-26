@@ -5,6 +5,7 @@ import { closestPhrase } from './vocabulary.js';
 import { findAgent, findMusicians } from '../maestro/orchestra.js';
 import { parseSteps } from '../maestro/conductor.js';
 import { REVIEW_TASK_PROMPT } from '../maestro/reviewer.js';
+import { reviewPrPrompt, startIssuePrompt } from '../work/prompts.js';
 
 // The voice conversation (#161): who the voice talks to (the gerente or one
 // chat), what each utterance does, and what comes back spoken. Every side
@@ -17,13 +18,6 @@ const PROPOSALS = [
   [/(?:quer que eu peça revisão da pr|want me to get pr) #?(\d+)/i, 'review-pr'],
   [/(?:quer que eu retome a|want me to resume) (?:task |tarefa |issue )?#?(\d+)/i, 'resume-task'],
 ];
-// What the new músico is told: plan first (the Maestro lights the plan up),
-// and a reviewer reports without changing anything.
-const PICK_PROMPT = (number) =>
-  `Vamos trabalhar na issue #${number}. Leia com \`gh issue view ${number}\`, me diga o plano (quais arquivos e funções vai tocar) e espere meu ok antes de mexer. ` +
-  'Termine o plano com uma linha `Vizor-plano: caminho/arquivo.js#funcao, outro/arquivo.js` (caminhos relativos à raiz do projeto).';
-const REVIEW_PROMPT = (number) =>
-  `Revise a PR #${number}: leia com \`gh pr view ${number}\` e \`gh pr diff ${number}\`, aponte os problemas por gravidade com arquivo e linha, e não mude código nem publique comentários sem eu pedir.`;
 // What the voice says back follows the voice's language; the commands the
 // user speaks stay Portuguese either way.
 const LINES = {
@@ -63,6 +57,11 @@ const LINES = {
     maestroOff: 'Modo Maestro desativado.',
     picked: (number) => `Puxei a ${number}: o músico vai ler a issue e propor um plano.`,
     whichIssue: 'Qual issue? Diga, por exemplo: puxa a issue 162.',
+    planSent: { approve: 'Mandei seguir com o plano.', pr: 'Pedi pra rodar os testes e abrir a PR.' },
+    whichPlanChat: 'De qual chat? Diga o número da task.',
+    planFailed: 'Não consegui falar com esse chat.',
+    planNone: 'Esse chat não tem plano.',
+    planBusy: 'Já estou esperando ele ficar livre.',
     understood: (label) => `Entendi: ${label}.`,
     // Memory (#163).
     stoppedAt: (number, where) => `Na ${number}: ${where}`,
@@ -103,6 +102,10 @@ const LINES = {
       reviewer: (musician) => `chamar um avaliador pra ${musician.number !== null ? musician.number : musician.name}`,
       review: (number) => `revisar a PR ${number}`,
       routine: (name) => `rodar a rotina ${name}`,
+      plan: (musician, action) => {
+        const who = !musician ? 'do chat' : musician.number !== null ? `da ${musician.number}` : `do ${musician.name}`;
+        return action === 'approve' ? `aprovar o plano ${who}` : `abrir a PR ${who}`;
+      },
       guard: { liberar: 'liberar', 'liberar-sessao': 'liberar nesta sessão', barrar: 'barrar' },
     },
   },
@@ -141,6 +144,11 @@ const LINES = {
     maestroOff: 'Maestro mode off.',
     picked: (number) => `Picked up ${number}: the músico will read the issue and propose a plan.`,
     whichIssue: 'Which issue? Say, for example: puxa a issue 162.',
+    planSent: { approve: 'Told it to go ahead with the plan.', pr: 'Asked it to run the tests and open the PR.' },
+    whichPlanChat: 'Which chat? Say the task number.',
+    planFailed: "Couldn't reach that chat.",
+    planNone: "That chat has no plan.",
+    planBusy: "I'm already waiting for it to be free.",
     understood: (label) => `Got it: ${label}.`,
     stoppedAt: (number, where) => `On ${number}: ${where}`,
     noTask: (number) => `I didn't find a chat for ${number}.`,
@@ -247,8 +255,11 @@ export function createVoiceSession(deps) {
     say(lines().noChat(number));
   }
 
-  // The Maestro: an order that changes work is shown as understood and held a
-  // few seconds; off the Maestro it runs at once. The labels are on screen,
+  // The Maestro: an order that cannot be undone (stopping a músico, typing
+  // into it, answering a permission, a conditional order, a routine) is shown
+  // as understood and held a few seconds; opening work (an issue, a chat, a
+  // review) runs at once, since closing the tab undoes it. Off the Maestro
+  // everything runs at once. The labels are on screen,
   // so they stay pt-BR whatever the voice speaks.
   const ORDER = LINES.pt.order;
   // Off the Maestro the order runs at once and its errors reach the caller,
@@ -274,6 +285,24 @@ export function createVoiceSession(deps) {
     return undefined;
   };
   const musicianOfSession = (sessionId) => (deps.orchestra?.() ?? []).find((musician) => musician.sessionId === sessionId) ?? null;
+
+  // The plan card's buttons by voice: of the task named, else of the chat the
+  // voice talks to, else of the músico in focus. It types into the chat: held.
+  function planOrder(action, number) {
+    const bound = target;
+    const sessionId =
+      number !== null
+        ? deps.linkedSessions?.(number)?.[0] ?? findMusicians(deps.orchestra?.() ?? [], number)[0]?.sessionId
+        : bound.kind === 'chat'
+          ? bound.sessionId
+          : deps.focusedSession?.();
+    if (!sessionId) return say(lines().whichPlanChat);
+    return held(ORDER.plan(musicianOfSession(sessionId), action), async () => {
+      const result = await deps.planAction(sessionId, action);
+      const said = { sent: lines().planSent[action], 'no-plan': lines().planNone, busy: lines().planBusy };
+      say(said[result] ?? lines().planFailed);
+    });
+  }
 
   function interruptMusician(musician) {
     return held(ORDER.interrupt(musician), () =>
@@ -317,7 +346,7 @@ export function createVoiceSession(deps) {
       say(lines().okay);
       return;
     }
-    if (pending.kind === 'new-chat') return held(ORDER.newChat(pending.number), () => openNewChat(pending));
+    if (pending.kind === 'new-chat') return openNewChat(pending);
     if (pending.kind === 'learn') {
       deps.learn({ heard: pending.heard, meant: pending.meant });
       say(lines().saved);
@@ -329,7 +358,7 @@ export function createVoiceSession(deps) {
   async function pickIssue(number) {
     const found = await deps.resolveTask(number);
     if (found.sessionId) return openFound(number, found);
-    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: PICK_PROMPT(number) });
+    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: startIssuePrompt(number), task: number });
     if (!opened?.sessionId) return say(lines().newChatFailed);
     deps.linkTask(number, opened.sessionId);
     bind(opened.sessionId, number);
@@ -338,7 +367,7 @@ export function createVoiceSession(deps) {
 
   // The reviewer works on its own: the voice stays with whoever it was with.
   async function reviewPr(number) {
-    const opened = await deps.openNew({ cwd: deps.projectRoot(), prompt: REVIEW_PROMPT(number) });
+    const opened = await deps.openNew({ cwd: deps.projectRoot(), prompt: reviewPrPrompt(number) });
     if (!opened?.sessionId) return say(lines().newChatFailed);
     deps.linkTask(number, opened.sessionId);
     return say(lines().reviewing(number));
@@ -399,7 +428,7 @@ export function createVoiceSession(deps) {
   }
 
   async function openNewChat(pending) {
-    const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
+    const opened = await deps.openNew({ cwd: pending.cwd, prompt: startIssuePrompt(pending.number), task: pending.number });
     if (!opened?.sessionId) {
       say(lines().newChatFailed);
       return;
@@ -419,7 +448,7 @@ export function createVoiceSession(deps) {
         return;
       }
       case 'resume-task':
-        return held(ORDER.resume(intent.number), () => resumeTask(intent.number));
+        return resumeTask(intent.number);
       case 'choose': {
         const choice = pendingChoice?.candidates[intent.index - 1];
         if (!choice) return say(lines().noOption);
@@ -434,10 +463,13 @@ export function createVoiceSession(deps) {
       case 'pick-issue': {
         const number = intent.number ?? lastIssue;
         if (number === null) return say(lines().whichIssue);
-        return held(ORDER.pick(number), () => pickIssue(number));
+        return pickIssue(number);
       }
+      case 'approve-plan':
+      case 'open-pr':
+        return planOrder(intent.type === 'approve-plan' ? 'approve' : 'pr', intent.number);
       case 'review-pr':
-        return held(ORDER.review(intent.number), () => reviewPr(intent.number));
+        return reviewPr(intent.number);
       case 'where-stopped':
         return whereStopped(intent.number);
       case 'save-routine':

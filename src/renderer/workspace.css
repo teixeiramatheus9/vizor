@@ -48,9 +48,12 @@ button:hover {
   color: var(--text-3);
 }
 
+/* a button that still reads as the label it was; hover takes the accent (#169) */
 #topbar .brand {
   color: var(--text-2);
   font-weight: 600;
+  border: none;
+  padding: 0;
 }
 
 #topbar .count-item {
@@ -510,6 +513,60 @@ body[data-inspector-width='collapsed'] #columns {
   border: none;
   border-bottom: 1px solid var(--hairline);
   padding: 3px 8px;
+}
+
+#plan-card:empty {
+  display: none;
+}
+.plan-card {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-header);
+}
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text);
+}
+.plan-wait {
+  color: var(--warn);
+  font-size: 0.9em;
+}
+.plan-steps {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+}
+.plan-step {
+  padding: 2px 0;
+  color: var(--text-3);
+}
+.plan-step.done {
+  color: var(--muted);
+}
+.plan-step.done span {
+  text-decoration: line-through;
+}
+.plan-step.current {
+  color: var(--accent);
+}
+.plan-action {
+  font: inherit;
+  color: var(--bg-surface);
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.plan-action:disabled {
+  opacity: 0.5;
+}
+.plan-note {
+  margin-top: 4px;
+  color: var(--warn);
+  font-size: 0.9em;
 }
 
 #timeline {
@@ -1215,4 +1272,81 @@ svg.graph line.call.picked {
   font-size: 11px;
   white-space: pre-wrap;
   color: var(--muted);
+}
+
+/* Ctrl+K (core flow) */
+#command-bar {
+  position: fixed;
+  top: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 32px));
+  z-index: 50;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+  overflow: hidden;
+}
+#command-bar[hidden],
+#command-toast[hidden] {
+  display: none;
+}
+#command-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 1.05em;
+  color: var(--text);
+  background: var(--bg-surface);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  outline: none;
+}
+#command-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.command-item {
+  display: flex;
+  gap: 10px;
+  padding: 5px 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.command-item[aria-selected='true'] {
+  background: var(--track);
+  color: var(--text);
+}
+.command-item.disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.command-group {
+  flex: 0 0 56px;
+  color: var(--text-3);
+  font-size: 0.85em;
+}
+.command-empty {
+  padding: 8px 12px;
+  color: var(--muted);
+}
+#command-toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  color: var(--text);
 }

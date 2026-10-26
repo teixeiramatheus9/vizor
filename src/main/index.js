@@ -38,6 +38,10 @@ import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
 import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
 import { createConductor } from './maestro/conductor.js';
 import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
+import { excludeWithPlan, isPlanEdit } from './work/plan.js';
+import { createPlanActions, createPlanTracker } from './work/plans.js';
+import { catalogFrom, catalogStale } from './work/catalog.js';
+import { reviewPrPrompt, startIssuePrompt, taskTabTitle } from './work/prompts.js';
 import { readTail } from './maestro/log-tail.js';
 import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
@@ -117,7 +121,7 @@ import { sanitizeShortcuts } from './shortcuts.js';
 import { applyLinuxAutostart, autostartFilePath, desktopEntry, execLine } from './autostart.js';
 import { legacyAutostartFile, legacyConfigDir, migrateLegacyInstall } from './migration.js';
 import { setupUpdater } from './updater.js';
-import { detectTrayHost, trayMenuTemplate } from './tray.js';
+import { actionMenuAnchor, detectTrayHost, deviceChoice, trayMenuTemplate } from './tray.js';
 import { installTraySupport, shouldInstallTraySupport } from './tray-support.js';
 import { killPendingClaude } from './claude-cli.js';
 import {
@@ -634,6 +638,12 @@ let graphParser = null;
 const graphIndexers = new Map(); // checkout root → indexer
 const graphRefreshTimers = new Map();
 const maestroPlans = new Map(); // sessionId → the plan its "Vizor-plano:" line declared
+const taskTitles = new Map(); // ptyId → '#169 Menu de ação…', the tab of a chat opened for a task
+// The checklist each chat keeps in .vizor/plano.md, shown live (the core flow).
+const workPlans = createPlanTracker({
+  readFile: (file) => fs.promises.readFile(file, 'utf8'),
+  knownCwd: (cwd) => workspaceProjects().includes(cwd) || [...worktreeCache.values()].some((trees) => (trees ?? []).some((tree) => tree.path === cwd)),
+});
 const touchCache = new Map(); // memo of touchedFunctions, cleared when a graph changes
 
 function graphFor(root) {
@@ -829,6 +839,89 @@ function maestroInterrupt(ptyId) {
 }
 
 ipcMain.on('maestro:set', (_event, on) => applyConfig({ maestroEnabled: Boolean(on) }));
+
+// A prompt for a chat waits for its turn to end, like the voice's, up to a minute.
+async function deliverWhenFree(sessionId, text, { tries = 30, everyMs = 2000 } = {}) {
+  for (let attempt = 0; attempt < tries; attempt++) {
+    const result = await voiceDeliverPrompt(sessionId, text);
+    if (result !== 'hold') return result;
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+  return 'timeout';
+}
+
+// Picking an issue by keyboard: its chat if it has one (the newest of several),
+// otherwise a new one asked for the plan first.
+async function startIssue(number) {
+  const root = voiceRoot();
+  if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+  const found = await voiceResolveTask(number, { byTitle: false });
+  log(`issue ${number}: ${found.sessionId ? `its chat ${found.sessionId}` : `new chat in ${found.cwd ?? root}`}`);
+  const existing = found.sessionId ? found : null;
+  if (existing?.sessionId) {
+    await voiceOpenOrFocus({ sessionId: existing.sessionId, cwd: existing.cwd });
+    taskLinks.link(root, number, existing.sessionId);
+    return { sessionId: existing.sessionId };
+  }
+  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number });
+  if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
+  taskLinks.link(root, number, opened.sessionId);
+  workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
+  return { sessionId: opened.sessionId };
+}
+
+// What the Ctrl+K bar lists from GitHub: open issues and PRs, read by gh.
+ipcMain.handle('workspace:catalog', async (event) => {
+  if (!fromWorkspace(event)) return { issues: [], prs: [], error: true };
+  const root = voiceRoot();
+  if (catalogStale({ resultsRoot: lastGhResultsRoot, root, at: lastGhDigestAt, now: Date.now(), maxAge: GH_DIGEST_MAX_AGE_MS })) await voiceGhDigest();
+  return catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root });
+});
+
+// The action the bar picked; focus is the renderer's own.
+ipcMain.handle('workspace:command', async (event, action = {}) => {
+  if (!fromWorkspace(event)) return { error: 'Ação desconhecida.' };
+  try {
+    if (action.type === 'pick-issue' && Number.isInteger(action.number)) {
+      log(`command: pick issue ${action.number}`);
+      const started = await startIssue(action.number);
+      log(`command: issue ${action.number} → ${started.error ?? `chat ${started.sessionId}`}`);
+      return started;
+    }
+    if (action.type === 'review-pr' && Number.isInteger(action.number)) {
+      const root = voiceRoot();
+      if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+      const opened = await voiceOpenNew({ cwd: root, prompt: reviewPrPrompt(action.number) });
+      if (!opened.sessionId) return { error: 'Não consegui abrir o chat do avaliador.' };
+      taskLinks.link(root, action.number, opened.sessionId);
+      return { sessionId: opened.sessionId };
+    }
+    if (action.type === 'interrupt' && typeof action.sessionId === 'string') {
+      const ptyId = ptyOfSession(action.sessionId);
+      return ptyId && maestroInterrupt(ptyId) ? {} : { error: 'Esse chat não está numa aba do Vizor.' };
+    }
+    if (action.type === 'maestro') {
+      applyConfig({ maestroEnabled: Boolean(action.on) });
+      return {};
+    }
+    return { error: 'Ação desconhecida.' };
+  } catch (error) {
+    log(`command failed: ${error?.stack ?? error}`);
+    return { error: 'Deu erro, veja o log.' };
+  }
+});
+
+// The plan card's buttons: the ok, and the PR once every step is done.
+const planActions = createPlanActions({
+  planOf: (sessionId) => workPlans.planOf(sessionId),
+  approve: (sessionId) => {
+    workPlans.approve(sessionId);
+    pushWorkspaceState();
+  },
+  deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
+});
+const planAction = (sessionId, action) => planActions.run(sessionId, action);
+ipcMain.handle('workspace:plan', (event, { sessionId, action } = {}) => (fromWorkspace(event) ? planAction(sessionId, action) : 'failed'));
 ipcMain.on('maestro:focus', (_event, sessionId) => {
   if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
 });
@@ -1097,6 +1190,15 @@ function activateBubble() {
   else workspaceWindow.show();
 }
 ipcMain.on('bubble:activate', () => activateBubble());
+
+// The workspace's "vzr" label opens the tray's menu (#169), for whoever has no
+// tray to reach it from.
+ipcMain.on('workspace:action-menu', (event, rect) => {
+  if (!fromWorkspace(event)) return;
+  const window = workspaceWindow.window();
+  if (!window || window.isDestroyed()) return;
+  buildActionMenu({ canHide: Boolean(tray) }).popup({ window, ...actionMenuAnchor(rect) });
+});
 
 // The balloon of a session born in the Vizor opens its workspace tab, like
 // its panel card (spec §9.1, #144); any other balloon opens the panel.
@@ -1390,8 +1492,9 @@ function applyShortcuts() {
   if (shortcutFailures.length) log(`shortcuts not registered: ${shortcutFailures.join(', ')}`);
 }
 
-function refreshTrayMenu() {
-  if (!tray) return;
+// The tray menu and the workspace's "vzr" menu (#169) are this one menu: same items,
+// same actions, built fresh so the checked devices are current.
+function buildActionMenu({ canHide = true } = {}) {
   const actions = {
     panel: () => {
       showBubble();
@@ -1404,12 +1507,12 @@ function refreshTrayMenu() {
     workspace: () => workspaceWindow?.show(),
     rules: () => openRulesWindow(),
   };
-  // mic:<n> / output:<n> pick a listed device, the default clears the pin.
   const pick = (id) => {
-    const [kind, which] = id.split(':');
-    if (which === 'pinned' || which === 'none') return;
-    if (kind === 'mic') applyConfig({ voiceMic: which === 'default' ? null : micDevices[Number(which)] ?? null });
-    if (kind === 'output') applyConfig({ audioOutput: which === 'default' ? null : audioOutputs[Number(which)] ?? null });
+    const choice = deviceChoice(id);
+    if (!choice) return;
+    const devices = choice.kind === 'mic' ? micDevices : audioOutputs;
+    const device = choice.index === 'default' ? null : devices[choice.index] ?? null;
+    applyConfig(choice.kind === 'mic' ? { voiceMic: device } : { audioOutput: device });
   };
   const wire = (item) => {
     if (item.submenu) return { ...item, submenu: item.submenu.map(wire) };
@@ -1420,8 +1523,13 @@ function refreshTrayMenu() {
     process.platform === 'linux'
       ? { mics: micDevices, mic: managerConfig.voiceMic ?? null, outputs: audioOutputs, output: managerConfig.audioOutput ?? null }
       : null;
-  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible(), workspace: Boolean(workspaceWindow), audio }).map(wire);
-  tray.setContextMenu(Menu.buildFromTemplate(template));
+  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible(), workspace: Boolean(workspaceWindow), audio, canHide });
+  return Menu.buildFromTemplate(template.map(wire));
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(buildActionMenu());
 }
 
 // The outputs for the tray menu, from PipeWire; re-read every few seconds so
@@ -1831,6 +1939,7 @@ function pushWorkspaceStateNow() {
   });
   maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
   maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
+  for (const sessionId of workPlans.sessions()) if (!registry.sessions.has(sessionId)) workPlans.forget(sessionId);
   if (maestroOn()) for (const musician of maestroOrchestra) graphFor(musician.root);
   syncBackstageTimers();
   // Sessions that are no músico (any more) leave the backstage.
@@ -1851,7 +1960,7 @@ function pushWorkspaceStateNow() {
     }
   workspaceWindow.send('workspace:state', {
     tree,
-    terminals: ptyHost?.list() ?? [],
+    terminals: (ptyHost?.list() ?? []).map((terminal) => ({ ...terminal, taskTitle: taskTitles.get(terminal.id) ?? null })),
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
@@ -1863,6 +1972,7 @@ function pushWorkspaceStateNow() {
       orders: Object.fromEntries(maestroConductor.list().map((order) => [order.sessionId, order.label])),
       backstage: maestroOn() ? Object.fromEntries(maestroOrchestra.map((musician) => [musician.sessionId, backstageOf(musician.sessionId)])) : {},
     },
+    plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2559,6 +2669,8 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 function onToolEvent(event) {
   // Bash/Task/Agent come through for the voice narration only (#161).
   if (!EDIT_TOOLS.has(event?.tool_name)) return;
+  // The plan file is the card's, not a change to review.
+  if (isPlanEdit(event)) return;
   editPipeline
     .push(event)
     .then((edit) => {
@@ -2615,12 +2727,23 @@ function onHookEvent(event, reply) {
     pendingNewChats.delete(event.term.VIZOR_PTY_ID);
     newChat({ sessionId: event.session_id });
   }
+  workPlans
+    .onEvent(event)
+    .then((changed) => {
+      if (!changed) return;
+      // Its Vizor-plano line lights the planned files on the graph, dashed (#159).
+      const playing = maestroOrchestra.find((musician) => musician.sessionId === event.session_id);
+      const planned = playing?.root ? parsePlan(workPlans.textOf(event.session_id), playing.root) : [];
+      if (planned.length) maestroPlans.set(event.session_id, planned);
+      pushWorkspaceState();
+    })
+    .catch((error) => log(`plan follow failed: ${error}`));
   if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event?.hook_event_name)) {
     voiceSession?.onToolEvent(event);
     maestroNarrate(event);
     const verdict = testOutcomeOf(event);
     if (verdict && event.session_id) turnTests.set(event.session_id, verdict);
-    if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name)) graphTouched(event);
+    if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name) && !isPlanEdit(event)) graphTouched(event);
   }
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
@@ -3807,6 +3930,9 @@ function refreshVocabulary(root) {
 
 async function voiceGhDigest() {
   const root = voiceRoot();
+  // Whatever is read now belongs to this root; until then, nothing does.
+  lastGhResults = null;
+  lastGhResultsRoot = root;
   const english = spokenLang() === 'en';
   if (!root) return { speech: english ? 'Open a project in the workspace first.' : 'Abra um projeto no workspace primeiro.', lines: [] };
   try {
@@ -3827,16 +3953,18 @@ async function voiceGhDigest() {
     );
     lastGhDigest = buildDigest(results, spokenLang());
     lastGhContext = managerContext(results);
+    lastGhResults = results;
     lastGhDigestAt = Date.now();
   } catch (error) {
     log(`gh digest failed: ${error}`);
     lastGhDigest = buildDigest({ error: String(error) }, spokenLang());
     lastGhContext = managerContext({ error: String(error) });
+    lastGhResults = null;
   }
   return lastGhDigest;
 }
 
-async function voiceResolveTask(number) {
+async function voiceResolveTask(number, { byTitle = true } = {}) {
   const root = voiceRoot();
   if (!root) return { none: true };
   const worktrees = worktreeCache.get(root) ?? (await listWorktrees(root).catch(() => [])) ?? [];
@@ -3846,7 +3974,7 @@ async function voiceResolveTask(number) {
     for (const conversation of await listConversations(await resolveClaudeProjectDir(folder), { limit: 200 }))
       conversations.push({ ...conversation, cwd: folder });
   }
-  const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees });
+  const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees, byTitle });
   if (found.sessionId) {
     const snapshot = await readTranscriptSnapshot(claudeTranscriptPath(found.cwd, found.sessionId)).catch(() => null);
     const title = conversations.find((item) => item.sessionId === found.sessionId)?.title ?? null;
@@ -3881,10 +4009,31 @@ async function voiceOpenOrFocus({ sessionId, cwd }) {
   return { sessionId };
 }
 
-function voiceOpenNew({ cwd, prompt }) {
+// The plan file stays out of git: `.vizor/` joins the repo's info/exclude.
+async function excludePlanFile(cwd) {
+  try {
+    const file = path.resolve(cwd, (await runText('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd })).trim());
+    const current = await fs.promises.readFile(file, 'utf8').catch(() => '');
+    const next = excludeWithPlan(current);
+    if (next === null) return;
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(file, next);
+  } catch (error) {
+    log(`plan exclude failed: ${error}`);
+  }
+}
+
+// task: the issue the chat is for, which names its tab (taskTitles, over the
+// title the terminal sets itself).
+async function voiceOpenNew({ cwd, prompt, task = null }) {
   workspaceWindow?.show();
+  if (cwd) await excludePlanFile(cwd);
   const opened = openTerminal({ cwd, kind: 'claude', prompt });
   if (opened.error) return Promise.resolve({ sessionId: null });
+  if (Number.isInteger(task)) {
+    const issue = catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root: voiceRoot() }).issues.find((item) => item.number === task);
+    taskTitles.set(opened.id, taskTabTitle(task, issue?.title));
+  }
   return new Promise((resolve) => {
     pendingNewChats.set(opened.id, resolve);
     setTimeout(() => {
@@ -3912,6 +4061,8 @@ async function voiceDeliverPrompt(sessionId, text) {
 const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
 let lastGhDigestAt = 0;
 let lastGhContext = null;
+let lastGhResults = null; // the raw gh lists, for the Ctrl+K bar
+let lastGhResultsRoot = null; // the project they were read for
 
 // The gerente has no tools of its own: it gets the project's GitHub state
 // with the question (live test: "não tenho acesso ao GitHub").
@@ -4054,6 +4205,8 @@ function createVoiceSessionForApp() {
       remove: (name) => routinesStore.remove(routinesHere(), name),
     },
     interpret: voiceInterpret,
+    planAction: async (sessionId, action) => planAction(sessionId, action),
+    focusedSession: () => (maestroOn() ? maestroFocusId : workspaceSelectedSession ?? null),
     conductor: maestroConductor,
     // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
     startOrderNow: (sessionId) => {
