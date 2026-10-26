@@ -515,6 +515,60 @@ body[data-inspector-width='collapsed'] #columns {
   padding: 3px 8px;
 }
 
+#plan-card:empty {
+  display: none;
+}
+.plan-card {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-header);
+}
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text);
+}
+.plan-wait {
+  color: var(--warn);
+  font-size: 0.9em;
+}
+.plan-steps {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+}
+.plan-step {
+  padding: 2px 0;
+  color: var(--text-3);
+}
+.plan-step.done {
+  color: var(--muted);
+}
+.plan-step.done span {
+  text-decoration: line-through;
+}
+.plan-step.current {
+  color: var(--accent);
+}
+.plan-action {
+  font: inherit;
+  color: var(--bg-surface);
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.plan-action:disabled {
+  opacity: 0.5;
+}
+.plan-note {
+  margin-top: 4px;
+  color: var(--warn);
+  font-size: 0.9em;
+}
+
 #timeline {
   max-height: 38%;
   overflow-y: auto;

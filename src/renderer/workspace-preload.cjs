@@ -39,4 +39,6 @@ contextBridge.exposeInMainWorld('vizor', {
   focusMusician: (sessionId) => ipcRenderer.send('maestro:focus', sessionId),
   onMaestroGraph: (callback) => ipcRenderer.on('maestro:graph', (_event, payload) => callback(payload)),
   maestroGraph: (root) => ipcRenderer.invoke('maestro:graph', root),
+  // The core flow: the músico's plan and the Ctrl+K bar.
+  planAction: (sessionId, action) => ipcRenderer.invoke('workspace:plan', { sessionId, action }),
 });

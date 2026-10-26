@@ -15,7 +15,7 @@ export function renderPlan(plan) {
     return `<li class="plan-step ${state}">${mark} <span>${escapeHtml(step.text)}</span></li>`;
   });
   const action = !plan.approved
-    ? '<button class="plan-action" data-plan="approve" title="Ctrl+Enter">Aprovar plano</button>'
+    ? '<button class="plan-action" data-plan="approve">Aprovar plano</button>'
     : current === -1
       ? '<button class="plan-action" data-plan="pr">Abrir PR</button>'
       : '';

@@ -38,6 +38,9 @@ import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
 import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
 import { createConductor } from './maestro/conductor.js';
 import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
+import { excludeWithPlan, isPlanEdit } from './work/plan.js';
+import { createPlanTracker } from './work/plans.js';
+import { APPROVE_PROMPT, OPEN_PR_PROMPT, reviewPrPrompt, startIssuePrompt } from './work/prompts.js';
 import { readTail } from './maestro/log-tail.js';
 import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
@@ -634,6 +637,11 @@ let graphParser = null;
 const graphIndexers = new Map(); // checkout root → indexer
 const graphRefreshTimers = new Map();
 const maestroPlans = new Map(); // sessionId → the plan its "Vizor-plano:" line declared
+// The checklist each chat keeps in .vizor/plano.md, shown live (the core flow).
+const workPlans = createPlanTracker({
+  readFile: (file) => fs.promises.readFile(file, 'utf8'),
+  knownCwd: (cwd) => workspaceProjects().includes(cwd) || [...worktreeCache.values()].some((trees) => (trees ?? []).some((tree) => tree.path === cwd)),
+});
 const touchCache = new Map(); // memo of touchedFunctions, cleared when a graph changes
 
 function graphFor(root) {
@@ -829,6 +837,28 @@ function maestroInterrupt(ptyId) {
 }
 
 ipcMain.on('maestro:set', (_event, on) => applyConfig({ maestroEnabled: Boolean(on) }));
+
+// A prompt for a chat waits for its turn to end, like the voice's, up to a minute.
+async function deliverWhenFree(sessionId, text, { tries = 30, everyMs = 2000 } = {}) {
+  for (let attempt = 0; attempt < tries; attempt++) {
+    const result = await voiceDeliverPrompt(sessionId, text);
+    if (result !== 'hold') return result;
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+  return 'timeout';
+}
+
+// The plan card's buttons: the ok, and the PR once every step is done.
+ipcMain.handle('workspace:plan', async (_event, { sessionId, action } = {}) => {
+  if (typeof sessionId !== 'string' || !workPlans.planOf(sessionId)) return 'failed';
+  if (action === 'approve') {
+    workPlans.approve(sessionId);
+    pushWorkspaceState();
+    return deliverWhenFree(sessionId, APPROVE_PROMPT);
+  }
+  if (action === 'pr') return deliverWhenFree(sessionId, OPEN_PR_PROMPT);
+  return 'failed';
+});
 ipcMain.on('maestro:focus', (_event, sessionId) => {
   if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
 });
@@ -1846,6 +1876,7 @@ function pushWorkspaceStateNow() {
   });
   maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
   maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
+  for (const sessionId of workPlans.sessions()) if (!registry.sessions.has(sessionId)) workPlans.forget(sessionId);
   if (maestroOn()) for (const musician of maestroOrchestra) graphFor(musician.root);
   syncBackstageTimers();
   // Sessions that are no músico (any more) leave the backstage.
@@ -1878,6 +1909,7 @@ function pushWorkspaceStateNow() {
       orders: Object.fromEntries(maestroConductor.list().map((order) => [order.sessionId, order.label])),
       backstage: maestroOn() ? Object.fromEntries(maestroOrchestra.map((musician) => [musician.sessionId, backstageOf(musician.sessionId)])) : {},
     },
+    plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -2574,6 +2606,8 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 function onToolEvent(event) {
   // Bash/Task/Agent come through for the voice narration only (#161).
   if (!EDIT_TOOLS.has(event?.tool_name)) return;
+  // The plan file is the card's, not a change to review.
+  if (isPlanEdit(event)) return;
   editPipeline
     .push(event)
     .then((edit) => {
@@ -2630,12 +2664,16 @@ function onHookEvent(event, reply) {
     pendingNewChats.delete(event.term.VIZOR_PTY_ID);
     newChat({ sessionId: event.session_id });
   }
+  workPlans
+    .onEvent(event)
+    .then((changed) => changed && pushWorkspaceState())
+    .catch((error) => log(`plan follow failed: ${error}`));
   if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event?.hook_event_name)) {
     voiceSession?.onToolEvent(event);
     maestroNarrate(event);
     const verdict = testOutcomeOf(event);
     if (verdict && event.session_id) turnTests.set(event.session_id, verdict);
-    if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name)) graphTouched(event);
+    if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name) && !isPlanEdit(event)) graphTouched(event);
   }
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
@@ -3896,8 +3934,23 @@ async function voiceOpenOrFocus({ sessionId, cwd }) {
   return { sessionId };
 }
 
-function voiceOpenNew({ cwd, prompt }) {
+// The plan file stays out of git: `.vizor/` joins the repo's info/exclude.
+async function excludePlanFile(cwd) {
+  try {
+    const file = path.resolve(cwd, (await runText('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd })).trim());
+    const current = await fs.promises.readFile(file, 'utf8').catch(() => '');
+    const next = excludeWithPlan(current);
+    if (next === null) return;
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(file, next);
+  } catch (error) {
+    log(`plan exclude failed: ${error}`);
+  }
+}
+
+async function voiceOpenNew({ cwd, prompt }) {
   workspaceWindow?.show();
+  if (cwd) await excludePlanFile(cwd);
   const opened = openTerminal({ cwd, kind: 'claude', prompt });
   if (opened.error) return Promise.resolve({ sessionId: null });
   return new Promise((resolve) => {

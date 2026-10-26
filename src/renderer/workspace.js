@@ -26,6 +26,7 @@ import {
   onTask,
   stillWanted,
 } from './inspector-state.js';
+import { renderPlan } from './plan-view.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
 import { ZOOM_MAX, ZOOM_OPEN, ZOOM_STEP, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
 
@@ -44,6 +45,9 @@ let maestro = { on: false, orchestra: [], focusedId: null };
 let voiceInfo = null;
 let terminals = [];
 let selectedId = null; // selected session
+let plans = {}; // sessionId → { steps, approved }
+let planNote = null; // { sessionId, text } after a button that did not land
+const planCardEl = document.getElementById('plan-card');
 let selectedWorktree = null;
 let activeTab = null;
 // worktree path → why its terminal could not open; '*' when the native module
@@ -475,7 +479,28 @@ function selectInspectorSession(sessionId) {
   inspectorTask = null;
   fileView = null;
   refreshInspector({ scroll: true });
+  renderPlanCard();
 }
+
+// --- The plan (core flow) ----------------------------------------------------
+// The checklist the chat keeps in .vizor/plano.md: of the inspected chat, or
+// of the músico in focus on the stage.
+const planSessionId = () => (maestro.on ? maestro.focusedId : inspector.sessionId);
+function renderPlanCard() {
+  const sessionId = planSessionId();
+  const note = planNote?.sessionId === sessionId ? `<div class="plan-note">${planNote.text}</div>` : '';
+  planCardEl.innerHTML = sessionId ? renderPlan(plans[sessionId]) + (plans[sessionId] ? note : '') : '';
+}
+const PLAN_NOTES = { failed: 'não achei a aba desse chat', timeout: 'o chat seguiu ocupado; tente de novo quando ele parar' };
+planCardEl.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-plan]');
+  const sessionId = planSessionId();
+  if (!button || !sessionId) return;
+  button.disabled = true;
+  const result = await window.vizor.planAction(sessionId, button.dataset.plan);
+  planNote = PLAN_NOTES[result] ? { sessionId, text: PLAN_NOTES[result] } : null;
+  renderPlanCard();
+});
 
 async function savePrefs(change) {
   Object.assign(prefs, change);
@@ -528,7 +553,8 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage }) => {
+window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState }) => {
+  plans = planState ?? {};
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;
@@ -566,6 +592,7 @@ window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, g
   }
   render();
   applyMaestro(stage);
+  renderPlanCard();
 });
 
 // Flow control (#113): tell main how much each terminal has actually drawn,
