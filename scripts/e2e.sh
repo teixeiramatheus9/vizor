@@ -15,3 +15,4 @@ for _ in $(seq 50); do
   sleep 0.05
 done
 DISPLAY="$display" node test/e2e/flow.e2e.mjs
+DISPLAY="$display" node test/e2e/review.e2e.mjs

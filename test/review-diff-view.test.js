@@ -84,6 +84,11 @@ describe('the review file list', () => {
     expect(html).toContain('1/2');
     expect(html).toMatch(/review-file selected" data-path="src\/b.js"/);
   });
+  it('keeps the reading order across folders: only neighbours share a heading', () => {
+    const html = renderFileList(files, ['src/a.js', 'README.md', 'src/b.js']);
+    expect([...html.matchAll(/data-path="([^"]+)"/g)].map((m) => m[1])).toEqual(['src/a.js', 'README.md', 'src/b.js']);
+    expect((html.match(/review-dir/g) ?? []).length).toBe(3);
+  });
   it('filters by path', () => {
     const html = renderFileList(files, files.map((f) => f.path), { filter: 'readme' });
     expect(html).toContain('README.md');

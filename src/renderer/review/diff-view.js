@@ -81,14 +81,16 @@ export function renderFileList(files, order, { selectedPath, approvedByFile = {}
   const sorted = (order?.length ? order : [...byPath.keys()]).map((p) => byPath.get(p)).filter(Boolean)
     .filter((f) => !needle || f.path.toLowerCase().includes(needle));
   if (!sorted.length) return '<div class="review-empty">nada pra revisar</div>';
-  const groups = new Map();
+  // Neighbours in the same folder share a heading; the reading order itself
+  // (contract files first) must not be reshuffled by folder.
+  const groups = [];
   for (const file of sorted) {
     const slash = file.path.lastIndexOf('/');
     const dir = slash === -1 ? '.' : file.path.slice(0, slash);
-    if (!groups.has(dir)) groups.set(dir, []);
-    groups.get(dir).push(file);
+    if (groups.at(-1)?.[0] === dir) groups.at(-1)[1].push(file);
+    else groups.push([dir, [file]]);
   }
-  return [...groups].map(([dir, list]) => {
+  return groups.map(([dir, list]) => {
     const rows = list.map((f) => {
       const name = f.path.slice(f.path.lastIndexOf('/') + 1);
       const sums = f.binary ? '<span class="sum">binário</span>'

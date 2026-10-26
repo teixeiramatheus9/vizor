@@ -4917,7 +4917,17 @@ async function requestQuit() {
   app.quit();
 }
 
-app.on('before-quit', () => {
+// The review state saves 500 ms after a click: a quit inside that window
+// would lose an approval, so the first quit waits for the writes and asks again.
+let reviewSaved = false;
+app.on('before-quit', (event) => {
+  if (!reviewSaved) {
+    reviewSaved = true;
+    event.preventDefault();
+    Promise.allSettled([...reviewStores.values()].map((entry) => entry.flush()))
+      .finally(() => app.quit());
+    return;
+  }
   appQuitting = true;
   // Before will-quit kills the terminals: their chats are still alive here.
   // A quit cancelled after this point thaws the saves again (#157).
