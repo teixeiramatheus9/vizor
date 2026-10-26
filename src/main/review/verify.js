@@ -39,21 +39,45 @@ export function tscPlan({ root, tsconfigText, hasLocalTsc, config = {}, cacheDir
 
 const TSC_LINE = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/;
 
-export function parseTscOutput(text, root) {
+// Streaming collector: lines are parsed as chunks arrive (with a partial-line
+// buffer per stream), keeping at most MAX_ERRORS errors and only counting the
+// rest, so memory stays bounded however long the output is.
+const MAX_LINE = 4096;
+
+export function createTscCollector(root) {
   const errors = [];
-  let outside = 0;
-  for (const line of String(text).split('\n')) {
+  const state = { outside: 0, omitted: 0 };
+  const lineOf = (line) => {
     const m = TSC_LINE.exec(line.trimEnd());
-    if (!m) continue;
+    if (!m) return;
     const rel = path.relative(root, path.resolve(root, m[1]));
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      outside++;
-      continue;
-    }
-    if (errors.length < MAX_ERRORS) {
-      errors.push({ file: rel, line: Number(m[2]), col: Number(m[3]), code: m[4], message: m[5] });
-    }
-  }
+    if (rel.startsWith('..') || path.isAbsolute(rel)) state.outside++;
+    else if (errors.length < MAX_ERRORS) errors.push({ file: rel, line: Number(m[2]), col: Number(m[3]), code: m[4], message: m[5] });
+    else state.omitted++;
+  };
+  const stream = () => {
+    let partial = '';
+    return {
+      push(chunk) {
+        const parts = (partial + String(chunk)).split('\n');
+        partial = parts.pop().slice(0, MAX_LINE);
+        for (const l of parts) lineOf(l);
+      },
+      end() {
+        if (partial) lineOf(partial);
+        partial = '';
+      },
+    };
+  };
+  return { stream, result: () => ({ errors, ...state }) };
+}
+
+export function parseTscOutput(text, root) {
+  const c = createTscCollector(root);
+  const s = c.stream();
+  s.push(text);
+  s.end();
+  const { errors, outside } = c.result();
   return { errors, outside };
 }
 
@@ -119,18 +143,23 @@ export function createVerifier({ spawn, now = Date.now, setTimer = setTimeout, c
         return;
       }
 
-      const onData = (chunk) => {
+      const collector = kind === 'tsc' ? createTscCollector(root) : null;
+      const streams = { out: collector?.stream(), err: collector?.stream() };
+      const onData = (which) => (chunk) => {
+        streams[which]?.push(Buffer.from(chunk).toString('utf8'));
         tail = Buffer.concat([tail, Buffer.from(chunk)]);
         if (tail.length > TAIL_BYTES) tail = tail.subarray(tail.length - TAIL_BYTES);
       };
-      child.stdout?.on('data', onData);
-      child.stderr?.on('data', onData);
+      child.stdout?.on('data', onData('out'));
+      child.stderr?.on('data', onData('err'));
       child.on('error', (err) => finish({ status: 'error', reason: String(err?.message ?? err) }));
       child.on('close', (code, signal) => {
         const out = tail.toString('utf8');
         if (code === 0) return finish({ status: 'ok', tail: out });
         if (code == null) return finish({ status: 'error', reason: `encerrado por ${signal ?? 'sinal'}`, tail: out });
-        const extra = kind === 'tsc' ? parseTscOutput(out, root) : {};
+        streams.out?.end();
+        streams.err?.end();
+        const extra = collector ? collector.result() : {};
         finish({ status: 'fail', tail: out, ...extra });
       });
       timer = setTimer(() => {

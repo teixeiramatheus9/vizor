@@ -140,6 +140,30 @@ describe('createVerifier', () => {
     expect(r.tail.length).toBe(8192);
     expect(r.tail.endsWith('END')).toBe(true);
   });
+  it('parses tsc errors from the whole output, not just the 8 KB tail', async () => {
+    const { spawn, calls } = fakeSpawn();
+    const p = createVerifier({ spawn }).run(root, 'tsc', plan);
+    const c = calls[0].child;
+    c.stdout.emit('data', Buffer.from('src/first.ts(1,1): error TS1: early\nsrc/split.ts(2,'));
+    c.stdout.emit('data', Buffer.from('3): error TS2: across chunks\n'));
+    for (let i = 0; i < 700; i++) c.stdout.emit('data', Buffer.from(`noise ${i} ${'x'.repeat(40)}\n`));
+    c.stdout.emit('data', Buffer.from('../out/z.ts(1,1): error TS3: outside'));
+    c.emit('close', 2);
+    const r = await p;
+    expect(r.tail.length).toBe(8192);
+    expect(r.errors.map((e) => e.file)).toEqual(['src/first.ts', 'src/split.ts']);
+    expect(r.errors[1]).toMatchObject({ line: 2, col: 3 });
+    expect(r.outside).toBe(1);
+  });
+  it('counts errors past the 500 cap without keeping them', async () => {
+    const { spawn, calls } = fakeSpawn();
+    const p = createVerifier({ spawn }).run(root, 'tsc', plan);
+    for (let i = 0; i < 600; i++) calls[0].child.stdout.emit('data', Buffer.from(`a.ts(${i},1): error TS1: m\n`));
+    calls[0].child.emit('close', 2);
+    const r = await p;
+    expect(r.errors).toHaveLength(500);
+    expect(r.omitted).toBe(100);
+  });
   it('a spawn error is status error, never ok', async () => {
     const { spawn, calls } = fakeSpawn();
     const p = createVerifier({ spawn }).run(root, 'tsc', plan);
