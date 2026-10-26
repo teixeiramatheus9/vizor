@@ -182,10 +182,30 @@ export function renderSidebar(tree, selectedId, selectedWorktree = null, folds =
   return projects + renderUnplaced(tree.unplacedSessions, selectedId, folds);
 }
 
-export function renderTopBar(tree) {
+const VOICE_STATES = {
+  sleeping: 'esperando "Vizor"',
+  listening: 'ouvindo',
+  closing: 'ouvindo',
+  grace: 'entendi',
+  'paused-speaking': 'falando',
+  muted: 'mudo',
+  meeting: 'pausado (reunião)',
+  'sem-modelos': 'baixando modelos',
+};
+
+// voice: { state, target } while the voice mode is on (#161); chatHidden:
+// the terminal folded away so code and diff take the screen.
+export function renderTopBar(tree, { chatHidden = false, voice = null } = {}) {
+  const voiceLabel = voice
+    ? `<span class="voice-state" data-voice="${escapeHtml(voice.state)}" title="modo voz">🎙 ${escapeHtml(
+        VOICE_STATES[voice.state] ?? voice.state,
+      )}${voice.target ? ` · ${escapeHtml(voice.target)}` : ''}</span>`
+    : '';
   return `<span class="brand">vzr · workspace</span><span class="count-item" title="rodando">${ICONS.working}${
     tree.counts.working
-  } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span><span class="spacer"></span><button class="add-project" data-add-project>Abrir projeto…</button>`;
+  } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span>${voiceLabel}<span class="spacer"></span><button class="toggle-chat" data-toggle-chat title="${
+    chatHidden ? 'Mostrar o terminal do chat' : 'Esconder o terminal: código e diff ocupam a tela'
+  }">${chatHidden ? 'Mostrar chat' : 'Esconder chat'}</button><button class="add-project" data-add-project>Abrir projeto…</button>`;
 }
 
 // Tabs of the selected worktree's terminals, oldest first. Titles come from

@@ -84,3 +84,16 @@ describe('updateAnnouncement', () => {
     expect(updateAnnouncement(quiet, { ...quiet }, true)).toBeNull();
   });
 });
+
+describe('update lines in English, for an English voice', () => {
+  it('every transition and the after-restart line', async () => {
+    const { updateDonePhrase } = await import('../src/main/update-notice.js');
+    expect(updateAnnouncement({}, { failed: true }, true, 'en')).toBe('I tried to update and it went wrong, I left the release page open for you.');
+    expect(updateAnnouncement({}, { installing: true, available: '1.2.0' }, true, 'en')).toBe('Downloading version 1.2.0 to update myself. If a password prompt shows up, just confirm it.');
+    expect(updateAnnouncement({}, { ready: '1.2.0' }, true, 'en')).toBe("I downloaded version 1.2.0. I'll restart real quick to update!");
+    expect(updateAnnouncement({}, { ready: '1.2.0' }, false, 'en')).toBe('Update 1.2.0 is ready. Click the banner in the panel to restart.');
+    expect(updateAnnouncement({}, { available: '1.2.0', mode: 'auto' }, true, 'en')).toBe("Version 1.2.0 is out! I've started downloading it.");
+    expect(updateDonePhrase('en')).toBe("Done, I'm updated! Running the new version now.");
+    expect(updateDonePhrase()).toBe('Pronto, terminei de atualizar! Já tô na versão nova.');
+  });
+});

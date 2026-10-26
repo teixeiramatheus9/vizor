@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('vizor', {
   bringToVizor: (sessionId) => ipcRenderer.invoke('workspace:bring', sessionId),
   reportActiveTab: (id) => ipcRenderer.send('workspace:active-tab', id ?? null),
   answerGuard: (id, choice) => ipcRenderer.invoke('guard:answer', { id, choice }),
+  onVoice: (callback) => ipcRenderer.on('workspace:voice', (_event, payload) => callback(payload)),
   writeTerminal: (id, data) => ipcRenderer.send('pty:write', { id, data }),
   resizeTerminal: (id, cols, rows) => ipcRenderer.send('pty:resize', { id, cols, rows }),
   closeTerminal: (id) => ipcRenderer.send('pty:close', id),

@@ -8,6 +8,7 @@ import {
   Menu,
   Notification,
   screen,
+  session,
   shell,
   systemPreferences,
   Tray,
@@ -23,6 +24,19 @@ import { guardCommand, installGuardScript } from './guard-runtime.js';
 import { createGuardAsks, isGuardChoice } from './guard-asks.js';
 import { createRulesStore, pruneSeenSessions } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
+import { normalizeMic, normalizeMicList } from '../renderer/mic-choice.js';
+import { chromiumSinkId, listSinks, normalizeOutput } from './audio-devices.js';
+import { Worker } from 'node:worker_threads';
+import { createListener } from './voice/listener.js';
+import { createSpeechArbiter } from './voice/arbiter.js';
+import { createVoiceSession } from './voice/session.js';
+import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
+import { buildDigest, ghQueries, githubRepoOf, resolveProject } from './voice/gh-digest.js';
+import { createTaskLinks, resolveTask } from './voice/task-links.js';
+import { safeToTypeIdle } from './bubble-routing.js';
+import { runClaude } from './claude-cli.js';
+import { ASR_MODELS, KWS_MODEL, VAD_MODEL, installVoiceModels, missingVoiceModels, voiceModelPaths } from './voice/models.js';
+import { otherRecorders, parsePwDump } from './voice/meeting.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, editProblem, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
@@ -78,7 +92,7 @@ import { fallbackMessage } from './manager-voice.js';
 import { loadConfig, saveConfig } from './config-store.js';
 import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
-import { VOICES } from './sherpa-installer.js';
+import { VOICES, speechLang } from './sherpa-installer.js';
 import { THEMES, PALETTES, backgroundFor } from './themes.js';
 import { PANEL_SCALE, clampScale, panelSizeForScale } from './panel-size.js';
 import {
@@ -108,7 +122,7 @@ import {
   PROJECT_RULES_FILE,
 } from './paths.js';
 import {
-  UPDATE_DONE_PHRASE,
+  updateDonePhrase,
   shouldAnnounce,
   shouldAutoApply,
   updateAnnouncement,
@@ -189,10 +203,15 @@ function autoSetupBridgeOnWayland() {
     .then((result) => {
       cachedDriver = null; // pick the bridge up on the next focus click
       if (!result.ran) return;
+      const english = spokenLang() === 'en';
       speakAsManager(
         result.active
-          ? 'Instalei a ponte do GNOME! Agora eu te levo direto pra aba do teu chat.'
-          : 'Instalei a ponte do GNOME! Sai e entra da sessão que aí eu alcanço teu terminal.',
+          ? english
+            ? 'I installed the GNOME bridge! Now I take you straight to your chat tab.'
+            : 'Instalei a ponte do GNOME! Agora eu te levo direto pra aba do teu chat.'
+          : english
+            ? 'I installed the GNOME bridge! Log out and back in so I can reach your terminal.'
+            : 'Instalei a ponte do GNOME! Sai e entra da sessão que aí eu alcanço teu terminal.',
       );
       sendToRenderer('tooltip', {
         projectName: 'Vizor',
@@ -364,6 +383,21 @@ const registry = new SessionRegistry({
   folderAliasFor: (cwd) => managerConfig.folderAliases[cwd] ?? null,
 });
 let managerConfig = loadConfig(configFile);
+tts.setAudioOutput(managerConfig.audioOutput);
+
+// Voice mode state (#161), declared up here: speakAsManager and sendState
+// read it, and they run long before the voice section below.
+const voiceSherpaDir = path.join(configDir, 'sherpa');
+let voiceListener = null;
+let voiceArbiter = null;
+let voiceSession = null;
+let micWindow = null;
+let micDevices = []; // what the mic window found, for the settings picker
+let chromiumOutputs = []; // the outputs as Chromium names them, for the bubble chimes
+let voiceState = 'off';
+let voiceDownload = null; // { percent } | { error } while the models come down
+let voiceRestarts = 0;
+let meetingTimer = null;
 
 const rulesStore = createRulesStore({
   dir: rulesDir,
@@ -379,6 +413,7 @@ const guardAsks = createGuardAsks({
   onChange: () => {
     sendState();
     updateNotificationHalo();
+    if (guardAsks.pending().length === 0) voiceSession?.onGuardAnswered();
   },
   // An equal ask answered along with the one the user saw.
   onReleased: (request, choice) => recordGuardOutcome({ ...request, summary: guardSummary(request) }, GUARD_OUTCOMES[choice]),
@@ -427,12 +462,14 @@ function onGuardMessage(message, reply) {
 
 function announceGuardAsk(ask) {
   // The balloon announces; the choices live in the panel and the workspace.
+  // In voice mode the session speaks it (priority 2) and takes the answer.
+  if (voiceSession) voiceSession.onGuardAsk({ speech: guardSpeech(ask, spokenLang()) });
   sendToRenderer('tooltip', {
     projectName: path.basename(ask.cwd ?? '') || 'Claude',
     text: ask.summary,
     kind: 'guard',
     sessionId: null,
-    speech: guardSpeech(ask),
+    speech: voiceSession ? null : guardSpeech(ask, spokenLang()),
   });
   showTooltip();
 }
@@ -501,10 +538,15 @@ function sendState() {
     sessions: listWithDisplayNames(),
     guardAsks: guardAsks.pending(),
     guard: guardStatus(),
+    voice: voiceStatus(),
     unread: registry.unreadCount(),
     update: updateStatus,
     hint: lastHint,
     voiceDownloading: tts.downloadingVoice(),
+    // The bubble speaks the alert lines: it must hear about a voice change.
+    voiceLang: speechLang(managerConfig.voice),
+    // ...and plays the chimes: on the output pinned in the tray menu.
+    audioSinkId: chromiumSinkId(chromiumOutputs, managerConfig.audioOutput),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
     trayAvailable: Boolean(tray),
@@ -531,8 +573,18 @@ function sendState() {
   pushWorkspaceState();
 }
 
+// What the Vizor says follows the chosen voice's language (#161).
+function spokenLang() {
+  return speechLang(managerConfig.voice);
+}
+
 function speakAsManager(text) {
   if (!managerConfig.ttsEnabled) return;
+  // In voice mode one arbiter decides who speaks when (#161).
+  if (voiceArbiter) {
+    voiceArbiter.say({ text, priority: 4, source: 'manager' });
+    return;
+  }
   const volume = Math.round((managerConfig.voiceVolume * managerConfig.soundVolume) / 100);
   tts.speak(text, { voice: managerConfig.voice, volume });
 }
@@ -561,7 +613,7 @@ function onUpdateStatus(status) {
     setFloatAboveEverything(!status.installing);
     if (status.installing) hideOverlay();
   }
-  const phrase = updateAnnouncement(previous, status, managerConfig.autoUpdate);
+  const phrase = updateAnnouncement(previous, status, managerConfig.autoUpdate, spokenLang());
   if (phrase) speakAsManager(phrase);
   const version = status.ready ?? status.available;
   if (version && announcedUpdateVersion !== version) {
@@ -1051,6 +1103,17 @@ function applyShortcuts() {
       openPanel();
       sendToRenderer('ui:open-chat');
     },
+    // Electron sees a press, never a release: press to talk, silence closes.
+    voiceTalk: () => voiceListener?.wake(),
+    voiceMute: () => {
+      if (!voiceListener) return;
+      const muting = voiceState !== 'muted';
+      voiceListener.mute(muting);
+      // Muted means the microphone is off, OS indicator included.
+      micWindow?.webContents.send('mic:control', muting ? 'stop' : 'start');
+      const lines = spokenLang() === 'en' ? ['Mic muted.', 'Mic back on.'] : ['Microfone mudo.', 'Microfone de volta.'];
+      voiceArbiter?.say({ text: muting ? lines[0] : lines[1], priority: 1 });
+    },
   };
   shortcutFailures = [];
   for (const [id, accelerator] of Object.entries(managerConfig.shortcuts ?? {})) {
@@ -1080,13 +1143,39 @@ function refreshTrayMenu() {
     workspace: () => workspaceWindow?.show(),
     rules: () => openRulesWindow(),
   };
-  const template = trayMenuTemplate({
-    bubbleVisible: bubbleVisible(),
-    workspace: Boolean(workspaceWindow),
-  }).map((item) =>
-    item.id ? { ...item, click: actions[item.id] } : item,
-  );
+  // mic:<n> / output:<n> pick a listed device, the default clears the pin.
+  const pick = (id) => {
+    const [kind, which] = id.split(':');
+    if (which === 'pinned' || which === 'none') return;
+    if (kind === 'mic') applyConfig({ voiceMic: which === 'default' ? null : micDevices[Number(which)] ?? null });
+    if (kind === 'output') applyConfig({ audioOutput: which === 'default' ? null : audioOutputs[Number(which)] ?? null });
+  };
+  const wire = (item) => {
+    if (item.submenu) return { ...item, submenu: item.submenu.map(wire) };
+    if (!item.id) return item;
+    return { ...item, click: actions[item.id] ?? (() => pick(item.id)) };
+  };
+  const audio =
+    process.platform === 'linux'
+      ? { mics: micDevices, mic: managerConfig.voiceMic ?? null, outputs: audioOutputs, output: managerConfig.audioOutput ?? null }
+      : null;
+  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible(), workspace: Boolean(workspaceWindow), audio }).map(wire);
   tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+// The outputs for the tray menu, from PipeWire; re-read every few seconds so
+// a headset plugged in shows up (Linux only, where the voice runs).
+let audioOutputs = [];
+async function refreshAudioOutputs() {
+  try {
+    const next = listSinks(parsePwDump(await runText('pw-dump', [])));
+    if (JSON.stringify(next) === JSON.stringify(audioOutputs)) return;
+    audioOutputs = next;
+    log(`audio outputs: ${next.map((sink) => sink.label).join(' | ') || 'none'}`);
+    refreshTrayMenu();
+  } catch {
+    // no pw-dump: the menu keeps the system default only
+  }
 }
 
 // Hiding into the tray is only offered where an icon can actually appear.
@@ -1306,13 +1395,23 @@ async function generateVoiceForStop(session) {
   // pending ask found here is shown too instead of being discarded.
   registry.setQuestion(session.id, snapshot.pendingQuestion);
   registry.setLastMessage(session.id, digestMessage(snapshot.lastAssistantMessage));
+  // The chat bound to the voice answers in its own words, not the gerente's
+  // alert — and no tokens go to the alert (#161).
+  const bound = voiceSession?.target();
+  if (bound?.kind === 'chat' && bound.sessionId === session.id) {
+    await voiceSession.onSessionStop({ id: session.id, lastMessage: snapshot.lastAssistantMessage });
+    return;
+  }
   let voice;
-  if (isEconomyMode()) {
-    voice = fallbackMessage(displayNameOf(session));
+  // Mid-conversation, another chat finishing is a short fixed line: no
+  // Haiku tokens for an alert that only interrupts (#161).
+  if (isEconomyMode() || voiceArbiter?.inConversation()) {
+    voice = fallbackMessage(displayNameOf(session), Math.random, spokenLang());
   } else {
     voice = await generateManagerMessage({
       projectName: displayNameOf(session),
       lastAssistantMessage: snapshot.lastAssistantMessage,
+      lang: spokenLang(),
     });
     tokenBudget.add(voice.tokensUsed);
   }
@@ -1466,6 +1565,7 @@ function pushWorkspaceStateNow() {
     terminals: ptyHost?.list() ?? [],
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
+    voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -1575,8 +1675,8 @@ function linkedSession(sessionId) {
 }
 
 // kind: 'shell' | 'claude' | 'resume' (with sessionId) — #154.
-function openTerminal({ cwd, kind, sessionId }) {
-  const { command, error: invalid } = terminalCommand({ kind, sessionId });
+function openTerminal({ cwd, kind, sessionId, prompt = null }) {
+  const { command, error: invalid } = terminalCommand({ kind, sessionId, prompt });
   if (invalid) return { error: invalid };
   if (!isDirectory(cwd)) return { error: 'pasta não existe' };
   const { host, error } = ensurePtyHost();
@@ -2152,7 +2252,11 @@ ipcMain.on('workspace:selected', (event, sessionId) => {
 
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
 function onToolEvent(event) {
+  // Bash/Task/Agent come through for the voice narration only (#161).
+  if (!EDIT_TOOLS.has(event?.tool_name)) return;
   editPipeline
     .push(event)
     .then((edit) => {
@@ -2199,6 +2303,13 @@ function onHookEvent(event, reply) {
     return;
   }
   event = verifiedTerm(event);
+  // A chat the voice opened for a task: its first event names its session.
+  const newChat = event?.term?.VIZOR_PTY_ID && pendingNewChats.get(event.term.VIZOR_PTY_ID);
+  if (newChat && event.session_id) {
+    pendingNewChats.delete(event.term.VIZOR_PTY_ID);
+    newChat({ sessionId: event.session_id });
+  }
+  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') voiceSession?.onToolEvent(event);
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
   for (const [ptyId, sessionId] of resumedChats) if (sessionId === event?.session_id) resumedChats.delete(ptyId);
@@ -2210,7 +2321,7 @@ function onHookEvent(event, reply) {
     event = {
       ...event,
       permissionAsk: isPermissionAsk(event.message),
-      message: humanizeNotification(event.message),
+      message: humanizeNotification(event.message, Math.random, spokenLang()),
     };
   }
   // Task boundaries ride the same per-session chain as the edits, so an
@@ -2312,6 +2423,10 @@ ipcMain.on('tts:speak', (_event, payload) => {
   const text = String(payload?.text ?? payload ?? '').slice(0, 300);
   if (!text) return;
   const volume = Number.isFinite(payload?.volume) ? payload.volume : 100;
+  if (voiceArbiter) {
+    voiceArbiter.say({ text, priority: 4, source: 'alert' });
+    return;
+  }
   tts.stopSpeaking();
   try {
     tts.speak(text, { voice: managerConfig.voice, volume });
@@ -2355,13 +2470,14 @@ ipcMain.handle('config:get', () => ({
     value,
     label: spec.label,
   })),
-  voices: Object.entries(VOICES).map(([value, spec]) => ({ value, label: spec.label })),
+  voices: Object.entries(VOICES).map(([value, spec]) => ({ value, label: spec.label, lang: spec.lang })),
   themes: Object.entries(THEMES).map(([value, spec]) => ({ value, label: spec.label })),
   palettes: Object.entries(PALETTES).map(([value, spec]) => ({ value, label: spec.label })),
   panelScaleRange: PANEL_SCALE,
 }));
 
-ipcMain.handle('config:set', (_event, partial) => {
+// The settings window and the tray menu both change the config through here.
+function applyConfig(partial) {
   const allowed = {};
   if (typeof partial?.terminal === 'string') allowed.terminal = partial.terminal;
   if (typeof partial?.voice === 'string' && VOICES[partial.voice]) allowed.voice = partial.voice;
@@ -2389,6 +2505,15 @@ ipcMain.handle('config:set', (_event, partial) => {
   if (partial?.shortcuts && typeof partial.shortcuts === 'object') {
     allowed.shortcuts = sanitizeShortcuts(partial.shortcuts, managerConfig.shortcuts);
   }
+  if (typeof partial?.voiceEnabled === 'boolean') allowed.voiceEnabled = partial.voiceEnabled;
+  if (partial?.voiceModel === 'parakeet' || partial?.voiceModel === 'base') allowed.voiceModel = partial.voiceModel;
+  if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
+  if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
+  if (partial && 'voiceMic' in partial) allowed.voiceMic = normalizeMic(partial.voiceMic);
+  if (partial && 'audioOutput' in partial) allowed.audioOutput = normalizeOutput(partial.audioOutput);
+  const micChanged = 'voiceMic' in allowed && JSON.stringify(allowed.voiceMic) !== JSON.stringify(managerConfig.voiceMic ?? null);
+  const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
+    ('voiceModel' in allowed && allowed.voiceModel !== managerConfig.voiceModel);
   // Not config state: the OS holds the truth, so the flag is applied and
   // re-read instead of saved.
   if (typeof partial?.autostart === 'boolean') {
@@ -2399,16 +2524,28 @@ ipcMain.handle('config:set', (_event, partial) => {
     }
   }
   managerConfig = { ...managerConfig, ...allowed };
+  if ('audioOutput' in allowed) tts.setAudioOutput(managerConfig.audioOutput);
+  if ('audioOutput' in allowed || 'voiceMic' in allowed) refreshTrayMenu();
+  if ('audioOutput' in allowed && managerConfig.audioOutput && !chromiumSinkId(chromiumOutputs, managerConfig.audioOutput))
+    log(`audio output: no Chromium match for "${managerConfig.audioOutput.label}" (${chromiumOutputs.map((device) => device.label).join(' | ')}) — chimes stay on the default`);
+  // Muted by voice, the mic stays off: it only learns which one to open next.
+  if (micChanged)
+    micWindow?.webContents.send('mic:control', { command: voiceState === 'muted' ? 'stop' : 'restart', mic: managerConfig.voiceMic });
   try {
     saveConfig(configFile, managerConfig);
   } catch (error) {
     log(`config save failed: ${error}`);
   }
+  if (voiceRestart) {
+    stopVoice();
+    if (managerConfig.voiceEnabled) enableVoice();
+  }
   sendState();
   if (allowed.panelScale && overlayMode === 'panel') showOverlay('panel', { focus: true });
   if (allowed.panelScale && settingsVisible()) openSettingsWindow();
   // Speaking the sample also pulls the model when it is not there yet.
-  if (allowed.voice) tts.speak('Voz trocada. Agora eu falo assim!', { voice: allowed.voice });
+  if (allowed.voice)
+    tts.speak(speechLang(allowed.voice) === 'en' ? 'Voice switched. This is how I sound now!' : 'Voz trocada. Agora eu falo assim!', { voice: allowed.voice });
   if (allowed.shortcuts) {
     applyShortcuts();
     sendState(); // failures are only known after the re-register
@@ -2417,7 +2554,9 @@ ipcMain.handle('config:set', (_event, partial) => {
   // now instead of on the first spoken line.
   if (allowed.ttsEnabled === true) tts.predownloadVoice(managerConfig.voice);
   return managerConfig;
-});
+}
+
+ipcMain.handle('config:set', (_event, partial) => applyConfig(partial));
 
 // Remembers the exact window title each session was last found under, so the
 // next hunt hits it instantly instead of cycling tabs again.
@@ -2471,7 +2610,7 @@ function sessionFocusTarget(session) {
 let lastHint = null;
 
 function announceHint(hint) {
-  const parts = hintAnnouncement(hint);
+  const parts = hintAnnouncement(hint, spokenLang());
   if (!parts) return;
   lastHint = { key: hint.key, title: hint.title, body: hint.body };
   sendToRenderer('tooltip', parts.tooltip);
@@ -3246,6 +3385,540 @@ function bootSyncRules() {
   });
 }
 
+// --- Voice (#161) -------------------------------------------------------------
+// Linux only in v1. The engine runs in a worker thread; a hidden window owns
+// the microphone; nothing is recorded.
+
+function voiceAvailable() {
+  return process.platform === 'linux';
+}
+
+function onVoiceUtterance(text) {
+  log(`voice: "${text}"`);
+  voiceSession?.onUtterance(text).catch((error) => {
+    log(`voice failed: ${error?.stack ?? error}`);
+    voiceArbiter?.say({ text: spokenLang() === 'en' ? 'Something went wrong here; check the log.' : 'Deu erro aqui; olha o log.', priority: 1 });
+  });
+}
+
+// --- Voice session (#161): what an utterance does --------------------------
+const voiceDir = path.join(configDir, 'voz');
+const vocabularyStore = createVocabularyStore({
+  dir: path.join(voiceDir, 'vocabulario'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const taskLinks = createTaskLinks({
+  file: path.join(voiceDir, 'tasks.json'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const VOCABULARY_MAX_AGE_MS = 24 * 3600 * 1000;
+const voiceScanning = new Set();
+const voiceInfoCache = new Map(); // sessionId → { title, lastMessage, cwd }
+const pendingNewChats = new Map(); // pty id → resolve({ sessionId })
+let lastGhDigest = null;
+
+const runText = async (command, args, options = {}) => (await execFileAsync(command, args, { maxBuffer: 1e7, timeout: 15000, ...options })).stdout;
+
+function voiceProject() {
+  const focused = ptyHost?.list().find((terminal) => terminal.id === activeTerminalId)?.cwd ?? null;
+  const target = voiceSession?.target();
+  const boundCwd = target?.kind === 'chat' ? (registry.sessions.get(target.sessionId)?.cwd ?? voiceInfoCache.get(target.sessionId)?.cwd ?? null) : null;
+  return resolveProject({ focusedCwd: focused, boundCwd, projects: workspaceProjects() });
+}
+
+function voiceRoot() {
+  return voiceProject().root ?? workspaceProjects()[0] ?? null;
+}
+
+let vocabularySentFor = null; // `${root}:${scannedAt}:${learned}` last handed to the worker
+
+// The voice worker corrects transcripts with the focused project's names.
+function syncVoiceVocabulary({ force = false } = {}) {
+  const root = voiceRoot();
+  if (!voiceListener || !root) return;
+  refreshVocabulary(root);
+  const data = vocabularyStore.load(root);
+  const signature = `${root}:${data.scannedAt}:${data.learned.length}`;
+  if (!force && signature === vocabularySentFor) return;
+  vocabularySentFor = signature;
+  voiceListener.setVocabulary(data.terms, data.learned);
+}
+
+function refreshVocabulary(root) {
+  if (!root || voiceScanning.has(root)) return;
+  if (Date.now() - vocabularyStore.load(root).scannedAt < VOCABULARY_MAX_AGE_MS) return;
+  voiceScanning.add(root);
+  scanVocabulary({ root, run: runText })
+    .then(({ terms }) => {
+      vocabularyStore.save(root, { terms, scannedAt: Date.now() });
+      syncVoiceVocabulary();
+    })
+    .catch((error) => log(`vocabulary scan failed: ${error}`))
+    .finally(() => voiceScanning.delete(root));
+}
+
+async function voiceGhDigest() {
+  const root = voiceRoot();
+  const english = spokenLang() === 'en';
+  if (!root) return { speech: english ? 'Open a project in the workspace first.' : 'Abra um projeto no workspace primeiro.', lines: [] };
+  try {
+    const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
+    const repo = githubRepoOf(remote);
+    if (!repo) return { speech: english ? "This project isn't on GitHub." : 'Esse projeto não está no GitHub.', lines: [] };
+    let defaultBranch = 'main';
+    try {
+      defaultBranch = (await runText('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: root })).trim().replace(/^[^/]+\//, '') || 'main';
+    } catch {
+      // no origin/HEAD: main
+    }
+    const results = {};
+    await Promise.all(
+      Object.entries(ghQueries(repo, defaultBranch)).map(async ([key, args]) => {
+        results[key] = JSON.parse(await runText('gh', args, { cwd: root }));
+      }),
+    );
+    lastGhDigest = buildDigest(results, spokenLang());
+    lastGhDigestAt = Date.now();
+  } catch (error) {
+    log(`gh digest failed: ${error}`);
+    lastGhDigest = buildDigest({ error: String(error) }, spokenLang());
+  }
+  return lastGhDigest;
+}
+
+async function voiceResolveTask(number) {
+  const root = voiceRoot();
+  if (!root) return { none: true };
+  const worktrees = worktreeCache.get(root) ?? (await listWorktrees(root).catch(() => [])) ?? [];
+  const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
+  const conversations = [];
+  for (const folder of folders) {
+    for (const conversation of await listConversations(claudeProjectDir(folder), { limit: 200 }))
+      conversations.push({ ...conversation, cwd: folder });
+  }
+  const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees });
+  if (found.sessionId) {
+    const snapshot = await readTranscriptSnapshot(claudeTranscriptPath(found.cwd, found.sessionId)).catch(() => null);
+    const title = conversations.find((item) => item.sessionId === found.sessionId)?.title ?? null;
+    voiceInfoCache.set(found.sessionId, { title, lastMessage: snapshot?.lastAssistantMessage ?? null, cwd: found.cwd });
+  }
+  return found;
+}
+
+function ptyOfSession(sessionId) {
+  const session = registry.sessions.get(sessionId);
+  if (session?.term?.VIZOR_PTY_ID && ptyHost?.list().some((terminal) => terminal.id === session.term.VIZOR_PTY_ID && terminal.alive))
+    return session.term.VIZOR_PTY_ID;
+  for (const [ptyId, resumed] of resumedChats) if (resumed === sessionId) return ptyId;
+  return null;
+}
+
+async function voiceOpenOrFocus({ sessionId, cwd }) {
+  workspaceWindow?.show();
+  if (!ptyOfSession(sessionId)) {
+    const live = readLiveSessionIds();
+    if (live?.has(sessionId)) {
+      // Running in another terminal: two processes on one history would be
+      // worse than not opening it.
+      const outside = registry.sessions.get(sessionId);
+      if (outside) huntSessionTab(outside).catch?.((error) => log(`voice focus failed: ${error}`));
+      return { sessionId };
+    }
+    const opened = openTerminal({ cwd, kind: 'resume', sessionId });
+    if (opened.error) log(`voice resume failed: ${opened.error}`);
+  }
+  setTimeout(() => workspaceWindow?.focusSession(sessionId), 400);
+  return { sessionId };
+}
+
+function voiceOpenNew({ cwd, prompt }) {
+  workspaceWindow?.show();
+  const opened = openTerminal({ cwd, kind: 'claude', prompt });
+  if (opened.error) return Promise.resolve({ sessionId: null });
+  return new Promise((resolve) => {
+    pendingNewChats.set(opened.id, resolve);
+    setTimeout(() => {
+      if (pendingNewChats.delete(opened.id)) resolve({ sessionId: null });
+    }, 30000);
+  });
+}
+
+// The same rule as the 💬 comments: type into the tab only between turns and
+// only when its own claude is the job in front; otherwise wait for the turn.
+const PROMPT_ENTER_DELAY_MS = 150;
+async function voiceDeliverPrompt(sessionId, text) {
+  if (!sessionId) return 'failed';
+  const ptyId = ptyOfSession(sessionId);
+  if (!ptyId) return 'failed';
+  const session = registry.sessions.get(sessionId) ?? { id: sessionId, status: 'done' };
+  if (!safeToTypeIdle(session, Date.now()) || !claudeInPty(session, ptyId)) return 'hold';
+  ptyHost.write(ptyId, bracketedPaste(text));
+  await new Promise((resolve) => setTimeout(resolve, PROMPT_ENTER_DELAY_MS));
+  if (!claudeInPty(session, ptyId)) return 'failed';
+  ptyHost.write(ptyId, '\r');
+  return 'sent';
+}
+
+const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
+let lastGhDigestAt = 0;
+
+// The gerente has no tools of its own: it gets the project's GitHub state
+// with the question (live test: "não tenho acesso ao GitHub").
+async function voiceAskManager(text) {
+  if (!lastGhDigest || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
+  const github = lastGhDigest
+    ? `\n\n(Estado do GitHub do projeto agora — use pra responder: ${lastGhDigest.speech}${lastGhDigest.lines.length ? ` Detalhes: ${lastGhDigest.lines.slice(0, 20).join('; ')}` : ''})`
+    : '';
+  const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}`, lang: spokenLang() });
+  tokenBudget.add(tokensUsed);
+  return reply;
+}
+
+async function voiceSummarize(plain) {
+  if (isEconomyMode()) return null;
+  const result = await runClaude({
+    prompt:
+      spokenLang() === 'en'
+        ? `Summarize in at most two short sentences, in American English, to be spoken aloud, no markdown and no code. The text may be in Portuguese:\n\n${plain.slice(0, 4000)}`
+        : `Resuma em no máximo duas frases curtas, em pt-BR, pra ser falado em voz alta, sem markdown e sem código:\n\n${plain.slice(0, 4000)}`,
+    timeoutMs: 15000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  return result?.text?.trim() || null;
+}
+
+function voiceAnswerGuard(choice) {
+  const ask = guardAsks.pending().at(-1);
+  if (!ask) return false;
+  const request = guardAsks.answer(ask.id, choice);
+  if (request) recordGuardOutcome({ ...request, summary: ask.summary }, GUARD_OUTCOMES[choice] ?? choice);
+  return Boolean(request);
+}
+
+function voiceFindChat(query) {
+  const wanted = String(query ?? '').toLowerCase();
+  const number = Number(wanted);
+  const root = voiceRoot();
+  if (Number.isInteger(number) && number > 0 && root) {
+    const linked = taskLinks.linksFor(root, number).find((id) => registry.sessions.has(id) || voiceInfoCache.has(id));
+    if (linked) return linked;
+  }
+  const match = listWithDisplayNames().find((session) =>
+    [session.displayName, session.title, session.promptPreview, session.cwd && path.basename(session.cwd)]
+      .filter(Boolean)
+      .some((name) => String(name).toLowerCase().includes(wanted)),
+  );
+  return match?.id ?? null;
+}
+
+function voiceSessionInfo(sessionId) {
+  const session = registry.sessions.get(sessionId);
+  const cached = voiceInfoCache.get(sessionId) ?? {};
+  return {
+    title: session?.title ?? cached.title ?? (session ? displayNameOf(session) : null),
+    lastMessage: session?.lastMessage ?? cached.lastMessage ?? null,
+    cwd: session?.cwd ?? cached.cwd ?? null,
+  };
+}
+
+function createVoiceSessionForApp() {
+  return createVoiceSession({
+    say: (item) => voiceArbiter?.say(item),
+    flushSpeech: () => voiceArbiter?.flush(),
+    // Corrected in the voice worker already (heavy on a big repo); here
+    // only a project switch is noticed so the worker gets its names.
+    correct: (text) => {
+      syncVoiceVocabulary();
+      return { text };
+    },
+    ghDigest: voiceGhDigest,
+    showLines: (lines) => {
+      if (!lines.length) return;
+      sendToRenderer('tooltip', { projectName: 'GitHub', text: lines.slice(0, 8).join(' · '), kind: 'hint', sessionId: null });
+      showTooltip();
+    },
+    resolveTask: voiceResolveTask,
+    openOrFocus: voiceOpenOrFocus,
+    openNew: voiceOpenNew,
+    linkTask: (number, sessionId) => {
+      const root = voiceRoot();
+      if (root && sessionId) taskLinks.link(root, number, sessionId);
+    },
+    sessionInfo: voiceSessionInfo,
+    deliverPrompt: voiceDeliverPrompt,
+    askManager: voiceAskManager,
+    answerGuard: voiceAnswerGuard,
+    workspace: (action, file) => {
+      workspaceWindow?.show();
+      workspaceWindow?.send('workspace:voice', { action, file: file ?? null });
+    },
+    summarize: voiceSummarize,
+    economy: () => isEconomyMode(),
+    learn: (pair) => {
+      const root = voiceRoot();
+      if (root) vocabularyStore.learn(root, pair);
+      syncVoiceVocabulary({ force: true });
+    },
+    findChat: voiceFindChat,
+    dictation: (on) => voiceListener?.dictation(on),
+    keepListening: () => voiceListener?.wake(),
+    projectRoot: () => voiceRoot(),
+    settings: () => ({ narration: managerConfig.voiceNarration !== false, summary: managerConfig.voiceSummary ?? 'always' }),
+    lang: spokenLang,
+  });
+}
+
+function voiceStatus() {
+  const target = voiceSession?.target();
+  const title = target?.kind === 'chat' ? voiceSessionInfo(target.sessionId).title : null;
+  return {
+    available: voiceAvailable(),
+    enabled: Boolean(managerConfig.voiceEnabled),
+    state: voiceState,
+    model: managerConfig.voiceModel ?? 'parakeet',
+    narration: managerConfig.voiceNarration !== false,
+    summary: managerConfig.voiceSummary ?? 'always',
+    mic: managerConfig.voiceMic ?? null,
+    mics: micDevices,
+    download: voiceDownload,
+    target: target?.kind === 'chat' ? `chat ${title ? title.slice(0, 40) : ''}`.trim() : voiceListener ? 'gerente' : null,
+  };
+}
+
+// Turned on: the models come down first (with progress), then it listens.
+function enableVoice() {
+  if (!voiceAvailable() || !managerConfig.voiceEnabled) return;
+  const model = managerConfig.voiceModel ?? 'parakeet';
+  if (!missingVoiceModels(voiceSherpaDir, model).length) {
+    startVoice();
+    return;
+  }
+  if (voiceDownload && !voiceDownload.error) return;
+  const sizes = { kws: KWS_MODEL.approxMB, vad: VAD_MODEL.approxMB, [ASR_MODELS[model].id]: ASR_MODELS[model].approxMB };
+  const total = Object.values(sizes).reduce((sum, size) => sum + size, 0);
+  const received = {};
+  voiceDownload = { percent: 0 };
+  sendState();
+  let lastPush = 0;
+  installVoiceModels(voiceSherpaDir, model, {
+    onProgress: ({ id, received: bytes, total: size }) => {
+      received[id] = size ? (bytes / size) * (sizes[id] ?? 0) : 0;
+      voiceDownload = { percent: Math.min(99, Math.round((100 * Object.values(received).reduce((sum, mb) => sum + mb, 0)) / total)) };
+      if (Date.now() - lastPush > 500) {
+        lastPush = Date.now();
+        sendState();
+      }
+    },
+  })
+    .then(() => {
+      voiceDownload = null;
+      log('voice: models installed');
+      startVoice();
+      sendState();
+    })
+    .catch((error) => {
+      voiceDownload = { error: String(error?.message ?? error) };
+      log(`voice models failed: ${error}`);
+      sendState();
+    });
+}
+
+// Another app recording the mic (a call) pauses listening (#161).
+async function checkMeeting() {
+  if (!voiceListener) return;
+  try {
+    const dump = parsePwDump(await runText('pw-dump', []));
+    if (!dump) return; // a garbled dump is not a reason to stop watching
+    const ours = new Set(app.getAppMetrics().map((metric) => metric.pid));
+    const others = otherRecorders(dump, ours);
+    const inMeeting = others.length > 0;
+    if (inMeeting !== (voiceState === 'meeting')) {
+      log(`voice: ${inMeeting ? `paused, ${others.join(', ')} is recording` : 'back from the meeting'}`);
+      voiceListener.meeting(inMeeting);
+    }
+  } catch (error) {
+    // no pw-dump: no meeting detection on this machine
+    clearInterval(meetingTimer);
+    meetingTimer = null;
+    log(`voice: meeting detection off (${error?.message ?? error})`);
+  }
+}
+
+ipcMain.handle('voice:vocabulary', () => {
+  const root = voiceRoot();
+  if (!root) return { root: null, terms: 0, learned: [] };
+  const data = vocabularyStore.load(root);
+  return { root, project: path.basename(root), terms: data.terms.length, learned: data.learned, scanning: voiceScanning.has(root) };
+});
+ipcMain.handle('voice:unlearn', (_event, heard) => {
+  const root = voiceRoot();
+  if (root && typeof heard === 'string') vocabularyStore.unlearn(root, heard);
+  syncVoiceVocabulary({ force: true });
+  return true;
+});
+ipcMain.handle('voice:rescan', () => {
+  const root = voiceRoot();
+  if (!root) return false;
+  vocabularyStore.save(root, { terms: vocabularyStore.load(root).terms, scannedAt: 0 });
+  refreshVocabulary(root);
+  return true;
+});
+
+function createMicWindow() {
+  micWindow = new BrowserWindow({
+    show: false,
+    width: 200,
+    height: 100,
+    webPreferences: { preload: path.join(rendererDir, 'mic-preload.cjs'), contextIsolation: true, backgroundThrottling: false },
+  });
+  micWindow.webContents.once('did-finish-load', () =>
+    micWindow?.webContents.send('mic:control', { command: 'start', mic: managerConfig.voiceMic ?? null }),
+  );
+  micWindow.loadFile(path.join(rendererDir, 'mic.html'));
+}
+
+function startVoice() {
+  if (voiceListener || !voiceAvailable() || !managerConfig.voiceEnabled) return;
+  const model = managerConfig.voiceModel ?? 'parakeet';
+  const missing = missingVoiceModels(voiceSherpaDir, model);
+  if (missing.length) {
+    voiceState = 'sem-modelos';
+    log(`voice: models missing (${missing.join(', ')})`);
+    enableVoice();
+    return;
+  }
+  const worker = new Worker(new URL('./voice/worker.js', import.meta.url), {
+    workerData: { paths: voiceModelPaths(voiceSherpaDir, model) },
+  });
+  worker.on('error', (error) => log(`voice worker failed: ${error}`));
+  // A dead engine must not leave the voice "listening" and deaf: restart it,
+  // a few times, waiting longer each time.
+  worker.on('exit', (code) => {
+    if (!voiceListener || appQuitting) return;
+    log(`voice worker exited (${code})`);
+    stopVoice();
+    voiceRestarts += 1;
+    if (voiceRestarts > 3) {
+      voiceState = 'erro';
+      sendState();
+      return;
+    }
+    setTimeout(() => {
+      if (managerConfig.voiceEnabled) startVoice();
+    }, 2000 * voiceRestarts);
+  });
+  worker.on('message', (message) => {
+    if (message?.type === 'error') log(`voice: ${message.error}`);
+    if (message?.type === 'ready') log('voice: engine ready');
+  });
+  voiceListener = createListener({ worker });
+  voiceArbiter = createSpeechArbiter({
+    lang: spokenLang,
+    speak: (text, item) =>
+      new Promise((resolve) => {
+        // The short "ok" does not pause listening, but its own echo must not
+        // count as the user talking: ignored until it played, plus a margin.
+        if (item.kind === 'ack') voiceListener?.ignoreSpeech(30000);
+        else voiceListener?.speakingStarted();
+        const volume = Math.round((managerConfig.voiceVolume * managerConfig.soundVolume) / 100);
+        tts.speak(text, {
+          voice: managerConfig.voice,
+          volume,
+          onDone: () => {
+            if (item.kind === 'ack') voiceListener?.ignoreSpeech(300);
+            resolve();
+          },
+        });
+      }),
+    stop: () => tts.stopSpeaking(),
+  });
+  voiceArbiter.on('quiet', ({ followUp } = {}) => voiceListener?.speakingEnded({ followUp }));
+  voiceListener.on('state', (state) => {
+    voiceState = state;
+    // Held through the grace window too: a line starting there would pause
+    // listening and lose the utterance (only the "ok" passes).
+    voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing' || state === 'grace');
+    sendState();
+  });
+  voiceListener.on('echo', ({ text }) => {
+    sendToRenderer('tooltip', { projectName: 'você disse', text, kind: 'hint', sessionId: null });
+    showTooltip();
+  });
+  // A beep, not a spoken "ok" (live test: the word every time was tiring);
+  // its echo is not the user talking.
+  voiceListener.on('ack', () => {
+    sendToRenderer('chime', { kind: 'beep' });
+    voiceListener?.ignoreSpeech(500);
+  });
+  voiceListener.on('error', (error) => log(`voice engine: ${error}`));
+  voiceListener.on('barge', () => voiceArbiter?.flush());
+  voiceListener.on('cancelled', (payload) => {
+    if (payload?.stopSpeaking) voiceArbiter?.flush();
+  });
+  voiceListener.on('utterance', ({ text }) => {
+    voiceRestarts = 0; // the engine works again
+    voiceArbiter?.noteUserTurn();
+    onVoiceUtterance(text);
+  });
+  voiceSession = createVoiceSessionForApp();
+  vocabularySentFor = null;
+  syncVoiceVocabulary();
+  voiceState = 'sleeping';
+  createMicWindow();
+  meetingTimer = setInterval(checkMeeting, 3000);
+}
+
+function stopVoice() {
+  clearInterval(meetingTimer);
+  meetingTimer = null;
+  voiceSession = null;
+  voiceArbiter?.flush();
+  voiceArbiter = null;
+  voiceListener?.close();
+  voiceListener = null;
+  if (micWindow && !micWindow.isDestroyed()) micWindow.destroy();
+  micWindow = null;
+  voiceState = 'off';
+}
+
+const fromMic = (event) => Boolean(micWindow && !micWindow.isDestroyed() && event.sender === micWindow.webContents);
+ipcMain.on('mic:chunk', (event, samples) => {
+  if (fromMic(event)) voiceListener?.feed(samples);
+});
+ipcMain.on('mic:devices', (event, found) => {
+  if (!fromMic(event)) return;
+  chromiumOutputs = normalizeMicList(found?.outputs);
+  const next = normalizeMicList(found?.mics);
+  if (JSON.stringify(next) !== JSON.stringify(micDevices)) log(`mic devices: ${next.map((mic) => mic.label).join(' | ') || 'none'}`);
+  micDevices = next;
+  sendState();
+  refreshTrayMenu();
+});
+ipcMain.on('mic:status', (event, status) => {
+  if (fromMic(event)) log(`mic: ${status}`);
+});
+
+// The microphone is the mic window's alone; every other permission keeps
+// Electron's default.
+function setupMediaPermissions() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) =>
+    callback(permission !== 'media' || webContents === micWindow?.webContents),
+  );
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) =>
+    permission !== 'media' || webContents === micWindow?.webContents,
+  );
+}
+
 // crossSessionInbound decides what a session does with the quick reply this app
 // sends. It lives in the user's Claude Code settings, so the app only ever
 // writes the user level — a repo or managed setting can still tighten it, and
@@ -3281,7 +3954,7 @@ function announceUpdateIfJustInstalled() {
     return;
   }
   if (!shouldAnnounce(mark, app.getVersion())) return;
-  speakAsManager(UPDATE_DONE_PHRASE);
+  speakAsManager(updateDonePhrase(spokenLang()));
 }
 
 function hydrateRegistry() {
@@ -3311,6 +3984,7 @@ function reapDeadSessions() {
       editTracker.forgetSession(sessionId);
       commentStore.forgetSession(sessionId);
       guardAsks.dropSession(sessionId);
+      voiceSession?.onSessionEnded(sessionId);
     }
 }
 
@@ -3355,7 +4029,13 @@ app.whenReady().then(() => {
   reapDeadSessions();
   createWindows();
   socketServer = startSocketServer(socketPath, onHookEvent, log);
+  setupMediaPermissions();
+  startVoice();
   setupTray();
+  if (process.platform === 'linux') {
+    refreshAudioOutputs();
+    setInterval(refreshAudioOutputs, 10000);
+  }
   registry.on('change', sendState);
   registry.on('change', scheduleCommandRoots);
   registry.on('change', flushHeldComments);
@@ -3414,6 +4094,7 @@ app.on('before-quit', () => {
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
   removeGuardIfOnlineOnly();
+  stopVoice();
   // A question still on screen would end in a deny when the socket closes;
   // "offline" sends it to the terminal's own permission prompt instead.
   guardAsks.releaseAll('offline');

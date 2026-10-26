@@ -144,6 +144,7 @@ window.manager.onSpotted(() => {
 const muteButton = document.getElementById('mute');
 let muted = false;
 let audioContext = null;
+let audioSinkId = ''; // the output pinned in the tray menu, as Chromium names it ("" = default)
 
 function renderMuteButton() {
   muteButton.textContent = muted ? '[mudo]' : '[som]';
@@ -451,7 +452,7 @@ bridgeInstallButton.addEventListener('click', async () => {
   try {
     const result = await window.manager.bridgeInstall();
     if (result.installed && !result.active && ttsEnabled && !muted) {
-      speakSample('Instalei a ponte! Sai e entra da sessão que aí eu alcanço teu terminal.');
+      speakSample(spoken('bridge'));
     }
   } finally {
     bridgeInstallButton.disabled = false;
@@ -482,7 +483,7 @@ volumeInput.addEventListener('change', () => {
 voiceVolumeInput.addEventListener('change', () => {
   voiceVolume = Number(voiceVolumeInput.value);
   window.manager.setConfig({ voiceVolume });
-  speakSample('Volume da voz do gerente.');
+  speakSample(spoken('volume'));
 });
 timbreSelect.addEventListener('change', () => {
   soundTimbre = timbreSelect.value;
@@ -509,8 +510,28 @@ ttsCheckbox.addEventListener('change', () => {
   ttsEnabled = ttsCheckbox.checked;
   window.manager.setConfig({ ttsEnabled });
   renderTtsState();
-  if (ttsEnabled) speakSample('Notificação por voz ativada.');
+  if (ttsEnabled) speakSample(spoken('ttsOn'));
 });
+
+// What the Vizor says follows the voice's language (#161): an English voice
+// speaks English. The screen stays pt-BR.
+let voiceLang = 'pt';
+let voiceLangs = {}; // voice id → its language, from the config
+const SPOKEN = {
+  pt: {
+    bridge: 'Instalei a ponte! Sai e entra da sessão que aí eu alcanço teu terminal.',
+    volume: 'Volume da voz do gerente.',
+    ttsOn: 'Notificação por voz ativada.',
+    test: 'Testando a voz do gerente.',
+  },
+  en: {
+    bridge: 'I installed the bridge! Log out and back in so I can reach your terminal.',
+    volume: "The manager's voice volume.",
+    ttsOn: 'Voice notifications on.',
+    test: "Testing the manager's voice.",
+  },
+};
+const spoken = (key) => (SPOKEN[voiceLang] ?? SPOKEN.pt)[key];
 
 // The manager's voice answers to its own slider and to the master volume.
 function speakSample(text) {
@@ -518,7 +539,7 @@ function speakSample(text) {
 }
 
 document.getElementById('voice-test').addEventListener('click', () => {
-  speakSample('Testando a voz do gerente.');
+  speakSample(spoken('test'));
 });
 
 // Sliders paint their own fill and print the value beside them.
@@ -810,6 +831,99 @@ guardCheckbox.addEventListener('change', () => {
 });
 document.getElementById('open-rules').addEventListener('click', () => window.manager.openRules());
 
+// Settings › voz (#161). Linux only: elsewhere the section and its
+// shortcuts are hidden.
+const VOICE_STATE_TEXT = {
+  off: 'desligada',
+  sleeping: 'esperando "Vizor"',
+  listening: 'ouvindo',
+  closing: 'ouvindo',
+  grace: 'entendi',
+  'paused-speaking': 'falando',
+  muted: 'mudo',
+  meeting: 'pausada: outro app usando o microfone',
+  'sem-modelos': 'baixando os modelos',
+};
+const voiceEnabledBox = document.getElementById('voice-enabled');
+const voiceNarrationBox = document.getElementById('voice-narration');
+const voiceModelSelect = document.getElementById('voice-model');
+const voiceSummarySelect = document.getElementById('voice-summary');
+const voiceMicSelect = document.getElementById('voice-mic');
+let voiceMics = [];
+let pinnedMic = null;
+
+// The mics the mic window found; a pinned one that is unplugged stays listed,
+// marked, so the choice is not lost (the system default covers meanwhile).
+function renderMics(voice) {
+  if (document.activeElement === voiceMicSelect) return;
+  voiceMics = voice.mics ?? [];
+  const pinned = voice.mic;
+  pinnedMic = pinned;
+  const options = [new Option('padrão do sistema', ''), ...voiceMics.map((mic) => new Option(mic.label, mic.id))];
+  if (pinned && !voiceMics.some((mic) => mic.id === pinned.id)) options.push(new Option(`${pinned.label} (desconectado)`, pinned.id));
+  voiceMicSelect.replaceChildren(...options);
+  voiceMicSelect.value = pinned?.id ?? '';
+}
+
+function renderVoice(voice) {
+  if (!voice) return;
+  for (const element of document.querySelectorAll('.voice-only')) element.classList.toggle('hidden', !voice.available);
+  voiceEnabledBox.checked = voice.enabled;
+  document.getElementById('voice-enabled-state').textContent = voice.enabled ? '[on]' : '[off]';
+  voiceNarrationBox.checked = voice.narration;
+  document.getElementById('voice-narration-state').textContent = voice.narration ? '[on]' : '[off]';
+  if (document.activeElement !== voiceModelSelect) voiceModelSelect.value = voice.model;
+  if (document.activeElement !== voiceSummarySelect) voiceSummarySelect.value = voice.summary;
+  renderMics(voice);
+  document.getElementById('voice-mode-status').textContent = `# ${VOICE_STATE_TEXT[voice.state] ?? voice.state}${voice.target ? ` · falando com ${voice.target}` : ''}`;
+  document.getElementById('voice-download').textContent = voice.download?.error
+    ? `# não consegui baixar os modelos: ${voice.download.error}`
+    : voice.download
+      ? `# baixando os modelos… ${voice.download.percent}%`
+      : '# os modelos (~500 MB) baixam ao ligar; nada de áudio sai da máquina';
+  const badge = document.getElementById('voice-badge');
+  badge.classList.toggle('hidden', !voice.enabled);
+  badge.textContent = voice.enabled ? `🎙 ${VOICE_STATE_TEXT[voice.state] ?? voice.state}` : '';
+}
+
+async function renderVocabulary() {
+  const vocabulary = await window.manager.voiceVocabulary();
+  document.getElementById('voice-vocab').textContent = vocabulary.root
+    ? `# ${vocabulary.terms} nomes de ${vocabulary.project}${vocabulary.scanning ? ' (explorando…)' : ''}`
+    : '# abra um projeto no workspace pra ter vocabulário';
+  const list = document.getElementById('voice-learned');
+  list.replaceChildren(
+    ...vocabulary.learned.map(({ heard, meant }) => {
+      const item = document.createElement('li');
+      const text = document.createElement('span');
+      text.textContent = `"${heard}" → ${meant}`;
+      const forget = document.createElement('button');
+      forget.textContent = '[esquecer]';
+      forget.addEventListener('click', async () => {
+        await window.manager.voiceUnlearn(heard);
+        renderVocabulary();
+      });
+      item.append(text, forget);
+      return item;
+    }),
+  );
+}
+
+voiceEnabledBox.addEventListener('change', () => window.manager.setConfig({ voiceEnabled: voiceEnabledBox.checked }));
+voiceNarrationBox.addEventListener('change', () => window.manager.setConfig({ voiceNarration: voiceNarrationBox.checked }));
+voiceModelSelect.addEventListener('change', () => window.manager.setConfig({ voiceModel: voiceModelSelect.value }));
+voiceSummarySelect.addEventListener('change', () => window.manager.setConfig({ voiceSummary: voiceSummarySelect.value }));
+voiceMicSelect.addEventListener('change', () => {
+  const id = voiceMicSelect.value;
+  const label = voiceMics.find((mic) => mic.id === id)?.label ?? (pinnedMic?.id === id ? pinnedMic.label : id);
+  window.manager.setConfig({ voiceMic: id ? { id, label } : null });
+});
+document.getElementById('voice-rescan').addEventListener('click', async () => {
+  await window.manager.voiceRescan();
+  renderVocabulary();
+});
+document.querySelector('[data-section="voz"].nav-item')?.addEventListener('click', renderVocabulary);
+
 const autoUpdateCheckbox = document.getElementById('auto-update');
 const autoUpdateState = document.getElementById('auto-update-state');
 
@@ -862,6 +976,8 @@ window.manager.getConfig().then((config) => {
     );
   }
   voiceSelect.value = config.voice;
+  voiceLangs = Object.fromEntries((config.voices ?? []).map(({ value, lang }) => [value, lang ?? 'pt']));
+  voiceLang = voiceLangs[config.voice] ?? 'pt';
   if (Array.isArray(config.themes) && config.themes.length) {
     themeSelect.replaceChildren(
       ...config.themes.map(({ value, label }) => new Option(label, value)),
@@ -895,6 +1011,7 @@ terminalSelect.addEventListener('change', () => {
 });
 
 voiceSelect.addEventListener('change', () => {
+  voiceLang = voiceLangs[voiceSelect.value] ?? 'pt';
   window.manager.setConfig({ voice: voiceSelect.value });
 });
 
@@ -955,7 +1072,13 @@ function playNote(frequency, startOffset, peakGain) {
 function chime(kind, force = false) {
   if (muted && !force) return;
   try {
-    audioContext ??= new AudioContext();
+    audioContext ??= new AudioContext(audioSinkId ? { sinkId: audioSinkId } : {});
+    // The voice mode's "I heard you" (#161): one short high note, unlike
+    // every alert, so it never reads as "task done".
+    if (kind === 'beep') {
+      playNote(1318.5, 0, 0.12 * (soundVolume / 70));
+      return;
+    }
     const preset = CHIME_PRESETS[soundTimbre] ?? CHIME_PRESETS.marimba;
     const notes = preset[kind] ?? preset.done;
     const typeFactor = (typeVolumes[kind] ?? 100) / 100;
@@ -980,12 +1103,22 @@ window.manager.onChime(({ kind }) => {
 // Spoken notifications stay short and instantly understandable — the full
 // message lives in the tooltip/panel.
 const TTS_PHRASES = {
-  done: (projectName) => `Tarefa concluída no ${projectName}.`,
-  question: (projectName, optionsCount) =>
-    optionsCount > 0
-      ? `Tem uma pergunta no ${projectName} com ${optionsCount} ${optionsCount === 1 ? 'opção' : 'opções'} pra escolher.`
-      : `Tem uma pergunta no ${projectName}.`,
-  waiting: (projectName) => `O chat ${projectName} espera você.`,
+  pt: {
+    done: (projectName) => `Tarefa concluída no ${projectName}.`,
+    question: (projectName, optionsCount) =>
+      optionsCount > 0
+        ? `Tem uma pergunta no ${projectName} com ${optionsCount} ${optionsCount === 1 ? 'opção' : 'opções'} pra escolher.`
+        : `Tem uma pergunta no ${projectName}.`,
+    waiting: (projectName) => `O chat ${projectName} espera você.`,
+  },
+  en: {
+    done: (projectName) => `Task done in ${projectName}.`,
+    question: (projectName, optionsCount) =>
+      optionsCount > 0
+        ? `There's a question in ${projectName} with ${optionsCount} ${optionsCount === 1 ? 'option' : 'options'} to pick from.`
+        : `There's a question in ${projectName}.`,
+    waiting: (projectName) => `The ${projectName} chat is waiting for you.`,
+  },
 };
 
 const toastMark = document.getElementById('toast-mark');
@@ -1017,8 +1150,10 @@ window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId, sp
   if (view === 'bubble' && kind !== 'hint') {
     chime(kind === 'guard' ? 'question' : kind);
     if (ttsEnabled && !muted) {
-      const phrase = TTS_PHRASES[kind] ?? TTS_PHRASES.waiting;
-      speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
+      const phrases = TTS_PHRASES[voiceLang] ?? TTS_PHRASES.pt;
+      const phrase = phrases[kind] ?? phrases.waiting;
+      // A guard card in voice mode is spoken by main (speech is null then).
+      if (kind !== 'guard' || speech) speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
     }
   }
   const alert = kind === 'question' || kind === 'waiting' || kind === 'guard';
@@ -1449,6 +1584,11 @@ sessionsContainer.addEventListener('click', (event) => {
 });
 
 window.manager.onState((state) => {
+  if (state.voiceLang) voiceLang = state.voiceLang;
+  if (typeof state.audioSinkId === 'string' && state.audioSinkId !== audioSinkId) {
+    audioSinkId = state.audioSinkId;
+    audioContext?.setSinkId?.(audioSinkId).catch(() => {});
+  }
   applyTheme(state.theme, state.palette);
   applyCrt(state.crt);
   applyShortcuts(state.shortcuts);
@@ -1463,6 +1603,7 @@ window.manager.onState((state) => {
   renderTrayStatus(state.trayNeedsRelogin);
   renderUsage(state.tokens);
   renderGuardStatus(state.guard);
+  renderVoice(state.voice);
   renderBadge(state.sessions);
   lastUnreadCount = state.unread;
 

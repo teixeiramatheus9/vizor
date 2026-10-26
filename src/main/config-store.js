@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_VOICE } from './sherpa-installer.js';
+import { DEFAULT_VOICE, VOICES } from './sherpa-installer.js';
 import { DEFAULT_THEME, DEFAULT_PALETTE, migrateThemeConfig } from './themes.js';
 import { PANEL_SCALE } from './panel-size.js';
 import { DEFAULT_SHORTCUTS } from './shortcuts.js';
@@ -27,6 +27,12 @@ export const DEFAULT_CONFIG = {
   workspaceProjects: [],
   workspaceDismissed: [],
   guardEnabled: true,
+  voiceEnabled: false,
+  voiceModel: 'parakeet',
+  voiceNarration: true,
+  voiceSummary: 'always',
+  voiceMic: null, // { id, label } pinned in the settings, or null for the system default
+  audioOutput: null, // { name, label } a PipeWire sink pinned in the tray menu, or null
 };
 
 const stringList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);
@@ -37,6 +43,8 @@ export function loadConfig(file) {
     // Hand-edited lists must not break the workspace (#105).
     config.workspaceProjects = stringList(config.workspaceProjects);
     config.workspaceDismissed = stringList(config.workspaceDismissed);
+    // A voice that was dropped (Faber, #161) must not stick in the settings.
+    if (!VOICES[config.voice]) config.voice = DEFAULT_VOICE;
     return config;
   } catch {
     return { ...DEFAULT_CONFIG };

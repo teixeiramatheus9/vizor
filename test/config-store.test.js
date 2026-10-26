@@ -42,4 +42,13 @@ describe('config store', () => {
     expect(config.workspaceProjects).toEqual([]);
     expect(config.workspaceDismissed).toEqual(['/a']);
   });
+
+  it('a voice that no longer exists falls back to the default (#161: Faber was dropped)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cfg-voice-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ voice: 'faber' }));
+    expect(loadConfig(file).voice).toBe(DEFAULT_CONFIG.voice);
+    fs.writeFileSync(file, JSON.stringify({ voice: 'santa' }));
+    expect(loadConfig(file).voice).toBe('santa');
+  });
 });

@@ -94,3 +94,40 @@ describe('detectTrayHost', () => {
   });
 });
 
+
+describe('trayMenuTemplate: microphone and audio output', () => {
+  const audio = {
+    mics: [{ id: 'a1', label: 'Microfone digital' }, { id: 'h510', label: 'H510' }],
+    mic: { id: 'h510', label: 'H510' },
+    outputs: [{ name: 'spk', label: 'Alto-falantes' }],
+    output: null,
+  };
+
+  it('two submenus of radio items: the system default first, the chosen one checked', () => {
+    const template = trayMenuTemplate({ bubbleVisible: true, audio });
+    const mic = template.find((item) => item.id === 'mic-menu');
+    const output = template.find((item) => item.id === 'output-menu');
+    expect(mic.label).toBe('Microfone');
+    expect(mic.submenu.map((item) => [item.id, item.label, item.type, item.checked])).toEqual([
+      ['mic:default', 'Padrão do sistema', 'radio', false],
+      ['mic:0', 'Microfone digital', 'radio', false],
+      ['mic:1', 'H510', 'radio', true],
+    ]);
+    expect(output.label).toBe('Saída de áudio');
+    expect(output.submenu.map((item) => [item.id, item.checked])).toEqual([['output:default', true], ['output:0', false]]);
+  });
+
+  it('a pinned device that is unplugged stays listed, marked; no mics yet says why', () => {
+    const template = trayMenuTemplate({ bubbleVisible: true, audio: { mics: [], mic: { id: 'z', label: 'Blue Yeti' }, outputs: [], output: null } });
+    const mic = template.find((item) => item.id === 'mic-menu');
+    expect(mic.submenu.map((item) => [item.id, item.label, item.checked ?? null, item.enabled ?? true])).toEqual([
+      ['mic:default', 'Padrão do sistema', false, true],
+      ['mic:pinned', 'Blue Yeti (desconectado)', true, true],
+      ['mic:none', 'ligue a voz pra listar os microfones', null, false],
+    ]);
+  });
+
+  it('without audio info (not Linux) there are no audio submenus', () => {
+    expect(trayMenuTemplate({ bubbleVisible: true }).some((item) => item.id === 'mic-menu')).toBe(false);
+  });
+});

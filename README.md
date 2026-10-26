@@ -32,7 +32,7 @@ npm start               # sobe a bolha
   gerado localmente — barato de token). Pergunta "resume o dia", "como tá o X?".
 - 🎚️ configura volume/timbre dos sons, o **terminal usado** (Warp, GNOME
   Terminal, Kitty, Alacritty, Konsole, Tilix, WezTerm ou Auto), a **voz do
-  gerente** (Santa ou Faber — neurais, offline, baixadas no primeiro uso) e o
+  gerente** (Clara, Davi, Santa ou uma das 10 vozes em inglês — neurais, offline, baixadas no primeiro uso) e o
   **teto diário de tokens** do gerente — estourou o teto (ou barrinha no zero), entra
   o **modo economia**: frases prontas, zero token, até você subir o limite.
   O gasto é medido de verdade (usage reportado pelo próprio `claude` CLI).
@@ -49,13 +49,20 @@ npm test                   # testes unitários
 
 ## Voz do gerente
 
-O TTS é neural e offline, com duas vozes pt-BR rodando no mesmo motor
-(sherpa-onnx) nos dois sistemas — escolha em 🎚️ nas configurações:
+O TTS é neural e offline, com vozes pt-BR rodando no mesmo motor
+(sherpa-onnx) nos dois sistemas — escolha em 🎚️ nas configurações. Os termos
+de dev (GitHub, PR, push, deploy…) saem com a pronúncia que dev brasileiro usa.
 
 | Voz | Modelo | Download |
 |---|---|---|
+| **Clara** (padrão) | Supertonic, voz 0 | ~95MB |
+| **Davi** | Supertonic, voz 8 (mesmo modelo da Clara) | — |
 | **Santa** | Kokoro (`pm_santa`) | ~350MB |
-| **Faber** | Piper vits (`pt_BR-faber-medium`) | ~85MB |
+| **Inglês (EUA) 1–10** | Supertonic em inglês americano (mesmo modelo da Clara) | — |
+
+Com uma voz em inglês, o Vizor **fala em inglês** — recados, modo voz, resumos,
+narração — e você continua falando com ele em português. A interface segue em
+pt-BR.
 
 O app baixa o runtime e o modelo sozinho na primeira fala (ou ao trocar de
 voz), em segundo plano. Enquanto isso não termina, fala pela voz do sistema

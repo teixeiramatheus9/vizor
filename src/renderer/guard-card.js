@@ -25,9 +25,14 @@ export function renderGuardCard(ask) {
   ].join('');
 }
 
-export function guardSpeech(ask) {
+// lang follows the voice: an English voice asks in English.
+export function guardSpeech(ask, lang = 'pt') {
+  const file = baseName(ask.summary.split(' ').slice(1).join(' ')) || ask.tool;
+  if (lang === 'en') {
+    const what = ask.tool === 'Bash' ? `run ${ask.summary}` : `edit ${file}`;
+    return `A Claude in ${baseName(ask.cwd) || 'a project'} wants to ${what}. Can I go ahead?`;
+  }
   const project = baseName(ask.cwd) || 'um projeto';
-  const what =
-    ask.tool === 'Bash' ? `rodar ${ask.summary}` : `mexer em ${baseName(ask.summary.split(' ').slice(1).join(' ')) || ask.tool}`;
+  const what = ask.tool === 'Bash' ? `rodar ${ask.summary}` : `mexer em ${file}`;
   return `Um Claude no ${project} quer ${what}. Posso seguir?`;
 }

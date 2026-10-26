@@ -121,6 +121,19 @@ describe('renderTopBar', () => {
     expect(html).toContain('2 rodando');
     expect(html).toContain('1 esperando');
   });
+
+  it('toggles the chat away so the code takes the screen (#161)', () => {
+    expect(renderTopBar(tree([]), { chatHidden: false })).toContain('data-toggle-chat');
+    expect(renderTopBar(tree([]), { chatHidden: false })).toContain('Esconder chat');
+    expect(renderTopBar(tree([]), { chatHidden: true })).toContain('Mostrar chat');
+  });
+
+  it('says who the voice is talking to, escaped', () => {
+    const html = renderTopBar(tree([]), { voice: { state: 'listening', target: 'chat da <22>' } });
+    expect(html).toContain('ouvindo');
+    expect(html).toContain('chat da &lt;22&gt;');
+    expect(renderTopBar(tree([]), { voice: null })).not.toContain('voice-state');
+  });
 });
 
 describe('renderTabs', () => {

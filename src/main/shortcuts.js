@@ -6,6 +6,8 @@ export const SHORTCUT_ACTIONS = [
   { id: 'bubble', label: 'mostrar/esconder a bolha' },
   { id: 'find', label: 'encontrar a bolha' },
   { id: 'chat', label: 'abrir o chat do gerente' },
+  { id: 'voiceTalk', label: 'falar com o Vizor (sem dizer o nome)' },
+  { id: 'voiceMute', label: 'mudo do microfone' },
 ];
 
 // Only find ships bound (its combo predates this setting); the rest are off
@@ -15,6 +17,8 @@ export const DEFAULT_SHORTCUTS = {
   bubble: '',
   find: 'CommandOrControl+Alt+B',
   chat: '',
+  voiceTalk: '',
+  voiceMute: '',
 };
 
 const MODIFIER =
