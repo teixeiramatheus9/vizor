@@ -9,6 +9,7 @@ const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 
 export function createPlanTracker({ readFile, knownCwd }) {
   const plans = new Map(); // sessionId → { steps, approved }
+  const texts = new Map(); // sessionId → the file as read (its Vizor-plano line feeds the graph)
   const approvedByHand = new Set();
   const reading = new Map(); // sessionId → the latest read's token
 
@@ -27,10 +28,12 @@ export function createPlanTracker({ readFile, knownCwd }) {
     const before = plans.get(sessionId);
     if (!steps.length) {
       plans.delete(sessionId);
+      texts.delete(sessionId);
       return Boolean(before);
     }
     const approved = approvedByHand.has(sessionId) || Boolean(before?.approved) || steps.some((step) => step.done);
     plans.set(sessionId, { steps, approved });
+    texts.set(sessionId, text);
     return true;
   }
 
@@ -52,6 +55,7 @@ export function createPlanTracker({ readFile, knownCwd }) {
   return {
     onEvent,
     planOf: (sessionId) => plans.get(sessionId) ?? null,
+    textOf: (sessionId) => texts.get(sessionId) ?? null,
     approve(sessionId) {
       approvedByHand.add(sessionId);
       const plan = plans.get(sessionId);
@@ -60,6 +64,7 @@ export function createPlanTracker({ readFile, knownCwd }) {
     sessions: () => [...plans.keys()],
     forget(sessionId) {
       plans.delete(sessionId);
+      texts.delete(sessionId);
       approvedByHand.delete(sessionId);
       reading.delete(sessionId);
     },

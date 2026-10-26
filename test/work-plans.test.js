@@ -90,4 +90,11 @@ describe('following a músico plan', () => {
     await first;
     expect(tracker.planOf('s1').steps).toEqual([{ text: 'novo', done: true }]);
   });
+
+  it('the file text stays at hand, for the Vizor-plano line the graph reads', async () => {
+    const { tracker } = setup({ files: { '/repo/.vizor/plano.md': `${PLAN}Vizor-plano: src/a.js#f\n` } });
+    await tracker.onEvent(write('/repo/.vizor/plano.md'));
+    expect(tracker.textOf('s1')).toContain('Vizor-plano: src/a.js#f');
+    expect(tracker.textOf('nobody')).toBeNull();
+  });
 });

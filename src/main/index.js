@@ -2723,7 +2723,14 @@ function onHookEvent(event, reply) {
   }
   workPlans
     .onEvent(event)
-    .then((changed) => changed && pushWorkspaceState())
+    .then((changed) => {
+      if (!changed) return;
+      // Its Vizor-plano line lights the planned files on the graph, dashed (#159).
+      const playing = maestroOrchestra.find((musician) => musician.sessionId === event.session_id);
+      const planned = playing?.root ? parsePlan(workPlans.textOf(event.session_id), playing.root) : [];
+      if (planned.length) maestroPlans.set(event.session_id, planned);
+      pushWorkspaceState();
+    })
     .catch((error) => log(`plan follow failed: ${error}`));
   if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event?.hook_event_name)) {
     voiceSession?.onToolEvent(event);
