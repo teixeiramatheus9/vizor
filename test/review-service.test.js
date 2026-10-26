@@ -219,6 +219,35 @@ describe('review service', () => {
     expect(calls.some((c) => c.verify)).toBe(false);
   });
 
+  it('compares a renamed file against its old path at the base', async () => {
+    const same = 'export function f(a) { return a; }\n';
+    const { service, calls } = setup({
+      git: { 'diff --numstat -z -M BASE': '0\t0\t\0old.js\0new.js\0', 'diff --name-status -z -M BASE': 'R100\0old.js\0new.js\0', 'diff -U3 BASE': '', 'cat-file --batch': `o blob ${same.length}\n${same}\n` },
+      files: { '/w/new.js': same },
+    });
+    const s = await service.summary(WT);
+    expect(calls.find((c) => c.key === 'cat-file --batch').input).toBe('BASE:old.js\n');
+    expect(s.contract).toEqual([]);
+    expect(s.files[0]).toMatchObject({ path: 'new.js', oldPath: 'old.js', status: 'renamed' });
+  });
+
+  it('never throws out of summary when git fails (unborn HEAD, no repo)', async () => {
+    const { service } = setup({ git: { 'diff --numstat -z -M BASE': new Error('fatal: bad revision\nmore') } });
+    const s = await service.summary(WT);
+    expect(s.files).toEqual([]);
+    expect(s.baseError).toBe('não deu pra ler as mudanças: fatal: bad revision');
+  });
+
+  it('asks the indexer to refresh once while a refresh is in flight', async () => {
+    let calls = 0;
+    const indexer = { graph: () => null, refresh: () => { calls++; return new Promise(() => {}); } };
+    const { service } = setup({ graph: indexer });
+    await service.slice(WT, {});
+    await service.slice(WT, {});
+    await service.slice(WT, {});
+    expect(calls).toBe(1);
+  });
+
   it('slice is building while the indexer has no graph yet', async () => {
     const indexer = { graph: () => null, refresh: () => new Promise(() => {}) };
     const { service } = setup({ graph: indexer });

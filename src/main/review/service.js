@@ -55,7 +55,7 @@ export function createReviewService({
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, baseTexts: new Map(), baseSha: null, open: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, baseTexts: new Map(), baseSha: null, open: null, refreshing: null });
     }
     return states.get(wt);
   };
@@ -96,13 +96,13 @@ export function createReviewService({
     if (s.baseSha !== sha) { s.baseTexts.clear(); s.baseSha = sha; }
     const want = files
       .filter((f) => !f.untracked && !f.binary && f.status !== 'deleted' && (SOURCE.test(f.path) || path.posix.basename(f.path) === 'package.json')
-        && !s.baseTexts.has(f.path) && !f.path.includes('\n'))
-      .map((f) => f.path);
+        && !s.baseTexts.has(f.path) && !f.path.includes('\n') && !f.oldPath?.includes('\n'))
+      ;
     if (!want.length) return;
-    const answer = await run(wt, ['cat-file', '--batch'], `${want.map((p) => `${sha}:${p}`).join('\n')}\n`).catch(() => '');
+    const answer = await run(wt, ['cat-file', '--batch'], `${want.map((f) => `${sha}:${f.oldPath ?? f.path}`).join('\n')}\n`).catch(() => '');
     const out = Buffer.from(answer, 'utf8');
     let pos = 0;
-    for (const p of want) {
+    for (const { path: p } of want) {
       const nl = out.indexOf(10, pos);
       if (nl < 0) break;
       const size = /^\S+ blob (\d+)$/.exec(out.toString('utf8', pos, nl))?.[1];
@@ -131,7 +131,7 @@ export function createReviewService({
     ]);
     const status = parseNameStatusZ(names);
     const files = parseNumstatZ(numstat).map((f) => ({
-      path: f.path, status: status.get(f.path) ?? 'modified', added: f.added, removed: f.removed, binary: f.binary, contract: false, untracked: false,
+      path: f.path, oldPath: f.oldPath, status: status.get(f.path) ?? 'modified', added: f.added, removed: f.removed, binary: f.binary, contract: false, untracked: false,
     }));
     const tracked = new Set(files.map((f) => f.path));
     const untracked = others.split('\0').filter((p) => p && !tracked.has(p));
@@ -231,9 +231,21 @@ export function createReviewService({
     for (const rel of [...s.baseTexts.keys()]) if (!paths.has(rel)) s.baseTexts.delete(rel);
   }
 
+  const emptySummary = (wt, baseError) => ({ base: null, baseError, files: [], order: [], verdict: buildVerdict({}), contract: [], request: requestSource(wt) ?? null });
+
   async function summary(wt) {
+    try {
+      return await summarise(wt);
+    } catch (error) {
+      // Unborn HEAD, not a git repo...: show it on screen, never throw to the IPC.
+      const why = String(error?.message ?? error).split('\n')[0].slice(0, 120);
+      return emptySummary(wt, `não deu pra ler as mudanças: ${why}`);
+    }
+  }
+
+  async function summarise(wt) {
     const base = await baseOf(wt);
-    if (base.error) return { base: null, baseError: base.error, files: [], order: [], verdict: buildVerdict({}), contract: [], request: requestSource(wt) ?? null };
+    if (base.error) return emptySummary(wt, base.error);
     const files = await listChanged(wt, base.sha);
     const graph = readyGraph(wt);
     const stamps = await stampsOf(wt, files);
@@ -358,7 +370,12 @@ export function createReviewService({
     if (!graph) {
       if (!indexer) return { status: 'unavailable', reason: 'sem grafo neste projeto' };
       // The indexer reports no progress, so done/total stay 0/0.
-      Promise.resolve(indexer.refresh?.()).catch(() => {});
+      // One refresh in flight per worktree: the indexer queues another full
+      // rebuild for every call made while it runs, so polling must not re-ask.
+      const s = stateOf(wt);
+      if (!s.refreshing) {
+        s.refreshing = Promise.resolve(indexer.refresh?.()).catch(() => {}).finally(() => { s.refreshing = null; });
+      }
       return { status: 'building', done: 0, total: 0 };
     }
     const base = await baseOf(wt);
