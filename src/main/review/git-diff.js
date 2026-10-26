@@ -93,8 +93,8 @@ export function parseUnifiedDiff(text) {
     else if (row.startsWith('rename from ')) { file.status = 'renamed'; file.oldPath = row.slice(12); }
     else if (row.startsWith('rename to ')) file.path = row.slice(10);
     else if (row.startsWith('Binary files ') || row.startsWith('GIT binary patch')) file.binary = true;
-    else if (row.startsWith('+++ ') && row !== '+++ /dev/null') file.path = row.slice(4).replace(/^b\//, '');
-    else if (row.startsWith('--- a/') && file.status === 'deleted') file.path = row.slice(6);
+    else if (row.startsWith('+++ ') && row !== '+++ /dev/null') file.path = row.slice(4).replace(/\t$/, '').replace(/^b\//, '');
+    else if (row.startsWith('--- a/') && file.status === 'deleted') file.path = row.slice(6).replace(/\t$/, '');
 
     const m = HUNK_RE.exec(row);
     if (!m) { i++; continue; }

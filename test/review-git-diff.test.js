@@ -101,13 +101,30 @@ Binary files a/img.png and b/img.png differ
   it('keeps names with spaces and accents', () => {
     const text = `diff --git a/docs/coração e alma.md b/docs/coração e alma.md
 index 111..222 100644
---- a/docs/coração e alma.md
-+++ b/docs/coração e alma.md
+--- a/docs/coração e alma.md\t
++++ b/docs/coração e alma.md\t
 @@ -1 +1 @@
 -a
 +b
 `;
     expect(parseUnifiedDiff(text)[0].path).toBe('docs/coração e alma.md');
+  });
+
+  it('strips the trailing tab git adds to ---/+++ for names with spaces (added and deleted)', () => {
+    const text = `diff --git a/my f.md b/my f.md
+deleted file mode 100644
+--- a/my f.md\t
++++ /dev/null
+@@ -1 +0,0 @@
+-x
+diff --git a/n f.md b/n f.md
+new file mode 100644
+--- /dev/null
++++ b/n f.md\t
+@@ -0,0 +1 @@
++x
+`;
+    expect(parseUnifiedDiff(text).map((f) => f.path)).toEqual(['my f.md', 'n f.md']);
   });
 
   it('keeps the name of a binary file with spaces', () => {
