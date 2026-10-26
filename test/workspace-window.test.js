@@ -126,4 +126,17 @@ describe('backlog review fixes', () => {
     expect(FakeWindow.last.reloaded).toBe(1);
     expect(events).toEqual(['load', 'show', 'gone', 'show']);
   });
+
+  it('tells onVisibility when the window hides, minimizes, shows and restores', () => {
+    const workspace = manager();
+    const seen = [];
+    workspace.onVisibility((visible) => seen.push(visible));
+    workspace.show();
+    const win = FakeWindow.last;
+    win.emit('hide');
+    win.emit('show');
+    win.emit('minimize');
+    win.emit('restore');
+    expect(seen).toEqual([false, true, false, true]);
+  });
 });

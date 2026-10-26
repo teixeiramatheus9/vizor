@@ -24,6 +24,7 @@ export function createWorkspaceWindowManager({
   loadBounds,
   saveBounds,
   onShow,
+  onFocus = () => {},
   onLoad = () => {},
   onGone = () => {},
   isQuitting,
@@ -34,6 +35,8 @@ export function createWorkspaceWindowManager({
   let crashed = false;
   let pendingFocus = null; // a session to select once the page is up
   let saveTimer = null;
+  const visibilityListeners = [];
+  const tellVisibility = (visible) => { for (const listener of visibilityListeners) listener(visible); };
 
   function scheduleSave() {
     clearTimeout(saveTimer);
@@ -68,6 +71,11 @@ export function createWorkspaceWindowManager({
       event.preventDefault();
       win.hide();
     });
+    win.on('hide', () => tellVisibility(false));
+    win.on('minimize', () => tellVisibility(false));
+    win.on('show', () => tellVisibility(true));
+    win.on('restore', () => tellVisibility(true));
+    win.on('focus', () => onFocus());
     win.on('move', scheduleSave);
     win.on('resize', scheduleSave);
     // A fresh snapshot on every load and show: the palette or the sessions may
@@ -112,6 +120,10 @@ export function createWorkspaceWindowManager({
       show();
       if (loaded && win && !win.isDestroyed()) win.webContents.send('workspace:focus', { sessionId });
       else pendingFocus = sessionId;
+    },
+    // cb(visible): false on hide/minimize, true on show/restore.
+    onVisibility(callback) {
+      visibilityListeners.push(callback);
     },
     isFocused() {
       return Boolean(win && !win.isDestroyed() && win.isFocused());
