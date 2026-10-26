@@ -491,7 +491,15 @@ function selectInspectorSession(sessionId) {
 // --- The plan (core flow) ----------------------------------------------------
 // The checklist the chat keeps in .vizor/plano.md: of the inspected chat, or
 // of the músico in focus on the stage.
-const planSessionId = () => (maestro.on ? maestro.focusedId : inspector.sessionId);
+// The inspected chat, else the chat running in the tab in front (live test: the
+// inspector lost its session when the chat's worktree moved in the tree, and
+// the card went blank mid-task).
+const planSessionId = () => {
+  if (maestro.on) return maestro.focusedId;
+  if (inspector.sessionId) return inspector.sessionId;
+  if (!activeTab) return null;
+  return treeSessions().find((session) => session.ptyId === activeTab)?.id ?? null;
+};
 function renderPlanCard() {
   const sessionId = planSessionId();
   const note = planNote?.sessionId === sessionId ? `<div class="plan-note">${planNote.text}</div>` : '';
