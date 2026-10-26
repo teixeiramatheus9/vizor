@@ -6,7 +6,7 @@ import { highlightLine, initialState } from './highlight.js';
 const MAX_VIEW_LINES = 3000;
 const STATUS_MARK = { added: 'A', deleted: 'D', renamed: 'R', modified: 'M' };
 const UNTRACKED_REASON = 'arquivo novo: peça pro agente apagar';
-const COMMITTED_REASON = 'já commitado: peça pro agente reverter';
+const COMMITTED_REASON = 'já está num commit; comente pra o agente reverter';
 
 const HUNK_BUTTONS = [['approve', 'Aprovar'], ['reject', 'Rejeitar'], ['comment', 'Comentar'], ['explain', 'Explicar']];
 
@@ -20,22 +20,29 @@ function hunkActions(hunk, untracked) {
 }
 
 function renderHunk(hunk, { highlight, untracked, selected, errorsByLine }) {
-  let state = initialState();
+  // Removed lines belong to the old file and added ones to the new, so each
+  // side keeps its own state; context lines advance both.
+  let oldState = initialState();
+  let newState = initialState();
   const rows = hunk.lines.map((line) => {
     const cls = line.kind === '+' ? 'add' : line.kind === '-' ? 'del' : 'ctx';
     let body;
     if (highlight) {
-      const out = highlightLine(line.text, state);
+      const out = highlightLine(line.text, line.kind === '-' ? oldState : newState);
       body = out.html;
-      state = out.state;
+      if (line.kind === ' ') {
+        oldState = highlightLine(line.text, oldState).state;
+        newState = out.state;
+      } else if (line.kind === '-') oldState = out.state;
+      else newState = out.state;
     } else body = escapeHtml(line.text);
-    const sign = line.kind === ' ' ? '&nbsp;' : line.kind;
-    let html = `<div class="diff-line ${cls}"><span class="ln old">${line.oldNo ?? ''}</span><span class="ln new">${line.newNo ?? ''}</span><span class="sign">${sign}</span><code>${body}</code></div>`;
+    const sign = line.kind === ' ' ? '&nbsp;' : escapeHtml(line.kind);
+    let html = `<div class="diff-line ${cls}"><span class="ln old">${escapeHtml(line.oldNo ?? '')}</span><span class="ln new">${escapeHtml(line.newNo ?? '')}</span><span class="sign">${sign}</span><code>${body}</code></div>`;
     if (line.noNewline) html += '<div class="diff-line nonl"><code>\\ sem quebra de linha no fim</code></div>';
     // tsc reports against the new file, so only lines that exist there.
     if (line.kind !== '-' && line.newNo != null) {
       for (const err of errorsByLine.get(line.newNo) ?? []) {
-        html += `<div class="tsc-error">tsc ${err.line}:${err.col} · ${escapeHtml(err.message)}</div>`;
+        html += `<div class="tsc-error">tsc ${escapeHtml(err.line)}:${escapeHtml(err.col)} · ${escapeHtml(err.message)}</div>`;
       }
     }
     return html;
@@ -51,7 +58,7 @@ export function renderFileDiff(file, { highlight, selectedHunk, forceOpen } = {}
   const head = `<div class="diff-file-head" title="${escapeHtml(path)}">${escapeHtml(path)}</div>`;
   if (file.binary) return `${head}<div class="diff-note">binário</div>`;
   const total = file.lines ?? file.hunks?.reduce((n, h) => n + h.lines.length, 0) ?? 0;
-  if ((file.tooBig || total > MAX_VIEW_LINES) && !forceOpen && total > MAX_VIEW_LINES) {
+  if (!forceOpen && total > MAX_VIEW_LINES) {
     return `${head}<div class="diff-note">${total} linhas de diff <button class="hunk-btn" data-file-action="force-open">abrir mesmo assim</button></div>`;
   }
   if (file.tooBig) return `${head}<div class="diff-note">grande demais pra mostrar</div>`;
@@ -85,9 +92,9 @@ export function renderFileList(files, order, { selectedPath, approvedByFile = {}
     const rows = list.map((f) => {
       const name = f.path.slice(f.path.lastIndexOf('/') + 1);
       const sums = f.binary ? '<span class="sum">binário</span>'
-        : `<span class="sum"><span class="plus">+${f.added ?? '?'}</span> <span class="minus">−${f.removed ?? '?'}</span></span>`;
+        : `<span class="sum"><span class="plus">+${escapeHtml(f.added ?? '?')}</span> <span class="minus">−${escapeHtml(f.removed ?? '?')}</span></span>`;
       const progress = approvedByFile[f.path];
-      const prog = progress?.total ? `<span class="approved-count">${progress.approved}/${progress.total}</span>` : '';
+      const prog = progress?.total ? `<span class="approved-count">${escapeHtml(progress.approved)}/${escapeHtml(progress.total)}</span>` : '';
       const contract = f.contract ? '<span class="contract-badge" title="mudou o contrato">contrato</span>' : '';
       return `<li class="review-file${f.path === selectedPath ? ' selected' : ''}" data-path="${escapeHtml(f.path)}" title="${escapeHtml(f.path)}">`
         + `<span class="status ${escapeHtml(f.status)}">${STATUS_MARK[f.status] ?? 'M'}</span><span class="name">${escapeHtml(name)}</span>${contract}${sums}${prog}</li>`;

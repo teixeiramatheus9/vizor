@@ -20,7 +20,7 @@ describe('the review diff', () => {
   });
   it('a committed hunk has reject disabled with a title', () => {
     const html = renderFileDiff(file({ hunks: [hunk({ committed: true })] }));
-    expect(html).toMatch(/data-hunk-action="reject"[^>]*disabled title="[^"]+"/);
+    expect(html).toContain('disabled title="já está num commit; comente pra o agente reverter"');
     expect(html).not.toMatch(/data-hunk-action="approve"[^>]*disabled/);
   });
   it('an untracked file has reject disabled too', () => {
@@ -41,6 +41,16 @@ describe('the review diff', () => {
     expect(renderFileDiff(file({ tooBig: true, lines: 5000, hunks: [] }))).toContain('data-file-action="force-open"');
     expect(renderFileDiff(file({ tooBig: true, lines: 5000, hunks: [] }), { forceOpen: true })).toContain('grande demais pra mostrar');
     expect(renderFileDiff(file({ binary: true, hunks: [] }))).toContain('binário');
+  });
+  it('a removed line opening a comment does not leak into the added lines', () => {
+    const lines = [line('-', 'a /* open', 1, null), line('+', 'const x = 1', null, 1), line(' ', 'end */ const', 2, 2)];
+    const html = renderFileDiff(file({ hunks: [hunk({ lines })] }));
+    expect(html).toContain('<span class="tok-kw">const</span> x');
+  });
+  it('a too-big file under the line cap (byte cap) has no dead-end button', () => {
+    const html = renderFileDiff(file({ tooBig: true, lines: 10, hunks: [] }));
+    expect(html).toContain('grande demais pra mostrar');
+    expect(html).not.toContain('force-open');
   });
   it('a tsc error shows under its new line', () => {
     const html = renderFileDiff(file({ tscErrors: [{ line: 2, col: 5, message: 'bad <type>' }] }));
