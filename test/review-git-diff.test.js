@@ -218,3 +218,14 @@ describe('untrackedAsFiles', () => {
     expect(untrackedAsFiles(['e'], () => '')[0].hunks).toEqual([]);
   });
 });
+
+describe('no newline at end of file', () => {
+  const text = 'diff --git a/a.txt b/a.txt\nindex 1..2 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n';
+  it('flags the preceding line without changing the hunk id', () => {
+    const [f] = parseUnifiedDiff(text);
+    const lines = f.hunks[0].lines;
+    expect(lines.map((l) => !!l.noNewline)).toEqual([false, true, true]);
+    expect(f.hunks[0].id).toBe(hunkId('a.txt', lines));
+    expect(f.hunks[0].id).toBe(hunkId('a.txt', [{ kind: ' ', text: 'keep' }, { kind: '-', text: 'old' }, { kind: '+', text: 'new' }]));
+  });
+});

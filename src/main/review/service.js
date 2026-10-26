@@ -25,6 +25,7 @@ const STATUS = { A: 'added', C: 'added', D: 'deleted', R: 'renamed' };
 const BASE_ERROR = 'Não achei a branch base (tentei main e master). Defina "base" em .vizor/projeto.json.';
 const ERR_COMMITTED = 'já está num commit; comente pra o agente reverter';
 const ERR_BUSY = 'espere o agente parar';
+const ERR_NEW_FILE = 'arquivo novo: peça pro agente apagar';
 const ERR_CHANGED = 'o arquivo mudou; atualize';
 
 // `git diff --name-status -z -M`: "M\0path\0", renames "R100\0old\0new\0".
@@ -48,18 +49,18 @@ export function createReviewService({
 }) {
   const service = new EventEmitter();
   const states = new Map();
-  const baseTexts = new Map(); // `${sha}:${path}` → text|null; a sha's content never changes
   let requestSource = () => null;
   let paused = false;
   const parked = []; // verifies that arrived while paused
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, baseTexts: new Map(), baseSha: null, open: null });
     }
     return states.get(wt);
   };
   const run = (wt, args, input) => git(['-c', 'core.quotePath=false', ...args], wt, input);
+  const suffix = (sha, rel, stamp) => `${sha}\0${rel}\0${stamp}`;
   const abs = (wt, rel) => path.join(wt, rel);
   const readText = (wt, rel) => readFile(abs(wt, rel), 'utf8').catch(() => null);
   const statOf = (wt, rel) => stat(abs(wt, rel)).catch(() => null);
@@ -87,13 +88,30 @@ export function createReviewService({
     return s.base;
   }
 
-  async function baseText(wt, sha, rel) {
-    const key = `${sha}:${rel}`;
-    if (baseTexts.has(key)) return baseTexts.get(key);
-    const text = await run(wt, ['show', `${sha}:${rel}`]).catch(() => null);
-    if (baseTexts.size >= BASE_TEXT_CACHE) baseTexts.delete(baseTexts.keys().next().value);
-    baseTexts.set(key, text);
-    return text;
+  // Merge-base texts of the files that need them, from ONE `git cat-file
+  // --batch`: "<sha>:<path>" in, "<oid> blob <size>\n<bytes>\n" or
+  // "<spec> missing\n" out. The cache lives per worktree and per base sha.
+  async function prefetchBase(wt, sha, files) {
+    const s = stateOf(wt);
+    if (s.baseSha !== sha) { s.baseTexts.clear(); s.baseSha = sha; }
+    const want = files
+      .filter((f) => !f.untracked && !f.binary && f.status !== 'deleted' && (SOURCE.test(f.path) || path.posix.basename(f.path) === 'package.json')
+        && !s.baseTexts.has(f.path) && !f.path.includes('\n'))
+      .map((f) => f.path);
+    if (!want.length) return;
+    const answer = await run(wt, ['cat-file', '--batch'], `${want.map((p) => `${sha}:${p}`).join('\n')}\n`).catch(() => '');
+    const out = Buffer.from(answer, 'utf8');
+    let pos = 0;
+    for (const p of want) {
+      const nl = out.indexOf(10, pos);
+      if (nl < 0) break;
+      const size = /^\S+ blob (\d+)$/.exec(out.toString('utf8', pos, nl))?.[1];
+      pos = nl + 1;
+      if (size === undefined) { s.baseTexts.set(p, null); continue; } // missing at the base
+      if (pos + Number(size) > out.length) break; // out of sync: leave the rest uncached
+      s.baseTexts.set(p, out.toString('utf8', pos, pos + Number(size)));
+      pos += Number(size) + 1;
+    }
   }
 
   async function chunked(items, fn) {
@@ -128,17 +146,17 @@ export function createReviewService({
 
   // Per-file analysis (contract changes + changed function ids), cached by
   // (base, path, mtime, size) like the patch.
-  async function analyse(wt, sha, file, graph) {
+  async function analyse(wt, sha, file, graph, stamp) {
     const s = stateOf(wt);
-    const st = await statOf(wt, file.path);
-    const key = `${sha}\0${file.path}\0${keyOf(st)}`;
+    const key = suffix(sha, file.path, stamp);
     let entry = s.files.get(`a\0${key}`);
     if (!entry) {
       entry = { changes: [], before: undefined, after: undefined };
       if (file.status !== 'deleted' && !file.binary) {
         const isPackage = path.posix.basename(file.path) === 'package.json';
         if (SOURCE.test(file.path) || isPackage) {
-          const [before, after] = await Promise.all([file.untracked ? null : baseText(wt, sha, file.path), readText(wt, file.path)]);
+          const before = file.untracked ? null : (s.baseTexts.get(file.path) ?? null);
+          const after = await readText(wt, file.path);
           entry.before = before;
           entry.after = after;
           if (isPackage) entry.changes = packageChanges(before ?? '{}', after ?? '{}');
@@ -169,12 +187,60 @@ export function createReviewService({
     return s.approved;
   }
 
+  const stampsOf = async (wt, files) => {
+    const stamps = new Map();
+    await chunked(files, async (f) => { stamps.set(f.path, keyOf(await statOf(wt, f.path))); });
+    return stamps;
+  };
+
+  const approxBytes = (file) => (file?.hunks ?? []).reduce((n, h) => n + h.header.length + h.lines.reduce((m, l) => m + l.text.length + 2, 0), 0);
+
+  // HEAD→worktree hunk ids, one process for the whole worktree, per epoch.
+  async function openIds(wt) {
+    const s = stateOf(wt);
+    if (s.open?.epoch !== s.epoch) {
+      const head = parseUnifiedDiff(await run(wt, ['diff', '-U3', 'HEAD']));
+      s.open = { epoch: s.epoch, ids: new Set(head.flatMap((f) => f.hunks.map((h) => h.id))) };
+    }
+    return s.open.ids;
+  }
+
+  // Every changed file's parsed patch from ONE `git diff -U3 <base>` (plus
+  // untracked files read as all-added), only when some entry is cold.
+  async function ensurePatches(wt, sha, files, stamps) {
+    const s = stateOf(wt);
+    const cold = files.filter((f) => !s.files.has(`p\0${suffix(sha, f.path, stamps.get(f.path))}`));
+    if (cold.length) {
+      const parsed = new Map(!cold.some((f) => !f.untracked) ? [] : parseUnifiedDiff(await run(wt, ['diff', '-U3', sha])).map((f) => [f.path, f]));
+      for (const f of cold) {
+        const text = f.untracked ? await readText(wt, f.path) : null;
+        const file = f.untracked ? untrackedAsFiles([f.path], () => text)[0] : parsed.get(f.path) ?? null;
+        s.files.set(`p\0${suffix(sha, f.path, stamps.get(f.path))}`, { file, untracked: f.untracked, bytes: approxBytes(file), epoch: -1, committedIds: null });
+      }
+    }
+    await openIds(wt);
+  }
+
+  // Drop what no longer belongs: other bases, files that left the list, and
+  // older mtime/size versions of a file still in it.
+  function evict(wt, sha, files, stamps) {
+    const s = stateOf(wt);
+    const valid = new Set(files.map((f) => suffix(sha, f.path, stamps.get(f.path))));
+    for (const key of [...s.files.keys()]) if (!valid.has(key.slice(2))) s.files.delete(key);
+    const paths = new Set(files.map((f) => f.path));
+    for (const rel of [...s.baseTexts.keys()]) if (!paths.has(rel)) s.baseTexts.delete(rel);
+  }
+
   async function summary(wt) {
     const base = await baseOf(wt);
     if (base.error) return { base: null, baseError: base.error, files: [], order: [], verdict: buildVerdict({}), contract: [], request: requestSource(wt) ?? null };
     const files = await listChanged(wt, base.sha);
     const graph = readyGraph(wt);
-    const analysed = await chunked(files, (f) => analyse(wt, base.sha, f, graph));
+    const stamps = await stampsOf(wt, files);
+    await prefetchBase(wt, base.sha, files);
+    const analysed = await chunked(files, (f) => analyse(wt, base.sha, f, graph, stamps.get(f.path)));
+    await ensurePatches(wt, base.sha, files, stamps);
+    evict(wt, base.sha, files, stamps);
     const contract = [];
     analysed.forEach((a, i) => {
       if (!a.changes.length) return;
@@ -190,12 +256,14 @@ export function createReviewService({
     const s = stateOf(wt);
     let approvedCount = 0;
     let totalHunks = 0;
+    const live = [];
     for (const f of files) {
-      const parsed = [...s.files.entries()].find(([k]) => k.startsWith(`p\0${base.sha}\0${f.path}\0`))?.[1];
-      const ids = parsed?.hunks.map((h) => h.id) ?? [];
-      totalHunks += ids.length || 1; // not opened yet: counts as one until its patch is read
+      const ids = s.files.get(`p\0${suffix(base.sha, f.path, stamps.get(f.path))}`)?.file?.hunks.map((h) => h.id) ?? [];
+      totalHunks += ids.length;
       approvedCount += ids.filter((id) => approved.has(id)).length;
+      live.push(...ids);
     }
+    s.store.prune?.(live);
     const order = readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path);
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,
@@ -233,7 +301,7 @@ export function createReviewService({
     if (base.error) return { path: rel, status: 'modified', hunks: [], error: base.error, tscErrors: [] };
     const s = stateOf(wt);
     const st = await statOf(wt, rel);
-    const entry = await parsedPatch(wt, base.sha, rel, st);
+    const entry = s.files.get(`p\0${suffix(base.sha, rel, keyOf(st))}`) ?? await parsedPatch(wt, base.sha, rel, st);
     const parsed = entry.file ?? { path: rel, status: st ? 'modified' : 'deleted', binary: false, hunks: [] };
     const tscErrors = (s.tsc?.errors ?? []).filter((e) => e.file === rel).map(({ line, col, message }) => ({ line, col, message }));
     if (parsed.binary) return { path: rel, status: parsed.status, binary: true, hunks: [], tscErrors };
@@ -245,15 +313,16 @@ export function createReviewService({
     if (entry.epoch !== s.epoch) {
       entry.committedIds = new Set();
       if (!entry.untracked && parsed.hunks.length) {
-        const head = parseUnifiedDiff(await run(wt, ['diff', '-U3', 'HEAD', '--', rel]));
-        const open = new Set(head.flatMap((f) => f.hunks.map((h) => h.id)));
+        const open = s.open?.epoch === s.epoch
+          ? s.open.ids
+          : new Set(parseUnifiedDiff(await run(wt, ['diff', '-U3', 'HEAD', '--', rel])).flatMap((f) => f.hunks.map((h) => h.id)));
         for (const h of parsed.hunks) if (!open.has(h.id)) entry.committedIds.add(h.id);
       }
       entry.epoch = s.epoch;
     }
     const approved = await loadApproved(wt);
     const hunks = parsed.hunks.map((h) => ({ ...h, committed: entry.committedIds.has(h.id), approved: approved.has(h.id) }));
-    return { path: rel, status: parsed.status, hunks, tscErrors };
+    return { path: rel, status: parsed.status, hunks, tscErrors, ...(entry.untracked ? { untracked: true } : {}) };
   }
 
   async function approve(wt, id, on) {
@@ -266,10 +335,12 @@ export function createReviewService({
     const view = await file(wt, rel, { force: true });
     const hunk = view.hunks.find((h) => h.id === id);
     if (!hunk) return { ok: false, error: ERR_CHANGED };
+    if (view.untracked) return { ok: false, error: ERR_NEW_FILE };
     if (hunk.committed) return { ok: false, error: ERR_COMMITTED };
     if (sessionsOf(wt).some((s) => s.status !== 'done' && s.status !== 'waiting')) return { ok: false, error: ERR_BUSY };
-    const body = hunk.lines.map((l) => l.kind + l.text).join('\n');
-    const patch = `diff --git a/${rel} b/${rel}\n--- a/${rel}\n+++ b/${rel}\n${hunk.header}\n${body}\n`;
+    // The marker after a line is what keeps `git apply` from demanding a final newline there.
+    const body = hunk.lines.map((l) => `${l.kind}${l.text}\n${l.noNewline ? '\\ No newline at end of file\n' : ''}`).join('');
+    const patch = `diff --git a/${rel} b/${rel}\n--- a/${rel}\n+++ b/${rel}\n${hunk.header}\n${body}`;
     try {
       await run(wt, ['apply', '-R', '--check'], patch);
       await run(wt, ['apply', '-R'], patch);
@@ -293,7 +364,9 @@ export function createReviewService({
     const base = await baseOf(wt);
     if (base.error) return { status: 'unavailable', reason: base.error };
     const files = await listChanged(wt, base.sha);
-    const analysed = await chunked(files, (f) => analyse(wt, base.sha, f, graph));
+    const stamps = await stampsOf(wt, files);
+    await prefetchBase(wt, base.sha, files);
+    const analysed = await chunked(files, (f) => analyse(wt, base.sha, f, graph, stamps.get(f.path)));
     return { status: 'ready', slice: egoSlice(graph, analysed.flatMap((a) => a.functions), { expanded, showHidden }) };
   }
 

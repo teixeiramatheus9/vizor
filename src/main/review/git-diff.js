@@ -116,7 +116,7 @@ export function parseUnifiedDiff(text) {
     // can never be mistaken for one.
     while (i < rows.length && (oldLeft > 0 || newLeft > 0 || rows[i].startsWith('\\'))) {
       const r = rows[i];
-      if (r.startsWith('\\')) { i++; continue; }
+      if (r.startsWith('\\')) { const last = hunk.lines.at(-1); if (last) last.noNewline = true; i++; continue; }
       const kind = r === '' ? ' ' : r[0];
       const body = r.slice(1);
       if (kind === '+') { hunk.lines.push({ kind, text: body, oldNo: null, newNo: newNo++ }); newLeft--; }

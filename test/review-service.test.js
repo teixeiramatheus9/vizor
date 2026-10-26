@@ -22,6 +22,9 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
     'diff --numstat -z -M BASE': '1\t1\ta.js\0',
     'diff --name-status -z -M BASE': 'M\0a.js\0',
     'ls-files --others --exclude-standard -z': '',
+    'cat-file --batch': 'abc blob 1\nx\n',
+    'diff -U3 BASE': PATCH,
+    'diff -U3 HEAD': '',
     'diff -U3 BASE -- a.js': PATCH,
     'diff -U3 HEAD -- a.js': '',
     ...git,
@@ -72,7 +75,45 @@ describe('review service', () => {
     expect(s.order).toEqual(['a.js']);
     expect(s.request).toEqual({ wt: WT });
     expect(s.verdict.some((i) => i.key === 'tsc')).toBe(true);
-    expect(calls.some((c) => c.key?.startsWith('diff -U3'))).toBe(false);
+    expect(calls.filter((c) => c.key?.startsWith('diff -U3')).map((c) => c.key)).toEqual(['diff -U3 BASE', 'diff -U3 HEAD']);
+  });
+
+  it('counts hunks from one full diff, prunes the store and serves file() warm', async () => {
+    const pruned = [];
+    const { service, calls } = setup({ files: { '/w/a.js': 'x' }, extra: { storeFor: () => ({ load: async () => ({ approved: new Set(), prefs: {} }), approve() {}, prune: (ids) => pruned.push(ids) }) } });
+    const s = await service.summary(WT);
+    expect(s.verdict.find((i) => i.key === 'review').text).toBe('revisado 0/1 hunks');
+    expect(pruned).toHaveLength(1);
+    expect(pruned[0]).toHaveLength(1);
+    const before = calls.length;
+    const f = await service.file(WT, 'a.js');
+    expect(f.hunks).toHaveLength(1);
+    expect(calls.length).toBe(before);
+  });
+
+  it('reads all merge-base texts through one cat-file --batch', async () => {
+    const { service, calls } = setup({
+      git: { 'diff --numstat -z -M BASE': '1\t1\ta.js\0 1\t1\tb.ts\0'.replace(' ', ''), 'diff --name-status -z -M BASE': 'M\0a.js\0M\0b.ts\0', 'cat-file --batch': 'o blob 1\nx\no blob 3\nçz\n' },
+      files: { '/w/a.js': 'x', '/w/b.ts': 'çz' },
+    });
+    await service.summary(WT);
+    const batch = calls.filter((c) => c.key === 'cat-file --batch');
+    expect(batch).toHaveLength(1);
+    expect(batch[0].input).toBe('BASE:a.js\nBASE:b.ts\n');
+    expect(calls.some((c) => c.key?.startsWith('show'))).toBe(false);
+  });
+
+  it('evicts cached patches of files that left the list', async () => {
+    const { service, calls, gitMap } = setup({ files: { '/w/a.js': 'x' } });
+    await service.summary(WT);
+    gitMap['diff --numstat -z -M BASE'] = '';
+    gitMap['diff --name-status -z -M BASE'] = '';
+    await service.summary(WT);
+    gitMap['diff --numstat -z -M BASE'] = '1\t1\ta.js\0';
+    gitMap['diff --name-status -z -M BASE'] = 'M\0a.js\0';
+    const before = calls.filter((c) => c.key === 'diff -U3 BASE').length;
+    await service.summary(WT);
+    expect(calls.filter((c) => c.key === 'diff -U3 BASE').length).toBe(before + 1);
   });
 
   it('shows untracked files as added', async () => {
@@ -112,6 +153,21 @@ describe('review service', () => {
       const { service } = setup({ git: { ...open, 'apply -R --check': new Error('does not apply') }, files: { '/w/a.js': 'x' }, sessions: [{ id: 's', status: 'done' }] });
       const f = await service.file(WT, 'a.js');
       expect(await service.reject(WT, 'a.js', f.hunks[0].id)).toEqual({ ok: false, error: 'o arquivo mudou; atualize' });
+    });
+
+    it('never touches a new (untracked) file', async () => {
+      const { service, calls } = setup({ git: { 'diff -U3 BASE -- n.js': '', 'ls-files --others --exclude-standard -z -- n.js': 'n.js\0' }, files: { '/w/n.js': 'one\n' }, sessions: [] });
+      const f = await service.file(WT, 'n.js');
+      expect(await service.reject(WT, 'n.js', f.hunks[0].id)).toEqual({ ok: false, error: 'arquivo novo: peça pro agente apagar' });
+      expect(calls.some((c) => c.key?.startsWith('apply'))).toBe(false);
+    });
+
+    it('re-emits the no-newline marker in the reverse patch', async () => {
+      const real = 'diff --git a/a.js b/a.js\nindex 1..2 100644\n--- a/a.js\n+++ b/a.js\n@@ -1,2 +1,2 @@\n keep\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n';
+      const { service, calls } = setup({ git: { ...open, 'diff -U3 BASE -- a.js': real, 'diff -U3 HEAD -- a.js': real, 'apply -R --check': '', 'apply -R': '' }, files: { '/w/a.js': 'x' }, sessions: [] });
+      const f = await service.file(WT, 'a.js');
+      expect((await service.reject(WT, 'a.js', f.hunks[0].id)).ok).toBe(true);
+      expect(calls.find((c) => c.key === 'apply -R').input).toBe('diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,2 +1,2 @@\n keep\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n');
     });
 
     it('applies the hunk patch in reverse through stdin', async () => {
