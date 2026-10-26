@@ -4924,8 +4924,12 @@ app.on('before-quit', (event) => {
   if (!reviewSaved) {
     reviewSaved = true;
     event.preventDefault();
-    Promise.allSettled([...reviewStores.values()].map((entry) => entry.flush()))
-      .finally(() => app.quit());
+    // A stalled disk must not hold a logout or SIGTERM hostage: give up after 1.5 s.
+    const saves = Promise.allSettled([...reviewStores.values()].map((entry) => entry.flush()))
+      .then((results) => {
+        for (const result of results) if (result.status === 'rejected') log(`review state flush on quit failed: ${result.reason}`);
+      });
+    Promise.race([saves, new Promise((resolve) => setTimeout(resolve, 1500))]).finally(() => app.quit());
     return;
   }
   appQuitting = true;
