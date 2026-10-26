@@ -71,6 +71,7 @@ import { createReviewService } from './review/service.js';
 import { createReviewStore, storeKey } from './review/review-store.js';
 import { createVerifier } from './review/verify.js';
 import { composeMessage, rejectNotice } from './review/compose.js';
+import { safeRelPath, sanitizePrefs } from './review/ipc-guard.js';
 import { EditTracker } from './edit-tracker.js';
 import { createEditPipeline } from './edit-pipeline.js';
 import { readIndexVersion } from './git-files.js';
@@ -2766,13 +2767,36 @@ reviewService.on('changed', notifyReview);
 // What the dev asked for: the linked issue, else the chat's first prompt (read
 // off the main loop once; the screen is told when it lands).
 const firstPrompts = new Map(); // sessionId → text | null
+const ISSUE_BODY_MAX = 4000;
+const issueBodies = new Map(); // `${repo}#${number}` → body ('' while loading or on failure)
+const issueRepos = new Map(); // project root → owner/repo | null
+function issueBodyFor(project, number, worktree) {
+  const known = issueRepos.get(project);
+  if (known === undefined) {
+    issueRepos.set(project, null);
+    runText('git', ['remote', 'get-url', 'origin'], { cwd: project })
+      .then((remote) => { issueRepos.set(project, githubRepoOf(remote)); notifyReview(worktree); })
+      .catch((error) => log(`review: no origin for ${project}: ${error}`));
+    return '';
+  }
+  if (!known) return '';
+  const key = `${known}#${number}`;
+  if (!issueBodies.has(key)) {
+    issueBodies.set(key, '');
+    runText('gh', ['issue', 'view', String(number), '--json', 'body', '-q', '.body', '-R', known], { cwd: project })
+      .then((body) => { issueBodies.set(key, body.trim().slice(0, ISSUE_BODY_MAX)); notifyReview(worktree); })
+      .catch((error) => log(`review: issue body ${key} failed: ${error}`));
+  }
+  return issueBodies.get(key);
+}
+
 function reviewRequestOf(worktree) {
   const sessions = reviewSessionsIn(worktree);
   const project = [...worktreeCache].find(([, trees]) => (trees ?? []).some((tree) => tree.path === worktree))?.[0] ?? worktree;
   for (const session of sessions) {
     const number = taskLinks.numberOf(project, session.id);
     const issue = number && lastGhResultsRoot === project ? lastGhResults?.openIssues?.find((item) => item.number === number) : null;
-    if (issue) return { kind: 'issue', number, title: issue.title ?? '', body: issue.body ?? '' };
+    if (issue) return { kind: 'issue', number, title: issue.title ?? '', body: issueBodyFor(project, number, worktree) };
   }
   const session = sessions.find((item) => item.id === workspaceSelectedSession && item.transcriptPath) ?? sessions.find((item) => item.transcriptPath);
   if (!session) return null;
@@ -2827,7 +2851,7 @@ const BAD_REVIEW_REQUEST = 'pedido inválido';
 
 reviewHandle('review:summary', () => null, (worktree) => (reviewWorktreeOk(worktree) ? reviewService.summary(worktree) : null));
 reviewHandle('review:file', () => null, ({ worktree, path: rel }) =>
-  reviewWorktreeOk(worktree) && typeof rel === 'string' ? reviewService.file(worktree, rel) : null);
+  reviewWorktreeOk(worktree) && safeRelPath(rel) ? reviewService.file(worktree, rel) : null);
 reviewHandle('review:approve', reviewFail, async ({ worktree, hunkId, on }) => {
   if (!reviewWorktreeOk(worktree) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
   await reviewService.approve(worktree, hunkId, Boolean(on));
@@ -2844,7 +2868,9 @@ reviewHandle('review:verify', reviewFail, async ({ worktree, kind }) => {
 reviewHandle('review:prefs', () => ({}), async ({ worktree, set }) => {
   if (!reviewWorktreeOk(worktree)) return {};
   const store = reviewStoreFor(worktree);
-  if (set && typeof set === 'object') store.setPrefs(set);
+  await store.prefs(); // load() resets the store: a set before it lands would be wiped
+  const clean = sanitizePrefs(set);
+  if (Object.keys(clean).length) store.setPrefs(clean);
   return store.prefs();
 });
 
@@ -2867,7 +2893,7 @@ reviewHandle('review:compose', reviewFail, ({ sessionId, context, text }) => {
 });
 
 reviewHandle('review:reject', reviewFail, async ({ worktree, path: rel, hunkId, sessionId }) => {
-  if (!reviewWorktreeOk(worktree) || typeof rel !== 'string' || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
+  if (!reviewWorktreeOk(worktree) || !safeRelPath(rel) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
   // The line has to be read before the hunk is gone.
   const hunk = (await reviewService.file(worktree, rel))?.hunks?.find((item) => item.id === hunkId);
   const result = await reviewService.reject(worktree, rel, hunkId);
