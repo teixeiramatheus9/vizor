@@ -40,7 +40,7 @@ import { createConductor } from './maestro/conductor.js';
 import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
 import { excludeWithPlan, isPlanEdit } from './work/plan.js';
 import { createPlanTracker } from './work/plans.js';
-import { APPROVE_PROMPT, OPEN_PR_PROMPT, reviewPrPrompt, startIssuePrompt } from './work/prompts.js';
+import { APPROVE_PROMPT, OPEN_PR_PROMPT, reviewPrPrompt, startIssuePrompt, taskTabTitle } from './work/prompts.js';
 import { readTail } from './maestro/log-tail.js';
 import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
@@ -637,6 +637,7 @@ let graphParser = null;
 const graphIndexers = new Map(); // checkout root → indexer
 const graphRefreshTimers = new Map();
 const maestroPlans = new Map(); // sessionId → the plan its "Vizor-plano:" line declared
+const taskTitles = new Map(); // ptyId → '#169 Menu de ação…', the tab of a chat opened for a task
 // The checklist each chat keeps in .vizor/plano.md, shown live (the core flow).
 const workPlans = createPlanTracker({
   readFile: (file) => fs.promises.readFile(file, 'utf8'),
@@ -860,7 +861,7 @@ async function startIssue(number) {
     taskLinks.link(root, number, existing.sessionId);
     return { sessionId: existing.sessionId };
   }
-  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number) });
+  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number });
   if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
   taskLinks.link(root, number, opened.sessionId);
   workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
@@ -1953,7 +1954,7 @@ function pushWorkspaceStateNow() {
     }
   workspaceWindow.send('workspace:state', {
     tree,
-    terminals: ptyHost?.list() ?? [],
+    terminals: (ptyHost?.list() ?? []).map((terminal) => ({ ...terminal, taskTitle: taskTitles.get(terminal.id) ?? null })),
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
@@ -4006,11 +4007,17 @@ async function excludePlanFile(cwd) {
   }
 }
 
-async function voiceOpenNew({ cwd, prompt }) {
+// task: the issue the chat is for, which names its tab (taskTitles, over the
+// title the terminal sets itself).
+async function voiceOpenNew({ cwd, prompt, task = null }) {
   workspaceWindow?.show();
   if (cwd) await excludePlanFile(cwd);
   const opened = openTerminal({ cwd, kind: 'claude', prompt });
   if (opened.error) return Promise.resolve({ sessionId: null });
+  if (Number.isInteger(task)) {
+    const issue = (lastGhResults?.openIssues ?? []).find((item) => item.number === task);
+    taskTitles.set(opened.id, taskTabTitle(task, issue?.title));
+  }
   return new Promise((resolve) => {
     pendingNewChats.set(opened.id, resolve);
     setTimeout(() => {

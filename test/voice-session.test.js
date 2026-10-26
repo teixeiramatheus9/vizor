@@ -103,7 +103,7 @@ describe('voice session — edges', () => {
     await session.onUtterance('retoma a task 22');
     expect(texts().at(-1)).toBe('Não achei conversa da 22. Abro um chat novo pra ela?');
     await session.onUtterance('sim');
-    expect(calls).toContainEqual(['new', { cwd: '/r-wt/login', prompt: startIssuePrompt(22) }]);
+    expect(calls).toContainEqual(['new', { cwd: '/r-wt/login', prompt: startIssuePrompt(22), task: 22 }]);
     expect(calls).toContainEqual(['link', 22, 'snew']);
     expect(session.target()).toEqual({ kind: 'chat', sessionId: 'snew' });
   });
@@ -570,7 +570,7 @@ describe('voice session — only what cannot be undone is held', async () => {
     await session.onUtterance('pega a issue 169 pra desenvolver');
     await tick();
     expect(pendingOrder.pending()).toBeNull();
-    expect(calls.find(([name]) => name === 'new')[1].prompt).toContain('issue #169');
+    expect(calls.find(([name]) => name === 'new')[1]).toMatchObject({ task: 169 });
     await session.onUtterance('revisa a PR 166');
     await tick();
     expect(pendingOrder.pending()).toBeNull();
@@ -970,7 +970,7 @@ describe('voice session — routines, review fixes', async () => {
     expect(texts().at(-1)).toBe('Parei a rotina dia no passo 1: responda e siga à mão.');
     expect(calls.some(([name]) => name === 'deliver')).toBe(false);
     await session.onUtterance('sim');
-    expect(calls).toContainEqual(['new', { cwd: '/r', prompt: startIssuePrompt(40) }]);
+    expect(calls).toContainEqual(['new', { cwd: '/r', prompt: startIssuePrompt(40), task: 40 }]);
   });
 
   it('I4: a routine that cannot be read says how to say it', async () => {

@@ -69,6 +69,7 @@ try {
   await workspace.waitForSelector('#plan-card >> text=Plano · 0/3', { timeout: 30000 });
   assert.match(await workspace.textContent('#plan-card'), /Ler a issue.*Criar o menu.*Testar o menu/s);
   assert.equal(await workspace.isVisible('[data-plan="approve"]'), true);
+  assert.match(await workspace.textContent('#tabs'), /#169 Menu de ação/);
   if (shots) await workspace.screenshot({ path: path.join(shots, 'e2e-plan.png') });
   // The plan file stays out of git.
   assert.match(fs.readFileSync(path.join(repo, '.git', 'info', 'exclude'), 'utf8'), /^\.vizor\/$/m);

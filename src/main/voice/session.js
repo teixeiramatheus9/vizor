@@ -353,7 +353,7 @@ export function createVoiceSession(deps) {
   async function pickIssue(number) {
     const found = await deps.resolveTask(number);
     if (found.sessionId) return openFound(number, found);
-    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: startIssuePrompt(number) });
+    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: startIssuePrompt(number), task: number });
     if (!opened?.sessionId) return say(lines().newChatFailed);
     deps.linkTask(number, opened.sessionId);
     bind(opened.sessionId, number);
@@ -423,7 +423,7 @@ export function createVoiceSession(deps) {
   }
 
   async function openNewChat(pending) {
-    const opened = await deps.openNew({ cwd: pending.cwd, prompt: startIssuePrompt(pending.number) });
+    const opened = await deps.openNew({ cwd: pending.cwd, prompt: startIssuePrompt(pending.number), task: pending.number });
     if (!opened?.sessionId) {
       say(lines().newChatFailed);
       return;

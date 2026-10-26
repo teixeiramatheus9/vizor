@@ -215,7 +215,7 @@ export function renderTopBar(tree, { chatHidden = false, voice = null, maestro =
 export function renderTabs(terminals, activeId, titles) {
   const tabs = terminals
     .map((terminal, index) => {
-      const title = titles?.[terminal.id] || `terminal ${index + 1}`;
+      const title = terminal.taskTitle || titles?.[terminal.id] || `terminal ${index + 1}`;
       const ended = terminal.alive ? '' : ` · encerrado (${terminal.exitCode ?? '?'})`;
       return `<button class="tab${terminal.alive ? '' : ' exited'}" data-tab="${escapeHtml(terminal.id)}" aria-selected="${
         terminal.id === activeId

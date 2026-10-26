@@ -15,3 +15,13 @@ export const OPEN_PR_PROMPT = 'Rode os testes do projeto. Se passarem, faça o c
 // A reviewer reports and changes nothing.
 export const reviewPrPrompt = (number) =>
   `Revise a PR #${number}: leia com \`gh pr view ${number}\` e \`gh pr diff ${number}\`, aponte os problemas por gravidade com arquivo e linha, e não mude código nem publique comentários sem eu pedir.`;
+
+// The tab of a chat opened for a task carries its number and title, short.
+const TAB_MAX = 32;
+export function taskTabTitle(number, title) {
+  const full = title ? `#${number} ${String(title).trim()}` : `#${number}`;
+  if (full.length <= TAB_MAX) return full;
+  let cut = full.slice(0, TAB_MAX - 2);
+  if (full[TAB_MAX - 2] !== ' ') cut = cut.replace(/\s+\S*$/, '');
+  return `${cut}…`;
+}

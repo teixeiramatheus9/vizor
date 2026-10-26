@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { APPROVE_PROMPT, OPEN_PR_PROMPT, startIssuePrompt } from '../src/main/work/prompts.js';
+import { APPROVE_PROMPT, OPEN_PR_PROMPT, startIssuePrompt, taskTabTitle } from '../src/main/work/prompts.js';
 
 describe('what the Vizor asks a músico', () => {
   it('starting an issue asks for the plan as a checklist file, then a wait for the ok', () => {
@@ -16,5 +16,11 @@ describe('what the Vizor asks a músico', () => {
     expect(APPROVE_PROMPT).toContain('.vizor/plano.md');
     expect(OPEN_PR_PROMPT).toMatch(/testes/);
     expect(OPEN_PR_PROMPT).toMatch(/PR/);
+  });
+
+  it('the chat tab is named after its task, short', () => {
+    expect(taskTabTitle(169, 'Menu de ação ao clicar no ícone do Vizor no canto superior')).toBe('#169 Menu de ação ao clicar no…');
+    expect(taskTabTitle(7, 'Curto')).toBe('#7 Curto');
+    expect(taskTabTitle(7, null)).toBe('#7');
   });
 });
