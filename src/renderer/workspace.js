@@ -27,6 +27,7 @@ import {
   stillWanted,
 } from './inspector-state.js';
 import { renderPlan } from './plan-view.js';
+import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
 import { ZOOM_MAX, ZOOM_OPEN, ZOOM_STEP, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
 
@@ -1151,4 +1152,137 @@ window.vizor.onFocusSession(({ sessionId }) => {
     return;
   }
   if (sessionId) selectSession(sessionId);
+});
+
+// --- Ctrl+K (core flow) ------------------------------------------------------
+// The same actions as the voice, by keyboard. Ctrl+K is taken before the
+// terminal sees it.
+const commandBar = document.getElementById('command-bar');
+const commandInput = document.getElementById('command-input');
+const commandList = document.getElementById('command-list');
+const commandToast = document.getElementById('command-toast');
+let commandCatalog = null; // { issues, prs, error } once main answered
+let commandShown = [];
+let commandSelected = 0;
+let commandToastTimer = null;
+
+function treeSessions() {
+  const placed = (lastTree?.projects ?? []).flatMap((project) => project.worktrees.flatMap((worktree) => worktree.sessions));
+  return [...placed, ...(lastTree?.unplacedSessions ?? [])];
+}
+
+function commandChats() {
+  return treeSessions().map((session) => {
+    const musician = musicianOf(session.id);
+    const name = session.name || 'chat';
+    return { sessionId: session.id, name: musician ? `${musician.name} ${name}` : name, status: session.status };
+  });
+}
+
+function refreshCommandList() {
+  const items = buildCommands({
+    issues: commandCatalog?.issues ?? [],
+    prs: commandCatalog?.prs ?? [],
+    issuesError: Boolean(commandCatalog?.error),
+    issuesLoading: !commandCatalog,
+    chats: commandChats(),
+    plans,
+    focusedId: planSessionId(),
+    maestroOn: maestro.on,
+  });
+  commandShown = filterCommands(items, commandInput.value);
+  commandSelected = Math.max(0, commandShown.findIndex((item) => !item.disabled));
+  drawCommandList();
+}
+
+function drawCommandList() {
+  commandList.innerHTML = renderCommandList(commandShown, commandSelected);
+  commandList.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+}
+
+function openCommandBar() {
+  commandBar.hidden = false;
+  commandInput.value = '';
+  commandCatalog = null;
+  refreshCommandList();
+  commandInput.focus();
+  window.vizor
+    .commandCatalog()
+    .catch(() => ({ issues: [], prs: [], error: true }))
+    .then((catalog) => {
+      commandCatalog = catalog;
+      if (!commandBar.hidden) refreshCommandList();
+    });
+}
+
+function closeCommandBar() {
+  commandBar.hidden = true;
+  if (!maestro.on) views.get(activeTab)?.term.focus();
+}
+
+function toast(text) {
+  commandToast.textContent = text;
+  commandToast.hidden = false;
+  clearTimeout(commandToastTimer);
+  commandToastTimer = setTimeout(() => (commandToast.hidden = true), 5000);
+}
+
+async function runCommandItem(item) {
+  if (!item || item.disabled) return;
+  closeCommandBar();
+  const { action } = item;
+  if (action.type === 'focus') {
+    if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
+    else selectSession(action.sessionId);
+    return;
+  }
+  if (action.type === 'approve' || action.type === 'open-pr') {
+    const result = await window.vizor.planAction(action.sessionId, action.type === 'approve' ? 'approve' : 'pr');
+    if (PLAN_NOTES[result]) toast(PLAN_NOTES[result]);
+    return;
+  }
+  if (action.type === 'pick-issue') toast(`abrindo a #${action.number}…`);
+  const result = await window.vizor.runCommand(action);
+  if (result?.error) toast(result.error);
+  else if (action.type === 'pick-issue') commandToast.hidden = true;
+}
+
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'k') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (commandBar.hidden) openCommandBar();
+    else closeCommandBar();
+  },
+  true,
+);
+
+commandInput.addEventListener('input', refreshCommandList);
+commandInput.addEventListener('keydown', (event) => {
+  const step = (delta) => {
+    if (!commandShown.length) return;
+    let next = commandSelected;
+    for (let index = 0; index < commandShown.length; index++) {
+      next = (next + delta + commandShown.length) % commandShown.length;
+      if (!commandShown[next].disabled) break;
+    }
+    commandSelected = next;
+    drawCommandList();
+  };
+  if (event.key === 'ArrowDown') step(1);
+  else if (event.key === 'ArrowUp') step(-1);
+  else if (event.key === 'Enter') runCommandItem(commandShown[commandSelected]);
+  else if (event.key === 'Escape') closeCommandBar();
+  else return;
+  event.preventDefault();
+});
+commandList.addEventListener('mousedown', (event) => {
+  event.preventDefault();
+  const row = event.target.closest('[data-command-index]');
+  if (row) runCommandItem(commandShown[Number(row.dataset.commandIndex)]);
+});
+document.addEventListener('mousedown', (event) => {
+  if (!commandBar.hidden && !commandBar.contains(event.target)) closeCommandBar();
 });

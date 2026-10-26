@@ -1273,3 +1273,80 @@ svg.graph line.call.picked {
   white-space: pre-wrap;
   color: var(--muted);
 }
+
+/* Ctrl+K (core flow) */
+#command-bar {
+  position: fixed;
+  top: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 32px));
+  z-index: 50;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
+  overflow: hidden;
+}
+#command-bar[hidden],
+#command-toast[hidden] {
+  display: none;
+}
+#command-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 1.05em;
+  color: var(--text);
+  background: var(--bg-surface);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  outline: none;
+}
+#command-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.command-item {
+  display: flex;
+  gap: 10px;
+  padding: 5px 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.command-item[aria-selected='true'] {
+  background: var(--track);
+  color: var(--text);
+}
+.command-item.disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.command-group {
+  flex: 0 0 56px;
+  color: var(--text-3);
+  font-size: 0.85em;
+}
+.command-empty {
+  padding: 8px 12px;
+  color: var(--muted);
+}
+#command-toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: var(--bg-header);
+  border: 1px solid var(--border);
+  color: var(--text);
+}

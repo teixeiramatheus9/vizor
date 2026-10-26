@@ -848,6 +848,59 @@ async function deliverWhenFree(sessionId, text, { tries = 30, everyMs = 2000 } =
   return 'timeout';
 }
 
+// Picking an issue by keyboard: its chat if it has one (the newest of several),
+// otherwise a new one asked for the plan first.
+async function startIssue(number) {
+  const root = voiceRoot();
+  if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+  const found = await voiceResolveTask(number);
+  const existing = found.sessionId ? found : found.candidates?.[0];
+  if (existing?.sessionId) {
+    await voiceOpenOrFocus({ sessionId: existing.sessionId, cwd: existing.cwd });
+    taskLinks.link(root, number, existing.sessionId);
+    return { sessionId: existing.sessionId };
+  }
+  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number) });
+  if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
+  taskLinks.link(root, number, opened.sessionId);
+  return { sessionId: opened.sessionId };
+}
+
+// What the Ctrl+K bar lists from GitHub: open issues and PRs, read by gh.
+ipcMain.handle('workspace:catalog', async () => {
+  if (!lastGhResults || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
+  if (!lastGhResults) return { issues: [], prs: [], error: true };
+  const pick = (list) => (list ?? []).map(({ number, title }) => ({ number, title }));
+  return { issues: pick(lastGhResults.openIssues), prs: pick(lastGhResults.prs), error: false };
+});
+
+// The action the bar picked; focus is the renderer's own.
+ipcMain.handle('workspace:command', async (_event, action = {}) => {
+  try {
+    if (action.type === 'pick-issue' && Number.isInteger(action.number)) return await startIssue(action.number);
+    if (action.type === 'review-pr' && Number.isInteger(action.number)) {
+      const root = voiceRoot();
+      if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+      const opened = await voiceOpenNew({ cwd: root, prompt: reviewPrPrompt(action.number) });
+      if (!opened.sessionId) return { error: 'Não consegui abrir o chat do avaliador.' };
+      taskLinks.link(root, action.number, opened.sessionId);
+      return { sessionId: opened.sessionId };
+    }
+    if (action.type === 'interrupt' && typeof action.sessionId === 'string') {
+      const ptyId = ptyOfSession(action.sessionId);
+      return ptyId && maestroInterrupt(ptyId) ? {} : { error: 'Esse chat não está numa aba do Vizor.' };
+    }
+    if (action.type === 'maestro') {
+      applyConfig({ maestroEnabled: Boolean(action.on) });
+      return {};
+    }
+    return { error: 'Ação desconhecida.' };
+  } catch (error) {
+    log(`command failed: ${error?.stack ?? error}`);
+    return { error: 'Deu erro, veja o log.' };
+  }
+});
+
 // The plan card's buttons: the ok, and the PR once every step is done.
 ipcMain.handle('workspace:plan', async (_event, { sessionId, action } = {}) => {
   if (typeof sessionId !== 'string' || !workPlans.planOf(sessionId)) return 'failed';
@@ -3880,11 +3933,13 @@ async function voiceGhDigest() {
     );
     lastGhDigest = buildDigest(results, spokenLang());
     lastGhContext = managerContext(results);
+    lastGhResults = results;
     lastGhDigestAt = Date.now();
   } catch (error) {
     log(`gh digest failed: ${error}`);
     lastGhDigest = buildDigest({ error: String(error) }, spokenLang());
     lastGhContext = managerContext({ error: String(error) });
+    lastGhResults = null;
   }
   return lastGhDigest;
 }
@@ -3980,6 +4035,7 @@ async function voiceDeliverPrompt(sessionId, text) {
 const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
 let lastGhDigestAt = 0;
 let lastGhContext = null;
+let lastGhResults = null; // the raw gh lists, for the Ctrl+K bar
 
 // The gerente has no tools of its own: it gets the project's GitHub state
 // with the question (live test: "não tenho acesso ao GitHub").
