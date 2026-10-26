@@ -5,6 +5,7 @@ import { closestPhrase } from './vocabulary.js';
 import { findAgent, findMusicians } from '../maestro/orchestra.js';
 import { parseSteps } from '../maestro/conductor.js';
 import { REVIEW_TASK_PROMPT } from '../maestro/reviewer.js';
+import { reviewPrPrompt, startIssuePrompt } from '../work/prompts.js';
 
 // The voice conversation (#161): who the voice talks to (the gerente or one
 // chat), what each utterance does, and what comes back spoken. Every side
@@ -17,13 +18,6 @@ const PROPOSALS = [
   [/(?:quer que eu peça revisão da pr|want me to get pr) #?(\d+)/i, 'review-pr'],
   [/(?:quer que eu retome a|want me to resume) (?:task |tarefa |issue )?#?(\d+)/i, 'resume-task'],
 ];
-// What the new músico is told: plan first (the Maestro lights the plan up),
-// and a reviewer reports without changing anything.
-const PICK_PROMPT = (number) =>
-  `Vamos trabalhar na issue #${number}. Leia com \`gh issue view ${number}\`, me diga o plano (quais arquivos e funções vai tocar) e espere meu ok antes de mexer. ` +
-  'Termine o plano com uma linha `Vizor-plano: caminho/arquivo.js#funcao, outro/arquivo.js` (caminhos relativos à raiz do projeto).';
-const REVIEW_PROMPT = (number) =>
-  `Revise a PR #${number}: leia com \`gh pr view ${number}\` e \`gh pr diff ${number}\`, aponte os problemas por gravidade com arquivo e linha, e não mude código nem publique comentários sem eu pedir.`;
 // What the voice says back follows the voice's language; the commands the
 // user speaks stay Portuguese either way.
 const LINES = {
@@ -329,7 +323,7 @@ export function createVoiceSession(deps) {
   async function pickIssue(number) {
     const found = await deps.resolveTask(number);
     if (found.sessionId) return openFound(number, found);
-    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: PICK_PROMPT(number) });
+    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: startIssuePrompt(number) });
     if (!opened?.sessionId) return say(lines().newChatFailed);
     deps.linkTask(number, opened.sessionId);
     bind(opened.sessionId, number);
@@ -338,7 +332,7 @@ export function createVoiceSession(deps) {
 
   // The reviewer works on its own: the voice stays with whoever it was with.
   async function reviewPr(number) {
-    const opened = await deps.openNew({ cwd: deps.projectRoot(), prompt: REVIEW_PROMPT(number) });
+    const opened = await deps.openNew({ cwd: deps.projectRoot(), prompt: reviewPrPrompt(number) });
     if (!opened?.sessionId) return say(lines().newChatFailed);
     deps.linkTask(number, opened.sessionId);
     return say(lines().reviewing(number));
@@ -399,7 +393,7 @@ export function createVoiceSession(deps) {
   }
 
   async function openNewChat(pending) {
-    const opened = await deps.openNew({ cwd: pending.cwd, prompt: `Vamos trabalhar na issue #${pending.number}.` });
+    const opened = await deps.openNew({ cwd: pending.cwd, prompt: startIssuePrompt(pending.number) });
     if (!opened?.sessionId) {
       say(lines().newChatFailed);
       return;

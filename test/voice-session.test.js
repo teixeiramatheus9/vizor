@@ -1,3 +1,4 @@
+import { startIssuePrompt } from '../src/main/work/prompts.js';
 import { describe, it, expect } from 'vitest';
 import { createVoiceSession } from '../src/main/voice/session.js';
 
@@ -102,7 +103,7 @@ describe('voice session — edges', () => {
     await session.onUtterance('retoma a task 22');
     expect(texts().at(-1)).toBe('Não achei conversa da 22. Abro um chat novo pra ela?');
     await session.onUtterance('sim');
-    expect(calls).toContainEqual(['new', { cwd: '/r-wt/login', prompt: 'Vamos trabalhar na issue #22.' }]);
+    expect(calls).toContainEqual(['new', { cwd: '/r-wt/login', prompt: startIssuePrompt(22) }]);
     expect(calls).toContainEqual(['link', 22, 'snew']);
     expect(session.target()).toEqual({ kind: 'chat', sessionId: 'snew' });
   });
@@ -887,7 +888,7 @@ describe('voice session — routines, review fixes', async () => {
     expect(texts().at(-1)).toBe('Parei a rotina dia no passo 1: responda e siga à mão.');
     expect(calls.some(([name]) => name === 'deliver')).toBe(false);
     await session.onUtterance('sim');
-    expect(calls).toContainEqual(['new', { cwd: '/r', prompt: 'Vamos trabalhar na issue #40.' }]);
+    expect(calls).toContainEqual(['new', { cwd: '/r', prompt: startIssuePrompt(40) }]);
   });
 
   it('I4: a routine that cannot be read says how to say it', async () => {
