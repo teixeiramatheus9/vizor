@@ -37,6 +37,8 @@ App Electron (src/main/index.js)
   ├── display-mode.js      → decide modo managed (XWayland) vs Wayland (puro)
   ├── cc-sessions.js       → resolve sessionId → socket/token/pid do Claude Code
   ├── cc-peer.js           → cliente NDJSON do socket da sessão
+  ├── work/                → fluxo principal: plano do chat (.vizor/plano.md),
+  │                          prompts compartilhados entre voz e Ctrl+K
   ├── terminal-target.js   → foco EXATO de aba via CLI do terminal (kitty/wezterm/tmux),
   │                          com a identidade que o hook capturou do env da sessão
   ├── maestro/             → modo Maestro (#159): orquestra (chats do workspace
@@ -88,6 +90,7 @@ Pontos críticos:
 ```bash
 npm start                 # sobe a bolha
 npm test                  # vitest
+npm run test:e2e          # ponta a ponta no Electron real (Xephyr escondido, claude/gh falsos)
 npm run hooks:install     # registra hooks globais (com backup do settings.json)
 npm run hooks:remove      # desinstala os hooks
 npm run autostart:install # sobe junto com o login

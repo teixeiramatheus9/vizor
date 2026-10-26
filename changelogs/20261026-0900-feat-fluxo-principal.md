@@ -1,0 +1,4 @@
+- Ctrl+K no workspace: puxe uma issue pelo número ou pelo título, vá pra qualquer chat, interrompa um que está rodando, chame a revisão de uma PR ou ligue o Maestro, tudo pelo teclado.
+- O plano do chat ao vivo: ao puxar uma issue, o chat escreve o plano como checklist em `.vizor/plano.md` (fora do git) e ele aparece no topo do painel da direita, marcando cada passo conforme o chat avança. "Aprovar plano" manda seguir; com tudo feito, "Abrir PR" pede pra rodar os testes e abrir a PR.
+- A aba de um chat aberto pra uma issue leva o número e o título dela.
+- Por voz, "aprova o plano" e "abre a PR da 169"; no Maestro, puxar, retomar e revisar vão na hora, e só o que não dá pra desfazer espera os 3 s do "cancela".

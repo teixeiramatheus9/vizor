@@ -60,14 +60,27 @@ de dev (GitHub, PR, push, deploy…) saem com a pronúncia que dev brasileiro us
 | **Santa** | Kokoro (`pm_santa`) | ~350MB |
 | **Inglês (EUA) 1–10** | Supertonic em inglês americano (mesmo modelo da Clara) | — |
 
+### Fluxo principal: issue → plano → PR (Ctrl+K)
+
+No workspace, **Ctrl+K** abre a barra de comandos: digite o número ou um pedaço
+do título de uma issue e Enter. O Vizor abre um chat do Claude pra ela (a aba
+leva o nome da issue), que lê a issue e escreve o **plano** como checklist em
+`.vizor/plano.md` (fora do git). O plano aparece no topo do painel da direita e
+se marca sozinho conforme o chat avança. "Aprovar plano" manda ele seguir;
+com tudo feito, "Abrir PR" pede pra rodar os testes e abrir a PR. A mesma barra
+leva a qualquer chat, interrompe um que está rodando, chama a revisão de uma PR
+e liga o Maestro. Por voz: "aprova o plano" e "abre a PR da 169".
+
 ### Modo Maestro
 
 No workspace, o **Maestro** tira o chat da frente: você rege os chats do Claude
 (os músicos) pela voz e vê o código sendo escrito, com o que a IA diz num balão
 por cima. Diga "Vizor, ative o modo Maestro" (ou clique em "♪ Maestro"); "vai
 pra 22" foca um músico e "Vizor, interrompa a task 22" para a tarefa dele.
-Toda ordem que mexe em trabalho aparece como "entendi: …" e espera 3 s, pra
-você dizer "cancela" se ele entendeu errado. À direita, o **grafo** do projeto
+Ordem que não dá pra desfazer (interromper, digitar num músico, aprovar um
+plano, ordens e rotinas) aparece como "entendi: …" e espera 3 s, pra você
+dizer "cancela" se ele entendeu errado; abrir trabalho (puxar ou retomar uma
+issue, revisar uma PR) vai na hora. À direita, o **grafo** do projeto
 (JS/TS): as pastas e seus arquivos; aproxime (roda do mouse ou clique) e o
 arquivo se abre nas funções. Cada músico acende o que mexeu e o que planejou
 mexer, na cor dele. O gerente guarda ordens ("quando a 22 terminar, roda os
