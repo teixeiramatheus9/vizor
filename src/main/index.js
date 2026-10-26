@@ -855,8 +855,8 @@ async function deliverWhenFree(sessionId, text, { tries = 30, everyMs = 2000 } =
 async function startIssue(number) {
   const root = voiceRoot();
   if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
-  const found = await voiceResolveTask(number);
-  const existing = found.sessionId ? found : found.candidates?.[0];
+  const found = await voiceResolveTask(number, { byTitle: false });
+  const existing = found.sessionId ? found : null;
   if (existing?.sessionId) {
     await voiceOpenOrFocus({ sessionId: existing.sessionId, cwd: existing.cwd });
     taskLinks.link(root, number, existing.sessionId);
@@ -3958,7 +3958,7 @@ async function voiceGhDigest() {
   return lastGhDigest;
 }
 
-async function voiceResolveTask(number) {
+async function voiceResolveTask(number, { byTitle = true } = {}) {
   const root = voiceRoot();
   if (!root) return { none: true };
   const worktrees = worktreeCache.get(root) ?? (await listWorktrees(root).catch(() => [])) ?? [];
@@ -3968,7 +3968,7 @@ async function voiceResolveTask(number) {
     for (const conversation of await listConversations(await resolveClaudeProjectDir(folder), { limit: 200 }))
       conversations.push({ ...conversation, cwd: folder });
   }
-  const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees });
+  const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees, byTitle });
   if (found.sessionId) {
     const snapshot = await readTranscriptSnapshot(claudeTranscriptPath(found.cwd, found.sessionId)).catch(() => null);
     const title = conversations.find((item) => item.sessionId === found.sessionId)?.title ?? null;

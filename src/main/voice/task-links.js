@@ -8,7 +8,9 @@
 const cites = (number) => new RegExp(`(^|[-_/])${number}([-_/]|$)`);
 const titleCites = (number) => new RegExp(`(#|\\b(task|tarefa|issue|pr|demanda)\\s+#?)${number}([^0-9]|$)`, 'i');
 
-export function resolveTask({ number, links = [], conversations = [], worktrees = [] }) {
+// byTitle false: only a chat linked to the task or in its worktree counts, no
+// guess from a title (the keyboard starts fresh rather than resume a stranger).
+export function resolveTask({ number, links = [], conversations = [], worktrees = [], byTitle = true }) {
   const byId = new Map(conversations.map((item) => [item.sessionId, item]));
   for (const sessionId of links) {
     const linked = byId.get(sessionId);
@@ -21,6 +23,7 @@ export function resolveTask({ number, links = [], conversations = [], worktrees 
       .sort((a, b) => b.updatedAt - a.updatedAt)[0];
     if (newest) return { sessionId: newest.sessionId, cwd: newest.cwd };
   }
+  if (!byTitle) return worktree ? { none: true, cwd: worktree.path } : { none: true };
   const titled = conversations
     .filter((item) => titleCites(number).test(item.title ?? ''))
     .sort((a, b) => b.updatedAt - a.updatedAt);

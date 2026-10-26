@@ -7,11 +7,11 @@ import { readConversationTitle } from './transcript.js';
 
 const HEAD_BYTES = 64 * 1024;
 
-async function readHead(file) {
+async function readHead(file, bytes = HEAD_BYTES) {
   const handle = await fs.open(file, 'r');
   try {
-    const buffer = Buffer.alloc(HEAD_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
     return buffer.subarray(0, bytesRead).toString('utf8');
   } finally {
     await handle.close();
@@ -69,12 +69,18 @@ export async function resolveClaudeProjectDir(
   return exact;
 }
 
+// How a transcript's chat was started: "cli" for one a person had, "sdk-cli"
+// for a headless `claude -p` run (the Vizor's own Haiku calls among them).
+export async function readEntrypoint(file) {
+  return (await readHead(file, 8192)).match(/"entrypoint":"([^"]+)"/)?.[1] ?? null;
+}
+
 // The chats Claude Code saved for a folder (~/.claude/projects/<flattened>),
 // newest first, for "retomar conversa" (#154). Only <session id>.jsonl files
 // with something in them: an empty one is a chat that never got a message.
 export async function listConversations(
   dir,
-  { readdir = fs.readdir, stat = fs.stat, readTitle = readConversationTitle, limit = 15 } = {},
+  { readdir = fs.readdir, stat = fs.stat, readTitle = readConversationTitle, readEntrypoint: entrypointOf = readEntrypoint, limit = 15 } = {},
 ) {
   let names;
   try {
@@ -93,8 +99,16 @@ export async function listConversations(
     }
   }
   candidates.sort((a, b) => b.updatedAt - a.updatedAt);
+  // Headless runs are no chats to resume (live test: the Vizor's own Haiku
+  // prompts cite issue numbers and were taken for that issue's chat).
+  const chats = [];
+  for (const candidate of candidates) {
+    if (chats.length === limit) break;
+    const entrypoint = await entrypointOf(path.join(dir, candidate.name)).catch(() => null);
+    if (!String(entrypoint ?? '').startsWith('sdk')) chats.push(candidate);
+  }
   return Promise.all(
-    candidates.slice(0, limit).map(async ({ name, updatedAt }) => ({
+    chats.map(async ({ name, updatedAt }) => ({
       sessionId: name.slice(0, -'.jsonl'.length),
       title: await readTitle(path.join(dir, name)),
       updatedAt,

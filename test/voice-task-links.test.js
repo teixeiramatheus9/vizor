@@ -101,3 +101,14 @@ describe('numberOf (the Maestro addresses a músico by its task)', () => {
     expect(links.numberOf(null, 's1')).toBeNull();
   });
 });
+
+describe('resolveTask without title guesses (Ctrl+K, live test)', () => {
+  it('a chat that only mentions the issue in its title is not taken; the issue worktree gets a new chat', () => {
+    const conversations = [{ sessionId: 'old', title: 'Issue #169', cwd: '/r', updatedAt: 5 }];
+    const worktrees = [{ path: '/r-wt/169', branch: 'test/169-real' }];
+    expect(resolveTask({ number: 169, conversations, worktrees, byTitle: false })).toEqual({ none: true, cwd: '/r-wt/169' });
+    expect(resolveTask({ number: 169, conversations, byTitle: false })).toEqual({ none: true });
+    expect(resolveTask({ number: 169, conversations, worktrees }).sessionId).toBe('old');
+  });
+});
+
