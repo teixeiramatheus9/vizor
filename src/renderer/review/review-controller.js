@@ -34,6 +34,9 @@ export function requestText(request) {
 export const hunkContext = (path, hunk) => ({ kind: 'hunk', path, newStart: hunk.newStart, newLines: hunk.newLines });
 
 export function nodeContext(node) {
+  const path = node.files?.[0] ?? '';
+  // A module node is its file: "src/a.js (src/a.js)" says nothing twice.
+  if (!node.range && String(node.label ?? node.id) === path) return { kind: 'file', path };
   const context = { kind: 'node', label: String(node.label ?? node.id), path: node.files?.[0] ?? '' };
   if (node.range) Object.assign(context, { startLine: node.range.startLine, endLine: node.range.endLine });
   return context;
@@ -94,7 +97,11 @@ export function createReviewController({ api, doc = document, notify = () => {},
   let tab = 'summary';
   let pinnedTab = false; // the Maestro holds the tab: a worktree's prefs do not move it
   let drawer = { open: true, height: DRAWER_DEFAULT };
-  let drawerTouched = false; // set while prefs load: an explicit open/close wins
+  // Explicit opens/closes, counted: one since the last setContext (a sidebar
+  // click, Ctrl+K: showDrawer() and then render()) or while the prefs load
+  // beats the worktree's saved drawer.
+  let drawerSets = 0;
+  let drawerSetsSeen = 0;
   let prefsSerial = 0;
   const serial = { summary: 0, file: 0, slice: 0 };
   let summary = null;
@@ -154,7 +161,9 @@ export function createReviewController({ api, doc = document, notify = () => {},
   }
 
   // --- the drawer -------------------------------------------------------------
-  function applyDrawer() {
+  // notify: false when only the height may have moved (the ResizeObserver on
+  // the terminal refits it); a state change also focuses or blurs it.
+  function applyDrawer({ notify = true } = {}) {
     drawerEl.classList.toggle('open', drawer.open);
     drawerEl.style.height = drawer.open ? `${clampDrawerHeight(drawer.height, reviewEl.clientHeight || 600)}px` : '';
     const toggle = drawerEl.querySelector('[data-toggle-drawer]');
@@ -162,12 +171,12 @@ export function createReviewController({ api, doc = document, notify = () => {},
       toggle.textContent = drawer.open ? '▾' : '▴';
       toggle.title = drawer.open ? 'Fechar o terminal (Ctrl+`)' : 'Abrir o terminal (Ctrl+`)';
     }
-    onDrawerChange(drawer.open);
+    if (notify) onDrawerChange(drawer.open);
   }
 
   // Closing only hides it: every pty keeps running in main.
   function setDrawer(open, { persist: save = true } = {}) {
-    drawerTouched = true;
+    drawerSets++;
     if (drawer.open === open) return;
     drawer.open = open;
     applyDrawer();
@@ -216,9 +225,10 @@ export function createReviewController({ api, doc = document, notify = () => {},
     for (const key of Object.keys(serial)) serial[key]++;
   }
 
-  async function loadPrefs() {
+  // explicit: the drawer was just set by hand, before this worktree was picked.
+  async function loadPrefs({ explicit = false } = {}) {
     const mine = ++prefsSerial;
-    drawerTouched = false;
+    const setsBefore = drawerSets;
     const saved = worktree ? await api.reviewPrefs(worktree).catch(() => ({})) : {};
     if (mine !== prefsSerial) return;
     if (!pinnedTab && TAB_IDS.has(saved?.tab)) {
@@ -226,8 +236,12 @@ export function createReviewController({ api, doc = document, notify = () => {},
       showTab();
     }
     if (Number.isFinite(saved?.drawerHeight)) drawer.height = saved.drawerHeight;
-    if (!drawerTouched && typeof saved?.drawerOpen === 'boolean') drawer.open = saved.drawerOpen;
-    applyDrawer();
+    // The Maestro following a músico leaves the drawer where it is, too.
+    const keep = explicit || drawerSets !== setsBefore || pinnedTab;
+    const wasOpen = drawer.open;
+    if (!keep && typeof saved?.drawerOpen === 'boolean') drawer.open = saved.drawerOpen;
+    else if (explicit && worktree && saved?.drawerOpen !== drawer.open) persist({ drawerOpen: drawer.open });
+    applyDrawer({ notify: drawer.open !== wasOpen });
     const opened = saved?.openFiles?.[0];
     if (opened && !selectedPath) selectedPath = opened;
     refreshVisible();
@@ -237,11 +251,13 @@ export function createReviewController({ api, doc = document, notify = () => {},
   function setContext(next) {
     sessions = next.sessions ?? [];
     agentId = next.agentId ?? null;
+    const explicit = drawerSets !== drawerSetsSeen;
+    drawerSetsSeen = drawerSets;
     if (next.worktree !== worktree) {
       worktree = next.worktree ?? null;
       resetWorktreeState();
       drawEmpty();
-      loadPrefs();
+      loadPrefs({ explicit });
     }
     renderComposerPanel();
   }

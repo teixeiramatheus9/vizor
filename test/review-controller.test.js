@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   EXPLAIN_TEXT,
+  createReviewController,
   clampDrawerHeight,
   composerTarget,
   hunkContext,
@@ -36,7 +37,9 @@ describe('the review wiring helpers', () => {
     expect(hunkContext('a.js', { id: 'h', newStart: 4, newLines: 2, lines: [] })).toEqual({ kind: 'hunk', path: 'a.js', newStart: 4, newLines: 2 });
     expect(nodeContext({ id: 'a.js#run', label: 'run', files: ['a.js'], range: { startLine: 3, endLine: 9 } }))
       .toEqual({ kind: 'node', label: 'run', path: 'a.js', startLine: 3, endLine: 9 });
-    expect(nodeContext({ id: 'b.js', label: 'b.js', files: ['b.js'], range: null })).toEqual({ kind: 'node', label: 'b.js', path: 'b.js' });
+    expect(nodeContext({ id: 'b.js', label: 'x', files: ['b.js'], range: null })).toEqual({ kind: 'node', label: 'x', path: 'b.js' });
+    // A module node is its file: no "src/b.js (src/b.js)".
+    expect(nodeContext({ id: 'src/b.js', label: 'src/b.js', files: ['src/b.js'], range: null })).toEqual({ kind: 'file', path: 'src/b.js' });
   });
 
   it('tells whether a hunk touches a range, a deletion by its line', () => {
@@ -76,5 +79,83 @@ describe('the review wiring helpers', () => {
     expect(verdictAction('untested')).toEqual({ tab: 'impact' });
     expect(verdictAction('contract')).toEqual({ tab: 'changes' });
     expect(verdictAction('review')).toEqual({ tab: 'changes' });
+  });
+});
+
+// Just enough DOM for the controller: elements by id, the panels, the window.
+function fakeDoc() {
+  const element = (extra = {}) => ({
+    innerHTML: '', hidden: false, value: '', scrollTop: 0, clientHeight: 800, clientWidth: 800, style: {}, dataset: {},
+    classList: (() => {
+      const set = new Set();
+      return { add: (c) => set.add(c), remove: (c) => set.delete(c), contains: (c) => set.has(c), toggle: (c, on) => (on ? set.add(c) : set.delete(c)) };
+    })(),
+    addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], contains: () => false,
+    getBoundingClientRect: () => ({ top: 0, bottom: 800, left: 0, right: 800, width: 800, height: 800 }),
+    ...extra,
+  });
+  const byId = new Map();
+  const panels = ['summary', 'changes', 'impact', 'live'].map((id) => element({ dataset: { reviewPanel: id } }));
+  return {
+    body: element(),
+    activeElement: null,
+    defaultView: { addEventListener() {} },
+    getElementById(id) {
+      if (!byId.has(id)) byId.set(id, element());
+      return byId.get(id);
+    },
+    querySelectorAll: (selector) => (selector === '[data-review-panel]' ? panels : []),
+  };
+}
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function controllerWith(prefsByWorktree) {
+  const api = {
+    reviewPrefs: async (worktree, set) => (set ? {} : prefsByWorktree[worktree] ?? {}),
+    reviewSummary: async () => null,
+    reviewSlice: async () => ({ status: 'building', done: 0, total: 0 }),
+    reviewFile: async () => null,
+    onReviewChanged() {},
+  };
+  return createReviewController({ api, doc: fakeDoc() });
+}
+
+describe('the drawer across worktrees', () => {
+  it('takes a worktree\'s saved drawer when nothing asked otherwise', async () => {
+    const review = controllerWith({ '/b': { drawerOpen: false } });
+    review.setContext({ worktree: '/b', sessions: [] });
+    await flush();
+    expect(review.drawerOpen()).toBe(false);
+  });
+
+  it('an explicit open right before moving to a worktree with its drawer closed wins', async () => {
+    const review = controllerWith({ '/a': {}, '/b': { drawerOpen: false } });
+    review.setContext({ worktree: '/a', sessions: [] });
+    await flush();
+    // A sidebar click or Ctrl+K into /b: showDrawer(), then render().
+    review.setDrawer(true);
+    review.setContext({ worktree: '/b', sessions: [] });
+    await flush();
+    expect(review.drawerOpen()).toBe(true);
+  });
+
+  it('an explicit open while the prefs load wins too', async () => {
+    const review = controllerWith({ '/b': { drawerOpen: false } });
+    review.setContext({ worktree: '/b', sessions: [] });
+    review.setDrawer(true);
+    await flush();
+    expect(review.drawerOpen()).toBe(true);
+  });
+
+  it('with the Maestro holding the view, following a músico does not move the drawer', async () => {
+    const review = controllerWith({ '/a': {}, '/b': { drawerOpen: false, tab: 'changes' } });
+    review.setContext({ worktree: '/a', sessions: [] });
+    await flush();
+    review.setTab('live', { persist: false, pin: true });
+    review.setContext({ worktree: '/b', sessions: [] });
+    await flush();
+    expect(review.drawerOpen()).toBe(true);
+    expect(review.tab()).toBe('live');
   });
 });

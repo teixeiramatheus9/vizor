@@ -2759,10 +2759,19 @@ const reviewService = createReviewService({
   sessionsOf: reviewSessionsIn,
 });
 
-const notifyReview = (worktree) => {
+const sendReviewChanged = (worktree) => {
   if (workspaceWindow?.isReady()) workspaceWindow.send('review:changed', { worktree });
 };
-reviewService.on('changed', notifyReview);
+// The service holds its own notices while paused; the rest (a graph batch,
+// an issue body, a first prompt landing) wait here while the window is hidden
+// and go out once when it shows again.
+let reviewWindowHidden = false;
+const reviewHeldNotices = new Set();
+const notifyReview = (worktree) => {
+  if (reviewWindowHidden) reviewHeldNotices.add(worktree);
+  else sendReviewChanged(worktree);
+};
+reviewService.on('changed', sendReviewChanged);
 
 // What the dev asked for: the linked issue, else the chat's first prompt (read
 // off the main loop once; the screen is told when it lands).
@@ -2907,9 +2916,15 @@ reviewHandle('review:reject', reviewFail, async ({ worktree, path: rel, hunkId, 
 
 // Hidden or minimized: no recompute, and the graphs are dropped after 10 min.
 workspaceWindow?.onVisibility((visible) => {
+  reviewWindowHidden = !visible;
   if (visible) {
     disarmGraphDiscard();
     reviewService.resume();
+    // What landed while hidden, plus the worktree on screen (its graph may have been dropped and rebuilt).
+    const selected = workspaceSelectedSession ? sessionWorktree(workspaceSelectedSession) : null;
+    if (selected) reviewHeldNotices.add(selected);
+    for (const worktree of reviewHeldNotices) sendReviewChanged(worktree);
+    reviewHeldNotices.clear();
   } else {
     reviewService.pause();
     armGraphDiscard();
