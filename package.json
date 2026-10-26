@@ -14,7 +14,8 @@
     "start:win": "electron .",
     "dist": "electron-builder --linux",
     "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win"
+    "dist:win": "electron-builder --win",
+    "test:e2e": "./scripts/e2e.sh"
   },
   "author": "teixeiramatheus9 <teixeiramatheus9@users.noreply.github.com>",
   "license": "MIT",

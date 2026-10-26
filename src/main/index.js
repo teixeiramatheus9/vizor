@@ -863,6 +863,7 @@ async function startIssue(number) {
   const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number) });
   if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
   taskLinks.link(root, number, opened.sessionId);
+  workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
   return { sessionId: opened.sessionId };
 }
 

@@ -1,0 +1,56 @@
+#!/usr/bin/env node
+// A stand-in for Claude Code in the end-to-end run: it registers like one,
+// writes the plan the Vizor asked for and reports through the real hook.
+// Approved (a line saying so arrives on the terminal), it ticks step one.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
+
+const prompt = process.argv[2] ?? '';
+const sessionId = crypto.randomUUID();
+const cwd = process.cwd();
+const home = os.homedir();
+fs.mkdirSync(path.join(home, '.claude', 'sessions'), { recursive: true });
+fs.writeFileSync(path.join(home, '.claude', 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId, cwd, startedAt: Date.now(), kind: 'interactive' }));
+const projectDir = path.join(home, '.claude', 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
+fs.mkdirSync(projectDir, { recursive: true });
+const transcript = path.join(projectDir, `${sessionId}.jsonl`);
+
+const emit = (event) =>
+  spawnSync(process.execPath, [process.env.VIZOR_E2E_HOOK], {
+    input: JSON.stringify({ session_id: sessionId, cwd, transcript_path: transcript, ...event }),
+    env: process.env,
+  });
+const say = (text) => {
+  fs.appendFileSync(transcript, `${JSON.stringify({ type: 'assistant', sessionId, message: { role: 'assistant', content: [{ type: 'text', text }] } })}\n`);
+  process.stdout.write(`${text}\r\n`);
+};
+const planFile = path.join(cwd, '.vizor', 'plano.md');
+const steps = ['Ler a issue', 'Criar o menu', 'Testar o menu'];
+const writePlan = (done) => {
+  fs.mkdirSync(path.dirname(planFile), { recursive: true });
+  fs.writeFileSync(planFile, `${steps.map((step, index) => `- [${index < done ? 'x' : ' '}] ${step}`).join('\n')}\nVizor-plano: src/menu.js\n`);
+};
+
+emit({ hook_event_name: 'UserPromptSubmit', prompt });
+writePlan(0);
+emit({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: planFile, content: 'plano' }, tool_response: {} });
+say('Plano escrito em .vizor/plano.md. Espero seu ok.');
+emit({ hook_event_name: 'Stop' });
+
+let typed = '';
+process.stdin.setRawMode?.(true);
+process.stdin.on('data', (chunk) => {
+  typed += chunk.toString();
+  if (!typed.includes('\r')) return;
+  const line = typed;
+  typed = '';
+  if (!/aprovado/i.test(line)) return;
+  emit({ hook_event_name: 'UserPromptSubmit', prompt: line });
+  writePlan(1);
+  emit({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: planFile, old_string: '- [ ] Ler', new_string: '- [x] Ler' }, tool_response: {} });
+  say('Passo 1 feito.');
+  emit({ hook_event_name: 'Stop' });
+});
