@@ -250,7 +250,8 @@ export function egoSlice(graph, changedFnIds, { expanded = [], hops = 1, showHid
   return {
     nodes: keptIds.sort().map((id) => {
       const { module, ...node } = nodes.get(id);
-      return { ...node, untested: untested.has(module), layer: layers.get(id) };
+      // filesOfNode rides along: a click on the node filters Mudanças by it.
+      return { ...node, untested: untested.has(module), layer: layers.get(id), ...filesOfNode(graph, id) };
     }),
     edges: keptEdges,
     more: [...more.values()],

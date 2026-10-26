@@ -28,8 +28,8 @@ import {
 } from './inspector-state.js';
 import { renderPlan } from './plan-view.js';
 import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
-import { renderBackstage, renderBalloon, renderConsequences, renderImpact, renderOrchestra, renderOrder } from './maestro-view.js';
-import { ZOOM_MAX, ZOOM_OPEN, ZOOM_STEP, layoutGraph, moduleAt, renderGraph } from './graph-view.js';
+import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
+import { createReviewController } from './review/review-controller.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -39,8 +39,6 @@ const placeholder = document.getElementById('term-placeholder');
 const newMenu = document.getElementById('new-menu');
 
 let lastTree = null;
-// The voice mode (#161): the chat can fold away so the code takes the screen.
-let chatHidden = false;
 // The Maestro stage (#159): on, the orchestra and the focused músico, from main.
 let maestro = { on: false, orchestra: [], focusedId: null };
 let voiceInfo = null;
@@ -152,6 +150,7 @@ async function openNewTerminal(kind, sessionId = null) {
   }
   unavailable.delete(worktree);
   activeTab = result.id;
+  showDrawer();
   reportSelection();
   // The state push that lists the new terminal can arrive before this
   // reply, rendering with the old tab still active.
@@ -169,6 +168,7 @@ function focusNewTab(id) {
   pendingTab = null;
   selectedWorktree = terminal.cwd;
   activeTab = terminal.id;
+  showDrawer();
   render();
   reportSelection();
 }
@@ -255,9 +255,16 @@ async function ensureView(id) {
   return view;
 }
 
+// The terminal lives in a drawer under the review: closed, nothing is
+// fitted (a zero-size fit would shrink the pty) and nothing takes the keys.
+const drawerEl = document.getElementById('terminal-drawer');
+const drawerShown = () => drawerEl.classList.contains('open');
+// A state push must not pull the keys out of the composer or the file filter.
+const typingElsewhere = () => document.activeElement?.matches?.('input, textarea, select') && !drawerEl.contains(document.activeElement);
+
 function fitActive() {
   const view = views.get(activeTab);
-  if (!view || termHost.hidden) return;
+  if (!view || termHost.hidden || !drawerShown()) return;
   view.fit.fit();
   window.vizor.resizeTerminal(activeTab, view.term.cols, view.term.rows);
 }
@@ -267,6 +274,7 @@ function worktreeTerminals() {
 }
 
 async function renderTerminalArea() {
+  review.setContext(reviewContext());
   const selection = selectedId ? findSession(selectedId) : null;
   if (selection && !selection.session.ptyId) {
     tabsBar.innerHTML = '';
@@ -297,15 +305,59 @@ async function renderTerminalArea() {
   if (wanted !== activeTab || views.get(wanted) !== view) return;
   for (const [id, other] of views) other.el.hidden = id !== activeTab;
   fitActive();
-  if (!commandBarOpen()) view.term.focus();
+  if (!commandBarOpen() && drawerShown() && !typingElsewhere()) view.term.focus();
+}
+
+// The orchestra lives in the sidebar now: a dot of each músico's color.
+function musicianMarks() {
+  if (!maestro.on) return {};
+  return Object.fromEntries(maestro.orchestra.map((musician) => [musician.sessionId, { color: musician.color, name: musician.name }]));
+}
+
+function renderSidebarOnly() {
+  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds, musicianMarks());
 }
 
 function render() {
   if (!lastTree) return;
-  topbar.innerHTML = renderTopBar(lastTree, { chatHidden, voice: voiceInfo, maestro: maestro.on });
-  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds);
+  topbar.innerHTML = renderTopBar(lastTree, { voice: voiceInfo, maestro: maestro.on });
+  renderSidebarOnly();
   renderTerminalArea();
 }
+
+// --- the review screen --------------------------------------------------
+// The workspace is a worktree: the selected session's, else the one the
+// active terminal runs in (the deepest worktree holding its folder).
+function reviewContext() {
+  const worktrees = (lastTree?.projects ?? []).flatMap((project) => project.worktrees);
+  const selection = selectedId ? findSession(selectedId) : null;
+  let worktree = selection?.worktree ?? null;
+  if (!worktree && selectedWorktree) {
+    worktree = worktrees
+      .filter((item) => selectedWorktree === item.path || selectedWorktree.startsWith(`${item.path}/`))
+      .sort((a, b) => b.path.length - a.path.length)[0] ?? null;
+  }
+  if (!worktree) return { worktree: null, sessions: [], agentId: null };
+  const sessions = worktree.sessions.map((session) => ({ id: session.id, label: session.name || 'chat' }));
+  const own = (id) => (sessions.some((session) => session.id === id) ? id : null);
+  const agentId = own(selectedId) ?? own(worktree.sessions.find((session) => session.ptyId && session.ptyId === activeTab)?.id);
+  return { worktree: worktree.path, sessions, agentId };
+}
+
+const review = createReviewController({
+  api: window.vizor,
+  notify: (text) => toast(text),
+  onDrawerChange: (open) => {
+    requestAnimationFrame(fitActive);
+    if (open) {
+      if (!commandBarOpen()) views.get(activeTab)?.term.focus();
+    } else if (drawerEl.contains(document.activeElement)) document.activeElement.blur();
+  },
+});
+
+// A terminal the dev just asked for has to be seen.
+const showDrawer = () => review.setDrawer(true);
+
 
 // --- inspector (#93) ---------------------------------------------------------
 // Never calls focus(): the terminal keeps the keyboard while changes update.
@@ -561,7 +613,11 @@ document.addEventListener('change', (event) => {
 
 // The rule guard's questions (#160) float over the terminals until answered.
 const guardHost = document.getElementById('guard-asks');
+let guardShown = 0;
 function renderGuardAsks(asks = []) {
+  // The questions live in the drawer: a new one opens it, or nobody sees it.
+  if (asks.length > guardShown) showDrawer();
+  guardShown = asks.length;
   guardHost.hidden = asks.length === 0;
   guardHost.innerHTML = asks.map(renderGuardCard).join('');
 }
@@ -640,215 +696,51 @@ window.vizor.onTerminalExit(() => renderTerminalArea());
 new ResizeObserver(() => fitActive()).observe(termHost);
 
 // --- Maestro (#159) ----------------------------------------------------------
-// The stage rearranges the same window: orchestra | code | impact, the chat
-// and the sidebar out of the way. The inspector's file view, following the
-// AI, is the code in the middle; nothing here is saved as a preference.
-let maestroSaved = null; // the view before the stage, put back on leaving
+// A layer over the review screen, with no layout of its own: the
+// orchestra is the dots in the sidebar, the impact is the Impacto tab, the
+// balloon and the held order float over the tab in front, and the
+// consequences and the backstage fold into the Resumo.
+let maestroSaved = null; // the tab and the drawer before the stage, put back on leaving
 let maestroSaid = null; // { source, text } in the balloon
 let maestroSaidFull = false;
 let backstageOpen = null; // the backstage chip opened in the consequences strip (#142)
 let maestroOrderShown = null;
 let maestroOrderTimer = null;
 const maestroLines = new Map(); // sessionId → narration lines
-const orchestraEl = document.getElementById('maestro-orchestra');
-const impactEl = document.getElementById('maestro-impact');
+const reviewBody = document.getElementById('review-body');
 const balloonEl = document.getElementById('maestro-balloon');
 const orderEl = document.getElementById('maestro-order');
 const consequencesEl = document.getElementById('maestro-consequences');
+const backstageEl = document.getElementById('summary-backstage');
 
 const musicianOf = (sessionId) => maestro.orchestra.find((musician) => musician.sessionId === sessionId) ?? null;
 
-// --- the graph (#159, part 2): the focused músico's checkout ---------------
-const graphs = new Map(); // root → graph | { unavailable }
-const layouts = new Map(); // root → layout of that graph
-const asked = new Set();
-let graphView = { scale: 1, x: 0, y: 0, open: null, openedByZoom: false };
-let graphRoot = null;
-let centeredFor = null; // the músico the view was last centered for
-let lastGraphSignature = null;
-const graphStamps = new WeakMap();
-let graphSerial = 0;
-
-window.vizor.onMaestroGraph(({ root, graph }) => {
-  graphs.set(root, graph);
-  // Same files, same map; only the opened file's functions are laid out again.
-  if (layouts.has(root)) layouts.get(root).openAreas = {};
-  if (root === graphRoot) renderGraphColumn();
-});
-
-// The picture is redone only when files come or go: an edit changes the
-// functions, not the map, so nothing jumps under the user.
-const layoutKeys = new Map(); // root → the file list the layout was made for
-function layoutOf(root) {
-  const graph = graphs.get(root);
-  if (!graph || graph.unavailable) return null;
-  const key = graph.modules.map((module) => module.id).join('\n');
-  if (!layouts.has(root) || layoutKeys.get(root) !== key) {
-    layouts.set(root, layoutGraph(graph));
-    layoutKeys.set(root, key);
-  }
-  return layouts.get(root);
-}
-
-function renderGraphColumn() {
-  const musician = musicianOf(maestro.focusedId);
-  const root = musician?.root ?? null;
-  if (root !== graphRoot) {
-    graphRoot = root;
-    graphView = { scale: 1, x: 0, y: 0, open: null, openedByZoom: false };
-  }
-  if (!root) {
-    impactEl.innerHTML = renderImpact(musician);
-    return;
-  }
-  // Asked once: while the first build runs the answer is null, and the
-  // maestro:graph push brings it (review I1: no request loop meanwhile).
-  if (!graphs.has(root) && !asked.has(root)) {
-    asked.add(root);
-    window.vizor.maestroGraph(root).then((graph) => {
-      if (!graph) return;
-      graphs.set(root, graph);
-      renderGraphColumn();
-    });
-  }
-  const graph = graphs.get(root) ?? null;
-  const impacts = (maestro.impacts ?? []).filter((impact) => impact.root === root);
-  // A new focus: the view centers on the file it touched last.
-  if (centeredFor !== maestro.focusedId && layoutOf(root)) {
-    centeredFor = maestro.focusedId;
-    const mine = impacts.find((impact) => impact.sessionId === maestro.focusedId);
-    const target = Object.keys(mine?.modules ?? {}).find((id) => mine.modules[id] === 'touched') ?? Object.keys(mine?.modules ?? {})[0];
-    const node = target && layoutOf(root).modules[target];
-    // Not zoomed in, the whole map shows; zoomed, it follows the músico.
-    if (node && graphView.scale > 1) graphView = { ...graphView, x: 500 - node.x * graphView.scale, y: 500 - node.y * graphView.scale };
-  }
-  // Redrawn only when something it shows changed (review I3: a 1.4 MB SVG on
-  // every state push stalls big repos).
-  const signature = [graph ? graphStamp(graph) : 'none', JSON.stringify(impacts), graphView.scale, graphView.x, graphView.y, graphView.open, graphView.selected].join('|');
-  if (signature === lastGraphSignature && impactEl.firstChild) return;
-  lastGraphSignature = signature;
-  const svg = renderGraph({ graph, layout: layoutOf(root), view: graphView, impacts });
-  impactEl.innerHTML = `<div class="maestro-title">área de impacto</div>${svg}${graph?.unavailable ? renderImpact(musician) : ''}`;
-}
-
-function graphStamp(graph) {
-  if (!graphStamps.has(graph)) graphStamps.set(graph, ++graphSerial);
-  return graphStamps.get(graph);
-}
-
-// Pointer position in the drawing's units (the SVG is 1000×1000, "meet").
-function graphPoint(event) {
-  const svg = impactEl.querySelector('svg.graph');
-  if (!svg) return null;
-  const rect = svg.getBoundingClientRect();
-  const side = Math.min(rect.width, rect.height);
-  return {
-    x: ((event.clientX - rect.left - (rect.width - side) / 2) * 1000) / side,
-    y: ((event.clientY - rect.top - (rect.height - side) / 2) * 1000) / side,
-  };
-}
-
-impactEl.addEventListener(
-  'wheel',
-  (event) => {
-    const point = graphPoint(event);
-    const layout = graphRoot && layoutOf(graphRoot);
-    if (!point || !layout) return;
-    event.preventDefault();
-    const scale = Math.min(ZOOM_MAX, Math.max(0.5, graphView.scale * (event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP)));
-    const ratio = scale / graphView.scale;
-    graphView = { ...graphView, scale, x: point.x - (point.x - graphView.x) * ratio, y: point.y - (point.y - graphView.y) * ratio };
-    // Zooming in far enough opens the file nearest the middle; back out, it closes.
-    if (scale >= ZOOM_OPEN && !graphView.open) {
-      let best = null;
-      let bestDistance = Infinity;
-      for (const [id, node] of Object.entries(layout.modules)) {
-        const distance = Math.hypot(node.x * scale + graphView.x - 500, node.y * scale + graphView.y - 500);
-        if (distance < bestDistance) [best, bestDistance] = [id, distance];
-      }
-      graphView = { ...graphView, open: best, openedByZoom: true };
-    } else if (scale < ZOOM_OPEN && graphView.openedByZoom) graphView = { ...graphView, open: null, openedByZoom: false, selected: null };
-    renderGraphColumn();
-  },
-  { passive: false },
-);
-
-let graphDrag = null;
-impactEl.addEventListener('mousedown', (event) => {
-  const point = graphPoint(event);
-  if (point) graphDrag = { start: point, view: graphView, moved: false };
-});
-window.addEventListener('mousemove', (event) => {
-  if (!graphDrag) return;
-  // Released outside the window: the drag ends (review M7).
-  if (!(event.buttons & 1)) {
-    graphDrag = null;
-    renderGraphColumn();
-    return;
-  }
-  const point = graphPoint(event);
-  if (!point) return;
-  const dx = point.x - graphDrag.start.x;
-  const dy = point.y - graphDrag.start.y;
-  if (Math.hypot(dx, dy) > 4) graphDrag.moved = true;
-  if (!graphDrag.moved) return;
-  graphView = { ...graphDrag.view, x: graphDrag.view.x + dx, y: graphDrag.view.y + dy };
-  // Dragging moves the drawing; it is not drawn again (review I3).
-  impactEl.querySelector('svg.graph > g')?.setAttribute('transform', `translate(${graphView.x} ${graphView.y}) scale(${graphView.scale})`);
-});
-window.addEventListener('mouseup', (event) => {
-  const drag = graphDrag;
-  graphDrag = null;
-  if (drag?.moved) renderGraphColumn(); // settle the drawing where the drag left it
-  if (!drag || drag.moved) return;
-  // A function circle can sit over another file: the element wins (review
-  // M6). A click shows the name of what was clicked.
-  const fn = event.target.closest('[data-function]');
-  if (fn) {
-    graphView = { ...graphView, selected: fn.dataset.function };
-    renderGraphColumn();
-    return;
-  }
-  // The opened file's backdrop: a click there keeps it open (only the name goes).
-  if (event.target.closest('.open-backdrop')) {
-    graphView = { ...graphView, selected: graphView.open };
-    renderGraphColumn();
-    return;
-  }
-  const point = graphPoint(event);
-  const layout = graphRoot && layoutOf(graphRoot);
-  if (!point || !layout) return;
-  // A click on a file opens it (zooming in if needed); on the background, closes.
-  const hit = moduleAt(layout, graphView, point.x, point.y);
-  if (hit) {
-    const node = layout.modules[hit];
-    const scale = Math.max(graphView.scale, ZOOM_OPEN);
-    graphView = { scale, x: 500 - node.x * scale, y: 500 - node.y * scale, open: hit, openedByZoom: false, selected: hit };
-  } else graphView = { ...graphView, open: null, openedByZoom: false, selected: null };
-  renderGraphColumn();
-});
-
 function renderMaestro() {
-  if (!maestro.on) return;
-  orchestraEl.innerHTML = renderOrchestra(maestro.orchestra, maestro.focusedId, maestro.orders ?? {});
-  renderGraphColumn();
-  consequencesEl.innerHTML =
-    renderBackstage(maestro.backstage?.[maestro.focusedId], backstageOpen) + renderConsequences(maestroLines.get(maestro.focusedId) ?? []);
+  if (!maestro.on) {
+    backstageEl.hidden = true;
+    return;
+  }
+  const lines = maestroLines.get(maestro.focusedId) ?? [];
+  const backstage = renderBackstage(maestro.backstage?.[maestro.focusedId], backstageOpen);
+  consequencesEl.innerHTML = backstage + (lines.length ? renderConsequences(lines) : '');
+  backstageEl.hidden = !consequencesEl.innerHTML;
   balloonEl.innerHTML = renderBalloon(maestroSaid, musicianOf, { full: maestroSaidFull });
   orderEl.innerHTML = renderOrder(maestroOrderShown);
   placeBalloon();
 }
 
-// Over the line the AI is on: the selected edit's banner, when it is in view.
+// Over the line the AI is on (the selected edit's banner, in Ao vivo), else
+// at the top of the tab in front.
 function placeBalloon() {
-  const anchor = detailEl.querySelector('[data-banner][aria-current="true"]');
-  const host = detailEl.getBoundingClientRect();
-  const top = anchor ? anchor.getBoundingClientRect().top - host.top - balloonEl.offsetHeight - 6 : 0;
-  balloonEl.style.top = `${detailEl.offsetTop}px`;
+  const anchor = review.tab() === 'live' ? detailEl.querySelector('[data-banner][aria-current="true"]') : null;
+  const host = reviewBody.getBoundingClientRect();
+  const top = anchor ? anchor.getBoundingClientRect().top - host.top - balloonEl.offsetHeight - 6 : 8;
   balloonEl.style.transform = `translateY(${Math.max(0, Math.min(top, host.height - balloonEl.offsetHeight))}px)`;
 }
 detailEl.addEventListener('scroll', () => maestro.on && placeBalloon());
 
+// Following the músico in focus selects its worktree and session in the
+// sidebar; the drawer stays as the dev left it.
 function focusMusicianView(sessionId) {
   // The last músico closed: the center empties instead of showing it (review I4).
   if (!sessionId) {
@@ -857,20 +749,17 @@ function focusMusicianView(sessionId) {
     render();
     return;
   }
-  selectSession(sessionId);
+  selectSession(sessionId, { openDrawer: false });
   inspector = onFollow(inspector);
   fileView = null;
   refreshInspector({ scroll: true });
 }
 
+// The stage shows the code as the AI writes it: Ao vivo, following.
 function enterMaestro() {
-  maestroSaved = { mode: prefs.mode, width: prefs.width, chatHidden };
+  maestroSaved = review.saveView();
   document.body.dataset.maestro = 'true';
-  // The code in the middle is the file view, wide; not saved as a preference.
-  prefs.mode = 'arquivo';
-  prefs.width = 'wide';
-  chatHidden = true;
-  document.body.dataset.chatHidden = 'true';
+  review.setTab('live', { persist: false, pin: true });
   focusMusicianView(maestro.focusedId);
   render();
   renderMaestro();
@@ -878,16 +767,10 @@ function enterMaestro() {
 
 function leaveMaestro() {
   delete document.body.dataset.maestro;
-  if (maestroSaved) {
-    prefs.mode = maestroSaved.mode;
-    prefs.width = maestroSaved.width;
-    chatHidden = maestroSaved.chatHidden;
-    document.body.dataset.chatHidden = String(chatHidden);
-  }
+  review.restoreView(maestroSaved);
   maestroSaved = null;
   render();
-  loadFileView();
-  requestAnimationFrame(fitActive);
+  renderMaestro();
 }
 
 function applyMaestro(next) {
@@ -918,22 +801,16 @@ window.vizor.onMaestroOrder((order) => {
   renderMaestro();
 });
 
-function setChatHidden(hidden) {
-  chatHidden = hidden;
-  document.body.dataset.chatHidden = String(hidden);
-  // The code needs the room: an inspector folded away opens wide.
-  if (hidden && prefs.width === 'collapsed') savePrefs({ width: 'wide' });
-  render();
-  if (!hidden) requestAnimationFrame(fitActive);
-}
-
 // What the voice asked of the workspace (main sends it, #161).
+// "Esconde o chat" folds the terminal drawer; the code is the review above it.
 window.vizor.onVoice(({ action, file }) => {
-  if (action === 'hide-chat') setChatHidden(true);
-  else if (action === 'show-chat') setChatHidden(false);
+  if (action === 'hide-chat') review.setDrawer(false);
+  else if (action === 'show-chat') review.setDrawer(true);
   else if (action === 'show-diff') {
+    review.setTab('live');
     if (prefs.width === 'collapsed') savePrefs({ width: 'compact' });
   } else if (action === 'open-file' && file) {
+    review.setTab('live');
     const wanted = String(file).toLowerCase();
     const card = [...document.querySelectorAll('[data-card], [data-banner], [data-file]')].find((element) =>
       (element.dataset.file ?? element.textContent ?? '').toLowerCase().includes(wanted),
@@ -954,9 +831,8 @@ document.addEventListener('click', async (event) => {
     window.vizor.openActionMenu({ left, bottom });
     return;
   }
-  const musician = target.closest('[data-musician]');
-  if (musician) {
-    window.vizor.focusMusician(musician.dataset.musician);
+  if (target.closest('[data-toggle-drawer]')) {
+    review.toggleDrawer();
     return;
   }
   const chip = target.closest('[data-backstage]');
@@ -968,10 +844,6 @@ document.addEventListener('click', async (event) => {
   if (target.closest('[data-balloon-more]')) {
     maestroSaidFull = true;
     renderMaestro();
-    return;
-  }
-  if (target.closest('[data-toggle-chat]')) {
-    setChatHidden(!chatHidden);
     return;
   }
   if (!newMenu.hidden && !target.closest('#new-menu') && !target.closest('[data-new-terminal]')) closeMenu();
@@ -995,7 +867,7 @@ document.addEventListener('click', async (event) => {
   if (fold) {
     folds[fold.dataset.fold] = fold.getAttribute('aria-expanded') !== 'true';
     saveFolds();
-    sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds);
+    renderSidebarOnly();
     return;
   }
   if (target.closest('[data-bring]')) {
@@ -1125,7 +997,9 @@ document.addEventListener('click', async (event) => {
 
 // One way to select a session: a sidebar click, or main pointing the window
 // at it (the bubble, a panel card — #96).
-function selectSession(sessionId) {
+// openDrawer: a chat picked by hand (sidebar, Ctrl+K, the bubble) shows its
+// terminal; the Maestro following its músico leaves the drawer alone.
+function selectSession(sessionId, { openDrawer = true } = {}) {
   // In the Maestro a selection from anywhere (bubble, panel, voice) moves the
   // focus, so the code and the orchestra always show the same chat (review I5).
   if (maestro.on && sessionId !== maestro.focusedId && musicianOf(sessionId)) window.vizor.focusMusician(sessionId);
@@ -1140,6 +1014,8 @@ function selectSession(sessionId) {
     const terminal = terminals.find((item) => item.id === activeTab);
     if (terminal) selectedWorktree = terminal.cwd;
   }
+  // Outside chats too: their "trazer pro Vizor" lives in the drawer.
+  if (openDrawer) showDrawer();
   render();
   reportSelection();
 }
@@ -1250,6 +1126,7 @@ async function runCommandItem(item) {
   closeCommandBar();
   const { action } = item;
   if (action.type === 'focus') {
+    showDrawer();
     if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
     else selectSession(action.sessionId);
     return;
@@ -1273,6 +1150,18 @@ window.addEventListener(
     event.stopPropagation();
     if (commandBar.hidden) openCommandBar();
     else closeCommandBar();
+  },
+  true,
+);
+
+// Ctrl+` opens and closes the terminal drawer, before xterm sees it.
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!event.ctrlKey || event.shiftKey || event.altKey || (event.key !== '`' && event.code !== 'Backquote')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    review.toggleDrawer();
   },
   true,
 );

@@ -71,6 +71,9 @@ describe('egoSlice, module level', () => {
     expect(nodes['a.js']).toBeUndefined();
     expect(nodes['a.js#run']).toMatchObject({ kind: 'function', label: 'run', state: 'changed' });
     expect(nodes['a.js#other']).toBeUndefined();
+    // What a click on the node filters Mudanças by (filesOfNode), carried along.
+    expect(nodes['a.js#run']).toMatchObject({ files: ['a.js'], range: { startLine: expect.any(Number), endLine: expect.any(Number) } });
+    expect(nodes['b.js']).toMatchObject({ files: ['b.js'], range: null });
     expect(nodes['b.js']).toMatchObject({ kind: 'module', state: 'affected' });
     expect(slice.edges).toEqual([{ from: 'a.js#run', to: 'b.js', type: 'call' }]);
   });

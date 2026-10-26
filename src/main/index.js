@@ -2849,9 +2849,10 @@ function reviewHandle(channel, fallback, run) {
 const reviewFail = (error) => ({ ok: false, error });
 const BAD_REVIEW_REQUEST = 'pedido inválido';
 
-reviewHandle('review:summary', () => null, (worktree) => (reviewWorktreeOk(worktree) ? reviewService.summary(worktree) : null));
-reviewHandle('review:file', () => null, ({ worktree, path: rel }) =>
-  reviewWorktreeOk(worktree) && safeRelPath(rel) ? reviewService.file(worktree, rel) : null);
+reviewHandle('review:summary', () => null, ({ worktree }) => (reviewWorktreeOk(worktree) ? reviewService.summary(worktree) : null));
+// force: the dev clicked "abrir mesmo assim" on a diff over 3,000 lines.
+reviewHandle('review:file', () => null, ({ worktree, path: rel, force }) =>
+  reviewWorktreeOk(worktree) && safeRelPath(rel) ? reviewService.file(worktree, rel, { force: force === true }) : null);
 reviewHandle('review:approve', reviewFail, async ({ worktree, hunkId, on }) => {
   if (!reviewWorktreeOk(worktree) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
   await reviewService.approve(worktree, hunkId, Boolean(on));
