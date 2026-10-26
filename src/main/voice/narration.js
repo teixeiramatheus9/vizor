@@ -42,6 +42,19 @@ function testOutcome(tail, lines) {
   return null;
 }
 
+// A test run's verdict, for the conducting gerente (#162): 'passed',
+// 'failed', or null when the event is not a finished test run.
+export function testOutcomeOf(event) {
+  const phase = event?.hook_event_name;
+  if (event?.tool_name !== 'Bash' || (phase !== 'PostToolUse' && phase !== 'PostToolUseFailure')) return null;
+  if (!TEST_RUNNER.test(String(event.tool_input?.command ?? ''))) return null;
+  // A test command that exited with an error failed, whatever its tail says.
+  if (phase === 'PostToolUseFailure') return 'failed';
+  const line = testOutcome(String(event.tool_output_tail ?? ''), LINES.pt);
+  if (!line) return null;
+  return line === LINES.pt.testsPassed ? 'passed' : 'failed';
+}
+
 const lower = (text) => (text ? text.charAt(0).toLowerCase() + text.slice(1) : text);
 
 export function createNarrator({ now = Date.now, lang = 'pt' } = {}) {
@@ -67,7 +80,7 @@ export function createNarrator({ now = Date.now, lang = 'pt' } = {}) {
     const tail = String(event.tool_output_tail ?? '');
     if (TEST_RUNNER.test(command)) {
       if (phase === 'PreToolUse') return { text: lines.testsRunning, replaceKey: 'tests' };
-      const outcome = testOutcome(tail, lines);
+      const outcome = testOutcome(tail, lines) ?? (phase === 'PostToolUseFailure' ? lines.testsFailed : null);
       return outcome ? { text: outcome, replaceKey: 'tests' } : null;
     }
     if (phase !== 'PostToolUse') return null;

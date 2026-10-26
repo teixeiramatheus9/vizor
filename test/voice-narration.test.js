@@ -70,3 +70,26 @@ describe('narration', () => {
     time += 0;
   });
 });
+
+describe('testOutcomeOf (the conductor reads the tests of a turn)', async () => {
+  const { testOutcomeOf } = await import('../src/main/voice/narration.js');
+  it('testOutcomeOf: passed, failed, or nothing', () => {
+    expect(testOutcomeOf(post('Bash', { command: 'npm test' }, ' Tests  10 passed (10)'))).toBe('passed');
+    expect(testOutcomeOf(post('Bash', { command: 'npx vitest run' }, ' Tests  3 failed | 10 passed'))).toBe('failed');
+    expect(testOutcomeOf(post('Bash', { command: 'pytest' }, 'FAILED test_x.py'))).toBe('failed');
+    expect(testOutcomeOf(post('Bash', { command: 'ls' }, 'passed'))).toBeNull();
+    expect(testOutcomeOf(pre('Bash', { command: 'npm test' }))).toBeNull();
+  });
+});
+
+describe('a failed command (PostToolUseFailure, #162 review)', async () => {
+  const { testOutcomeOf } = await import('../src/main/voice/narration.js');
+  const failure = (command, tail) => ({ hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command }, tool_output_tail: tail });
+  it('a test run exiting with an error failed; other commands say nothing', () => {
+    expect(testOutcomeOf(failure('npm test', 'Exit code 1'))).toBe('failed');
+    expect(testOutcomeOf(failure('ls /nope', 'Exit code 2'))).toBeNull();
+    const { narrate } = createNarrator({ now: () => 1 });
+    expect(narrate(failure('npm test', 'Exit code 1\n 2 failed'))).toEqual({ text: '2 testes falharam', replaceKey: 'tests' });
+    expect(narrate(failure('npm test', 'Exit code 1'))).toEqual({ text: 'os testes falharam', replaceKey: 'tests' });
+  });
+});

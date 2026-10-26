@@ -50,6 +50,16 @@ export function createTaskLinks({ file, readFile, writeFile, rename }) {
     linksFor(root, number) {
       return data[root]?.[number] ?? [];
     },
+    // The task a session works on, for the Maestro: where it is the newest
+    // link; a tie (newest on two tasks) goes to the higher number.
+    numberOf(root, sessionId) {
+      let best = null;
+      for (const [number, ids] of Object.entries(data[root] ?? {})) {
+        const index = ids.indexOf(sessionId);
+        if (index !== -1 && (best === null || index <= best.index)) best = { number: Number(number), index };
+      }
+      return best?.number ?? null;
+    },
     forgetSession(sessionId) {
       for (const project of Object.values(data))
         for (const number of Object.keys(project)) {

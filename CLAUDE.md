@@ -39,6 +39,12 @@ App Electron (src/main/index.js)
   ├── cc-peer.js           → cliente NDJSON do socket da sessão
   ├── terminal-target.js   → foco EXATO de aba via CLI do terminal (kitty/wezterm/tmux),
   │                          com a identidade que o hook capturou do env da sessão
+  ├── maestro/             → modo Maestro (#159): orquestra (chats do workspace
+  │                          endereçados por issue ou posição) e ordens que
+  │                          esperam 3 s ("entendi: …") antes de agir
+  ├── graph/               → grafo do Maestro: extrai funções/imports/chamadas
+  │                          (@babel/parser, num worker), liga em módulos e
+  │                          chamadas, e calcula o que cada músico tocou/planejou
   ├── warp.js              → FALLBACK: foco de janela/aba do terminal (xdotool)
   └── renderer (app.*)     → bolha, tooltip, painel, chat, configurações
 ```

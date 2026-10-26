@@ -15,6 +15,7 @@
   <body data-inspector-width="compact">
     <header id="topbar"></header>
     <main id="columns">
+      <aside id="maestro-orchestra" class="maestro-only" aria-label="Orquestra"></aside>
       <nav id="sidebar" aria-label="Projetos"></nav>
       <section class="pane" id="terminal-pane">
         <div class="pane-bar" id="tabs"></div>
@@ -27,10 +28,14 @@
         <div class="pane-bar" id="inspector-head"></div>
         <div id="task-picker"></div>
         <div id="timeline"></div>
+        <div id="maestro-order" class="maestro-only"></div>
+        <div id="maestro-balloon" class="maestro-only"></div>
         <div id="detail"></div>
+        <div id="maestro-consequences" class="maestro-only"></div>
         <div id="rail"></div>
         <div id="composer" hidden></div>
       </aside>
+      <aside id="maestro-impact" class="maestro-only" aria-label="Área de impacto"></aside>
     </main>
     <script type="module" src="workspace.js"></script>
   </body>

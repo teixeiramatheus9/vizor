@@ -910,6 +910,14 @@ async function renderVocabulary() {
 }
 
 voiceEnabledBox.addEventListener('change', () => window.manager.setConfig({ voiceEnabled: voiceEnabledBox.checked }));
+// The Maestro (#159): the voice, the workspace button and this switch all
+// write the same config, so the state push keeps them in sync.
+const maestroBox = document.getElementById('maestro-enabled');
+function renderMaestroSwitch(on) {
+  maestroBox.checked = Boolean(on);
+  document.getElementById('maestro-enabled-state').textContent = on ? '[on]' : '[off]';
+}
+maestroBox.addEventListener('change', () => window.manager.setConfig({ maestroEnabled: maestroBox.checked }));
 voiceNarrationBox.addEventListener('change', () => window.manager.setConfig({ voiceNarration: voiceNarrationBox.checked }));
 voiceModelSelect.addEventListener('change', () => window.manager.setConfig({ voiceModel: voiceModelSelect.value }));
 voiceSummarySelect.addEventListener('change', () => window.manager.setConfig({ voiceSummary: voiceSummarySelect.value }));
@@ -1584,6 +1592,7 @@ sessionsContainer.addEventListener('click', (event) => {
 });
 
 window.manager.onState((state) => {
+  if (typeof state.maestroEnabled === 'boolean') renderMaestroSwitch(state.maestroEnabled);
   if (state.voiceLang) voiceLang = state.voiceLang;
   if (typeof state.audioSinkId === 'string' && state.audioSinkId !== audioSinkId) {
     audioSinkId = state.audioSinkId;

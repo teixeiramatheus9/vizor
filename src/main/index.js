@@ -30,8 +30,20 @@ import { Worker } from 'node:worker_threads';
 import { createListener } from './voice/listener.js';
 import { createSpeechArbiter } from './voice/arbiter.js';
 import { createVoiceSession } from './voice/session.js';
+import { createRoutines } from './voice/routines.js';
+import { createNarrator } from './voice/narration.js';
+import { buildOrchestra, nextFocus } from './maestro/orchestra.js';
+import { createPendingOrder } from './maestro/pending-order.js';
+import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
+import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
+import { createConductor } from './maestro/conductor.js';
+import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
+import { readTail } from './maestro/log-tail.js';
+import { shouldSuggest } from './maestro/reviewer.js';
+import { criticalOf } from '../renderer/graph-view.js';
+import { testOutcomeOf } from './voice/narration.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
-import { buildDigest, ghQueries, githubRepoOf, resolveProject } from './voice/gh-digest.js';
+import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
 import { runClaude } from './claude-cli.js';
@@ -443,6 +455,17 @@ function recordGuardOutcome(request, outcome) {
   }
 }
 
+// An action with no way back, in the Maestro: the voice offers a review first (#162).
+function reviewerHint(ask) {
+  if (!maestroOn() || !ask.irreversible) return '';
+  const musician = maestroOrchestra.find((item) => item.sessionId === ask.sessionId);
+  if (!musician) return '';
+  const name = musician.number ?? musician.name;
+  return spokenLang() === 'en'
+    ? ` No way back: say "chama um avaliador pra ${name}" for a review first.`
+    : ` Isso não tem volta: se quiser uma revisão antes, diga "chama um avaliador pra ${name}".`;
+}
+
 function onGuardMessage(message, reply) {
   if (message.type === 'guard-event') {
     recordGuardOutcome(message, message.outcome ?? 'barrado');
@@ -463,7 +486,7 @@ function onGuardMessage(message, reply) {
 function announceGuardAsk(ask) {
   // The balloon announces; the choices live in the panel and the workspace.
   // In voice mode the session speaks it (priority 2) and takes the answer.
-  if (voiceSession) voiceSession.onGuardAsk({ speech: guardSpeech(ask, spokenLang()) });
+  if (voiceSession) voiceSession.onGuardAsk({ speech: `${guardSpeech(ask, spokenLang())}${reviewerHint(ask)}` });
   sendToRenderer('tooltip', {
     projectName: path.basename(ask.cwd ?? '') || 'Claude',
     text: ask.summary,
@@ -543,6 +566,7 @@ function sendState() {
     update: updateStatus,
     hint: lastHint,
     voiceDownloading: tts.downloadingVoice(),
+    maestroEnabled: maestroOn(),
     // The bubble speaks the alert lines: it must hear about a voice change.
     voiceLang: speechLang(managerConfig.voice),
     // ...and plays the chimes: on the output pinned in the tray menu.
@@ -573,12 +597,249 @@ function sendState() {
   pushWorkspaceState();
 }
 
+// --- Maestro (#159): the stage in the workspace ------------------------------
+// The orchestra is rebuilt on every workspace push; the focus is not saved.
+let maestroOrchestra = [];
+let maestroFocusId = null;
+const maestroNarrators = new Map(); // sessionId → narrator, for the consequences strip
+const maestroOrder = createPendingOrder();
+maestroOrder.on('show', (order) => {
+  workspaceWindow?.send('maestro:order', order);
+  // Listening already: "cancela" needs no "Vizor" in front (review C1).
+  if (voiceState === 'sleeping') voiceListener?.wake();
+});
+maestroOrder.on('clear', () => workspaceWindow?.send('maestro:order', null));
+
+const maestroOn = () => Boolean(managerConfig.maestroEnabled);
+
+// The balloon shows what is said, spoken or not (the voice may be off).
+function maestroSay(source, text) {
+  if (!maestroOn() || !text) return;
+  workspaceWindow?.send('maestro:say', { source: source ?? 'manager', text: String(text) });
+}
+
+// The consequences strip has its own narrator: it runs with the voice off too.
+function maestroNarrate(event) {
+  if (!maestroOn() || !event?.session_id) return;
+  if (!maestroOrchestra.some((musician) => musician.sessionId === event.session_id)) return;
+  let narrator = maestroNarrators.get(event.session_id);
+  if (!narrator) maestroNarrators.set(event.session_id, (narrator = createNarrator()));
+  const line = narrator.narrate(event);
+  if (line) workspaceWindow?.send('maestro:narration', { sessionId: event.session_id, text: line.text });
+}
+
+// The graph of each músico's checkout (#159, part 2): built off the main
+// thread when the Maestro turns on, refreshed after a músico's edit.
+let graphParser = null;
+const graphIndexers = new Map(); // checkout root → indexer
+const graphRefreshTimers = new Map();
+const maestroPlans = new Map(); // sessionId → the plan its "Vizor-plano:" line declared
+const touchCache = new Map(); // memo of touchedFunctions, cleared when a graph changes
+
+function graphFor(root) {
+  if (!root) return null;
+  let indexer = graphIndexers.get(root);
+  if (!indexer) {
+    graphParser ??= createWorkerParser();
+    const parser = graphParser; // this indexer's own: a later Maestro gets a new one
+    indexer = createGraphIndexer({
+      root,
+      listFiles: async () => (await runText('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root })).split('\n').filter(Boolean),
+      statFile: (relPath) => fs.promises.stat(path.join(root, relPath)),
+      readFile: (relPath) => fs.promises.readFile(path.join(root, relPath), 'utf8'),
+      parse: (source, relPath) => parser.parse(source, relPath),
+    });
+    indexer.on('graph', (graph) => {
+      if (graphIndexers.get(root) !== indexer) return; // from before the Maestro went off
+      touchCache.clear();
+      workspaceWindow?.send('maestro:graph', { root, graph });
+      pushWorkspaceState();
+    });
+    graphIndexers.set(root, indexer);
+    indexer.refresh().catch((error) => log(`graph failed for ${root}: ${error}`));
+  }
+  return indexer;
+}
+
+// A músico's edit: that file is parsed again, at most every 0.5 s per checkout.
+function graphTouched(event) {
+  const musician = maestroOrchestra.find((item) => item.sessionId === event?.session_id);
+  const filePath = event?.tool_input?.file_path ?? event?.tool_input?.notebook_path;
+  const indexer = musician?.root && graphIndexers.get(musician.root);
+  if (!indexer || !filePath) return;
+  indexer.touch(path.relative(musician.root, filePath).split(path.sep).join('/'));
+  clearTimeout(graphRefreshTimers.get(musician.root));
+  graphRefreshTimers.set(
+    musician.root,
+    setTimeout(() => indexer.refreshTouched().catch((error) => log(`graph refresh failed: ${error}`)), 500),
+  );
+}
+
+// What each músico touched (its task's files against the graph) and plans.
+function maestroImpacts() {
+  const impacts = [];
+  for (const musician of maestroOrchestra) {
+    const graph = musician.root ? graphIndexers.get(musician.root)?.graph() : null;
+    if (!graph || graph.unavailable) continue;
+    const touched = [];
+    const touchedModules = [];
+    for (const [filePath, file] of editTracker.currentTask(musician.sessionId)?.files ?? []) {
+      const relPath = path.relative(musician.root, filePath).split(path.sep).join('/');
+      touchedModules.push(relPath);
+      const key = `${musician.sessionId}|${relPath}|${file.start?.length ?? 'new'}|${file.current?.length ?? 0}`;
+      if (!touchCache.has(key)) touchCache.set(key, touchedFunctions(graph, relPath, file.start, file.current));
+      touched.push(...touchCache.get(key));
+    }
+    const impact = impactOf(graph, { touched, touchedModules, planned: maestroPlans.get(musician.sessionId) ?? [] });
+    impacts.push({ sessionId: musician.sessionId, root: musician.root, color: musician.color, ...impact });
+  }
+  return impacts;
+}
+
+ipcMain.handle('maestro:graph', (_event, root) => (typeof root === 'string' ? graphFor(root)?.graph() ?? null : null));
+
+// --- the conducting gerente (#162): your orders, kept until a músico's turn ends
+const maestroConductor = createConductor({ lang: () => spokenLang() });
+const turnTests = new Map(); // sessionId → the last test verdict of its current turn
+const reviewerOffered = new Set(); // músicos already offered a reviewer
+
+function runConductor(actions) {
+  for (const action of actions) {
+    if (action.type === 'prompt') {
+      turnTests.delete(action.sessionId); // a new turn starts with this prompt
+      // Not safe to type yet (a question on screen, just settling, the user
+      // typing in that tab): tried again; never arrived, the order waits and
+      // you hear it (review C1, I1).
+      const userTyping = () => Date.now() - (userTypedAt.get(ptyOfSession(action.sessionId)) ?? 0) < USER_TYPING_MS;
+      const deliver = (tries) =>
+        (userTyping() ? Promise.resolve('hold') : voiceDeliverPrompt(action.sessionId, action.text))
+          .then((outcome) => {
+            if (outcome === 'hold' && tries < 5) return setTimeout(() => deliver(tries + 1), 2000);
+            if (outcome !== 'sent') log(`conductor prompt to ${action.sessionId.slice(0, 8)}: ${outcome}`);
+            return runConductor(maestroConductor.delivered(action.sessionId, outcome === 'sent'));
+          })
+          .catch((error) => {
+            log(`conductor prompt failed: ${error}`);
+            runConductor(maestroConductor.delivered(action.sessionId, false));
+          });
+      deliver(0);
+    } else if (voiceSession) voiceSession.onConductorAction(action);
+    else speakAsManager(action.text);
+  }
+  pushWorkspaceState();
+}
+
+// A músico's turn ended: the gerente's order moves on, and a big or risky
+// change offers a reviewer (once per músico).
+function maestroTurnEnded(musician) {
+  runConductor(maestroConductor.turnEnded(musician.sessionId, { tests: turnTests.get(musician.sessionId) ?? null }));
+  turnTests.delete(musician.sessionId);
+  // Once per task (or per chat without one), and only if the voice could ask.
+  const offerKey = musician.number !== null ? `task:${musician.root}:${musician.number}` : musician.sessionId;
+  if (!voiceSession || reviewerOffered.has(offerKey)) return;
+  const graph = musician.root ? graphIndexers.get(musician.root)?.graph() : null;
+  const impact = maestroImpacts().find((item) => item.sessionId === musician.sessionId);
+  if (!graph || graph.unavailable || !impact) return;
+  const offer = shouldSuggest(impact, criticalOf(graph), new Set());
+  if (offer && voiceSession.onSuggestReviewer({ musician, ...offer })) reviewerOffered.add(offerKey);
+}
+
+// --- the backstage (#142): sub-agents, background logs, ports, per músico ---
+// Claude Code keeps background logs under <tmp>/claude-<uid> (TMPDIR honoured).
+const backstage = createBackstage({ tmpRoot: path.join(os.tmpdir(), `claude-${process.getuid?.() ?? ''}`) });
+const backstageLogs = new Map(); // output file → { lines, gone, idleSeconds }
+const backstagePorts = new Map(); // sessionId → [{ port, process }]
+let backstageTimers = null;
+
+async function refreshBackstageLogs() {
+  let changed = false;
+  for (const musician of maestroOrchestra)
+    for (const item of backstage.backgroundOf(musician.sessionId)) {
+      const tail = await readTail(item.outputFile);
+      const before = JSON.stringify(backstageLogs.get(item.outputFile));
+      // Quiet time in whole minutes: the stage redraws when it moves a minute, not every 2 s.
+      const idleSeconds = tail.mtimeMs ? Math.floor((Date.now() - tail.mtimeMs) / 60000) * 60 : 0;
+      backstageLogs.set(item.outputFile, { lines: tail.lines, gone: tail.gone, idleSeconds });
+      changed ||= before !== JSON.stringify(backstageLogs.get(item.outputFile));
+    }
+  if (changed) pushWorkspaceState();
+}
+
+// Who is whose parent, from /proc/<pid>/stat ("pid (comm) state ppid …").
+async function readParents() {
+  const parents = new Map();
+  for (const name of await fs.promises.readdir('/proc').catch(() => [])) {
+    if (!/^\d+$/.test(name)) continue;
+    const stat = await fs.promises.readFile(`/proc/${name}/stat`, 'utf8').catch(() => null);
+    if (stat) parents.set(Number(name), Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]));
+  }
+  return parents;
+}
+
+async function refreshBackstagePorts() {
+  if (!maestroOrchestra.length) return;
+  const listeners = parseListeners(await runText('ss', ['-ltnpH']).catch(() => ''));
+  const parents = listeners.length ? await readParents() : new Map();
+  let changed = false;
+  for (const musician of maestroOrchestra) {
+    // No listener anywhere: no músico has a port, nothing to look up.
+    const pid = listeners.length ? readSessionPid(musician.sessionId) : null;
+    const ports = pid && listeners.length ? portsFor(listeners, descendantsOf(pid, parents)) : [];
+    changed ||= JSON.stringify(ports) !== JSON.stringify(backstagePorts.get(musician.sessionId) ?? []);
+    backstagePorts.set(musician.sessionId, ports);
+  }
+  if (changed) pushWorkspaceState();
+}
+
+// Logs every 2 s and ports every 5 s, only while the Maestro is on.
+function syncBackstageTimers() {
+  if (maestroOn() && !backstageTimers) {
+    backstageTimers = [
+      setInterval(() => refreshBackstageLogs().catch((error) => log(`backstage logs failed: ${error}`)), 2000),
+      setInterval(() => refreshBackstagePorts().catch((error) => log(`backstage ports failed: ${error}`)), 5000),
+    ];
+  } else if (!maestroOn() && backstageTimers) {
+    backstageTimers.forEach(clearInterval);
+    backstageTimers = null;
+  }
+}
+
+function backstageOf(sessionId) {
+  return {
+    subagents: backstage.subagentsOf(sessionId),
+    background: backstage.backgroundOf(sessionId).map((item) => ({
+      id: item.id,
+      command: item.command,
+      ...(backstageLogs.get(item.outputFile) ?? { lines: [], gone: false, idleSeconds: 0 }),
+    })),
+    ports: backstagePorts.get(sessionId) ?? [],
+  };
+}
+
+function maestroFocus(sessionId) {
+  maestroFocusId = sessionId;
+  workspaceWindow?.focusSession(sessionId);
+  pushWorkspaceState();
+}
+
+function maestroInterrupt(ptyId) {
+  if (!ptyHost?.list().some((terminal) => terminal.id === ptyId && terminal.alive)) return false;
+  ptyHost.write(ptyId, '\x1b'); // Esc: Claude Code stops the turn, the session lives on
+  return true;
+}
+
+ipcMain.on('maestro:set', (_event, on) => applyConfig({ maestroEnabled: Boolean(on) }));
+ipcMain.on('maestro:focus', (_event, sessionId) => {
+  if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
+});
+
 // What the Vizor says follows the chosen voice's language (#161).
 function spokenLang() {
   return speechLang(managerConfig.voice);
 }
 
 function speakAsManager(text) {
+  if (!voiceArbiter) maestroSay('manager', text);
   if (!managerConfig.ttsEnabled) return;
   // In voice mode one arbiter decides who speaks when (#161).
   if (voiceArbiter) {
@@ -1395,6 +1656,14 @@ async function generateVoiceForStop(session) {
   // pending ask found here is shown too instead of being discarded.
   registry.setQuestion(session.id, snapshot.pendingQuestion);
   registry.setLastMessage(session.id, digestMessage(snapshot.lastAssistantMessage));
+  const playing = maestroOrchestra.find((musician) => musician.sessionId === session.id);
+  if (playing) {
+    maestroSay(session.id, snapshot.lastAssistantMessage);
+    // The plan it declared lights up on the graph, dashed (#159).
+    const plan = playing.root ? parsePlan(snapshot.lastAssistantMessage, playing.root) : [];
+    if (plan.length) maestroPlans.set(session.id, plan);
+    if (maestroOn()) maestroTurnEnded(playing);
+  }
   // The chat bound to the voice answers in its own words, not the gerente's
   // alert — and no tokens go to the alert (#161).
   const bound = voiceSession?.target();
@@ -1560,12 +1829,40 @@ function pushWorkspaceStateNow() {
     sessions: linkedSessions(listWithDisplayNames()),
     taskOf: (sessionId) => editTracker.currentTask(sessionId),
   });
+  maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
+  maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
+  if (maestroOn()) for (const musician of maestroOrchestra) graphFor(musician.root);
+  syncBackstageTimers();
+  // Sessions that are no músico (any more) leave the backstage.
+  if (maestroOn())
+    for (const sessionId of backstage.sessions())
+      if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) {
+        for (const item of backstage.backgroundOf(sessionId)) backstageLogs.delete(item.outputFile);
+        backstage.forget(sessionId);
+        backstagePorts.delete(sessionId);
+      }
+  // A músico gone with an order pending: the gerente says it could not do it.
+  for (const { sessionId } of maestroConductor.list())
+    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) queueMicrotask(() => runConductor(maestroConductor.sessionGone(sessionId)));
+  for (const sessionId of [...maestroNarrators.keys(), ...maestroPlans.keys()])
+    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) {
+      maestroNarrators.delete(sessionId);
+      maestroPlans.delete(sessionId);
+    }
   workspaceWindow.send('workspace:state', {
     tree,
     terminals: ptyHost?.list() ?? [],
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
+    maestro: {
+      on: maestroOn(),
+      orchestra: maestroOrchestra,
+      focusedId: maestroFocusId,
+      impacts: maestroOn() ? maestroImpacts() : [],
+      orders: Object.fromEntries(maestroConductor.list().map((order) => [order.sessionId, order.label])),
+      backstage: maestroOn() ? Object.fromEntries(maestroOrchestra.map((musician) => [musician.sessionId, backstageOf(musician.sessionId)])) : {},
+    },
     theme: managerConfig.theme,
     palette: managerConfig.palette,
   });
@@ -1849,8 +2146,13 @@ ipcMain.on('workspace:active-tab', (event, id) => {
   activeTerminalId = id;
   scheduleTabsSave();
 });
+// When the user last typed in each tab: the gerente never types over them (#162 review).
+const userTypedAt = new Map(); // pty id → time
+const USER_TYPING_MS = 5000;
 ipcMain.on('pty:write', (event, { id, data } = {}) => {
-  if (fromWorkspace(event) && typeof data === 'string') ptyHost?.write(id, data);
+  if (!fromWorkspace(event) || typeof data !== 'string') return;
+  userTypedAt.set(id, Date.now());
+  ptyHost?.write(id, data);
 });
 ipcMain.on('pty:resize', (event, { id, cols, rows } = {}) => {
   const size = fromWorkspace(event) ? clampTerminalSize(cols, rows) : null;
@@ -2298,6 +2600,10 @@ function verifiedTerm(event) {
 }
 
 function onHookEvent(event, reply) {
+  // Only while the Maestro is on: off, nothing would ever forget it (review I2).
+  if (maestroOn()) backstage.onEvent(event);
+  // Sub-agent starts and stops are the backstage's only (#142).
+  if (event?.hook_event_name === 'SubagentStart' || event?.hook_event_name === 'SubagentStop') return;
   if (event?.type === 'guard-ask' || event?.type === 'guard-event') {
     onGuardMessage(event, reply);
     return;
@@ -2309,7 +2615,13 @@ function onHookEvent(event, reply) {
     pendingNewChats.delete(event.term.VIZOR_PTY_ID);
     newChat({ sessionId: event.session_id });
   }
-  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') voiceSession?.onToolEvent(event);
+  if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event?.hook_event_name)) {
+    voiceSession?.onToolEvent(event);
+    maestroNarrate(event);
+    const verdict = testOutcomeOf(event);
+    if (verdict && event.session_id) turnTests.set(event.session_id, verdict);
+    if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name)) graphTouched(event);
+  }
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
   for (const [ptyId, sessionId] of resumedChats) if (sessionId === event?.session_id) resumedChats.delete(ptyId);
@@ -2317,6 +2629,8 @@ function onHookEvent(event, reply) {
     onToolEvent(event);
     return;
   }
+  // A failed command: only the narration and the conductor read it (no edit landed).
+  if (event?.hook_event_name === 'PostToolUseFailure') return;
   if (event?.hook_event_name === 'Notification') {
     event = {
       ...event,
@@ -2510,6 +2824,7 @@ function applyConfig(partial) {
   if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
   if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
   if (partial && 'voiceMic' in partial) allowed.voiceMic = normalizeMic(partial.voiceMic);
+  if (typeof partial?.maestroEnabled === 'boolean') allowed.maestroEnabled = partial.maestroEnabled;
   if (partial && 'audioOutput' in partial) allowed.audioOutput = normalizeOutput(partial.audioOutput);
   const micChanged = 'voiceMic' in allowed && JSON.stringify(allowed.voiceMic) !== JSON.stringify(managerConfig.voiceMic ?? null);
   const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
@@ -2526,6 +2841,17 @@ function applyConfig(partial) {
   managerConfig = { ...managerConfig, ...allowed };
   if ('audioOutput' in allowed) tts.setAudioOutput(managerConfig.audioOutput);
   if ('audioOutput' in allowed || 'voiceMic' in allowed) refreshTrayMenu();
+  if ('maestroEnabled' in allowed) {
+    if (!allowed.maestroEnabled) {
+      maestroOrder.cancel();
+      maestroConductor.clear(); // no order left to fire on a later, unrelated stop
+      // The graphs go with the stage: rebuilt (from cache-less parse) on the next one.
+      graphIndexers.clear();
+      graphParser?.close();
+      graphParser = null;
+    }
+    pushWorkspaceState();
+  }
   if ('audioOutput' in allowed && managerConfig.audioOutput && !chromiumSinkId(chromiumOutputs, managerConfig.audioOutput))
     log(`audio output: no Chromium match for "${managerConfig.audioOutput.label}" (${chromiumOutputs.map((device) => device.label).join(' | ')}) — chimes stay on the default`);
   // Muted by voice, the mic stays off: it only learns which one to open next.
@@ -3412,6 +3738,18 @@ const vocabularyStore = createVocabularyStore({
   },
   rename: (from, to) => fs.renameSync(from, to),
 });
+// Routines (#163), per project; without one open, a shared list.
+const routinesStore = createRoutines({
+  file: path.join(voiceDir, 'rotinas.json'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const routinesHere = () => voiceRoot() ?? '*';
+
 const taskLinks = createTaskLinks({
   file: path.join(voiceDir, 'tasks.json'),
   readFile: (file) => fs.readFileSync(file, 'utf8'),
@@ -3488,10 +3826,12 @@ async function voiceGhDigest() {
       }),
     );
     lastGhDigest = buildDigest(results, spokenLang());
+    lastGhContext = managerContext(results);
     lastGhDigestAt = Date.now();
   } catch (error) {
     log(`gh digest failed: ${error}`);
     lastGhDigest = buildDigest({ error: String(error) }, spokenLang());
+    lastGhContext = managerContext({ error: String(error) });
   }
   return lastGhDigest;
 }
@@ -3503,7 +3843,7 @@ async function voiceResolveTask(number) {
   const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
   const conversations = [];
   for (const folder of folders) {
-    for (const conversation of await listConversations(claudeProjectDir(folder), { limit: 200 }))
+    for (const conversation of await listConversations(await resolveClaudeProjectDir(folder), { limit: 200 }))
       conversations.push({ ...conversation, cwd: folder });
   }
   const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees });
@@ -3571,17 +3911,43 @@ async function voiceDeliverPrompt(sessionId, text) {
 
 const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
 let lastGhDigestAt = 0;
+let lastGhContext = null;
 
 // The gerente has no tools of its own: it gets the project's GitHub state
 // with the question (live test: "não tenho acesso ao GitHub").
 async function voiceAskManager(text) {
   if (!lastGhDigest || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
-  const github = lastGhDigest
-    ? `\n\n(Estado do GitHub do projeto agora — use pra responder: ${lastGhDigest.speech}${lastGhDigest.lines.length ? ` Detalhes: ${lastGhDigest.lines.slice(0, 20).join('; ')}` : ''})`
-    : '';
+  // Every open PR and issue, read by the Vizor with gh (#159: the gerente
+  // reads, the músicos act).
+  const github = lastGhContext ? `\n\n(GitHub do projeto agora — use pra responder:\n${lastGhContext})` : '';
   const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}`, lang: spokenLang() });
   tokenBudget.add(tokensUsed);
   return reply;
+}
+
+// A spoken work order no command matched, often garbled ("pega eixo e um
+// meia 9"): Haiku reads it against the open issues and says which one was
+// meant. Only a number that is really open counts (live test).
+async function voiceInterpret(text) {
+  if (isEconomyMode()) return null;
+  if (!lastGhContext || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
+  const open = new Set([...String(lastGhContext ?? '').matchAll(/^issue #(\d+)/gm)].map((match) => Number(match[1])));
+  if (!open.size) return null;
+  const result = await runClaude({
+    prompt: [
+      'Você interpreta um pedido falado em pt-BR, transcrito com erros (números e a palavra "issue" saem errados: "eixo e um meia 9" é "issue 169").',
+      'Issues abertas do projeto:',
+      String(lastGhContext).split('\n').filter((line) => line.startsWith('issue #')).join('\n'),
+      `Pedido: "${text}"`,
+      'Se o pedido é começar, pegar ou desenvolver UMA dessas issues, responda só {"action":"pick-issue","number":N}. Senão, responda só {"action":"none"}.',
+    ].join('\n'),
+    timeoutMs: 15000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  const number = Number(String(result?.text ?? '').match(/"number"\s*:\s*(\d+)/)?.[1]);
+  const picked = /"action"\s*:\s*"pick-issue"/.test(result?.text ?? '') && open.has(number);
+  log(`voice interpret: "${text}" → ${picked ? `issue ${number}` : 'nothing'}`);
+  return picked ? { type: 'pick-issue', number } : null;
 }
 
 async function voiceSummarize(plain) {
@@ -3675,6 +4041,31 @@ function createVoiceSessionForApp() {
     projectRoot: () => voiceRoot(),
     settings: () => ({ narration: managerConfig.voiceNarration !== false, summary: managerConfig.voiceSummary ?? 'always' }),
     lang: spokenLang,
+    maestro: maestroOn,
+    setMaestro: (on) => applyConfig({ maestroEnabled: on }),
+    orchestra: () => maestroOrchestra,
+    focus: maestroFocus,
+    interrupt: maestroInterrupt,
+    pendingOrder: maestroOrder,
+    routines: {
+      save: (name, steps) => routinesStore.save(routinesHere(), name, steps),
+      get: (name) => routinesStore.get(routinesHere(), name),
+      list: () => routinesStore.list(routinesHere()),
+      remove: (name) => routinesStore.remove(routinesHere(), name),
+    },
+    interpret: voiceInterpret,
+    conductor: maestroConductor,
+    // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
+    startOrderNow: (sessionId) => {
+      const session = registry.sessions.get(sessionId);
+      if (!session || session.question || session.needsPermission) return;
+      if (session.status === 'done' || session.status === 'waiting') runConductor(maestroConductor.turnEnded(sessionId, { tests: null }));
+    },
+    linkedSessions: (number) => {
+      const root = voiceRoot();
+      return root ? taskLinks.linksFor(root, number) : [];
+    },
+    onError: (error) => log(`maestro order failed: ${error?.stack ?? error}`),
   });
 }
 
@@ -3826,6 +4217,11 @@ function startVoice() {
     lang: spokenLang,
     speak: (text, item) =>
       new Promise((resolve) => {
+        // The balloon: the gerente's and the voice's own lines. A músico's
+        // answer shows as its real message on Stop, its narration in the
+        // consequences strip; the "ok" and "só um momento" are not news.
+        const fromMusician = maestroOrchestra.some((musician) => musician.sessionId === item.source);
+        if (!fromMusician && !item.replaceKey && item.kind !== 'ack' && item.kind !== 'filler') maestroSay('manager', text);
         // The short "ok" does not pause listening, but its own echo must not
         // count as the user talking: ignored until it played, plus a margin.
         if (item.kind === 'ack') voiceListener?.ignoreSpeech(30000);
@@ -3845,6 +4241,9 @@ function startVoice() {
   voiceArbiter.on('quiet', ({ followUp } = {}) => voiceListener?.speakingEnded({ followUp }));
   voiceListener.on('state', (state) => {
     voiceState = state;
+    // The user is finishing a sentence (maybe "cancela"): the order waits.
+    if (state === 'closing' || state === 'grace') maestroOrder.pause();
+    else maestroOrder.resume();
     // Held through the grace window too: a line starting there would pause
     // listening and lose the utterance (only the "ok" passes).
     voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing' || state === 'grace');
@@ -3864,6 +4263,12 @@ function startVoice() {
   voiceListener.on('barge', () => voiceArbiter?.flush());
   voiceListener.on('cancelled', (payload) => {
     if (payload?.stopSpeaking) voiceArbiter?.flush();
+    // "não, espera" / "para" never reach the session: the listener takes
+    // them. A held order goes with them (review I2).
+    if (maestroOrder.pending()) {
+      maestroOrder.cancel();
+      voiceArbiter?.say({ text: spokenLang() === 'en' ? 'Cancelled.' : 'Cancelado.', priority: 1 });
+    }
   });
   voiceListener.on('utterance', ({ text }) => {
     voiceRestarts = 0; // the engine works again

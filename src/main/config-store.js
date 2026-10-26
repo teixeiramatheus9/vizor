@@ -33,6 +33,7 @@ export const DEFAULT_CONFIG = {
   voiceSummary: 'always',
   voiceMic: null, // { id, label } pinned in the settings, or null for the system default
   audioOutput: null, // { name, label } a PipeWire sink pinned in the tray menu, or null
+  maestroEnabled: false, // the Maestro stage in the workspace (#159)
 };
 
 const stringList = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []);

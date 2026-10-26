@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDigest, ghQueries, githubRepoOf, resolveProject } from '../src/main/voice/gh-digest.js';
+import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from '../src/main/voice/gh-digest.js';
 
 const failing = [{ __typename: 'CheckRun', name: 'test', conclusion: 'FAILURE', status: 'COMPLETED' }];
 const passing = [{ __typename: 'CheckRun', name: 'test', conclusion: 'SUCCESS', status: 'COMPLETED' }];
@@ -49,7 +49,9 @@ describe('githubRepoOf / ghQueries', () => {
 
   it('every query names the repo explicitly', () => {
     const queries = ghQueries('o/r', 'main');
-    expect(Object.keys(queries)).toEqual(['prs', 'reviewRequested', 'issues', 'runs']);
+    expect(Object.keys(queries)).toEqual(['prs', 'reviewRequested', 'issues', 'openIssues', 'runs']);
+    expect(queries.openIssues).toEqual(expect.arrayContaining(['issue', 'list', '--state', 'open']));
+    expect(queries.prs.join(' ')).toContain('reviewRequests');
     for (const args of Object.values(queries)) expect(args.slice(-2)).toEqual(['-R', 'o/r']);
     expect(queries.runs).toEqual(expect.arrayContaining(['--branch', 'main']));
   });
@@ -90,5 +92,36 @@ describe('buildDigest in English, for an English voice', () => {
     expect(buildDigest({ prs: [], issues: [{ number: 3, title: 'y' }, { number: 4, title: 'z' }], runs: [] }, 'en').speech).toBe('No open PRs. 2 issues on you.');
     expect(buildDigest({ prs: [], issues: [], runs: [{ conclusion: 'failure', headBranch: 'main' }] }, 'en').speech).toBe('No open PRs. The CI on main broke.');
     expect(buildDigest({ error: 'x' }, 'en').speech).toBe("I couldn't reach GitHub.");
+  });
+});
+
+describe('managerContext: what the gerente reads (it reads, the músicos act)', () => {
+  const results = {
+    prs: [
+      { number: 166, title: 'modo voz', isDraft: false, reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: passing, reviewRequests: [{ login: 'alexsynvia' }], author: { login: 'teixeiramatheus9' } },
+      { number: 150, title: 'leva A', isDraft: true, reviewDecision: 'CHANGES_REQUESTED', statusCheckRollup: failing, reviewRequests: [], author: { login: 'joao' } },
+    ],
+    reviewRequested: [{ number: 150 }],
+    issues: [{ number: 142, title: 'logs' }],
+    openIssues: [
+      { number: 142, title: 'Workspace: monitorar sub-agentes', labels: [{ name: 'workspace' }], assignees: [{ login: 'teixeiramatheus9' }] },
+      { number: 45, title: 'Conectar com outras IAs', labels: [], assignees: [] },
+    ],
+    runs: [{ conclusion: 'success', headBranch: 'main' }],
+  };
+
+  it('every open PR with its review state, checks and reviewers; every open issue with labels and owner', () => {
+    const text = managerContext(results);
+    expect(text).toContain('PR #166 modo voz — revisão pendente; checks ok; revisores pedidos: alexsynvia; autor teixeiramatheus9');
+    expect(text).toContain('PR #150 leva A — rascunho; mudanças pedidas; CI quebrado; esperando sua revisão; autor joao');
+    expect(text).toContain('issue #142 Workspace: monitorar sub-agentes [workspace] — com teixeiramatheus9');
+    expect(text).toContain('issue #45 Conectar com outras IAs — sem responsável');
+    expect(text).toContain('CI da main: ok');
+  });
+
+  it('a GitHub failure says so; at most 40 issues', () => {
+    expect(managerContext({ error: 'x' })).toBe('GitHub indisponível agora.');
+    const many = { ...results, openIssues: Array.from({ length: 60 }, (_, index) => ({ number: index + 1, title: `i${index}`, labels: [], assignees: [] })) };
+    expect(managerContext(many).match(/^issue #/gm)).toHaveLength(40);
   });
 });

@@ -74,3 +74,30 @@ describe('resolveTask — final review fixes', () => {
     expect(resolveTask({ number: 22, links: [], conversations: [], worktrees: [{ path: '/r-wt/x', branch: 'fix/22_login' }] })).toEqual({ none: true, cwd: '/r-wt/x' });
   });
 });
+
+describe('numberOf (the Maestro addresses a músico by its task)', () => {
+  it('numberOf: the newest task linked to a session', () => {
+    const files = {};
+    const io = {
+      file: '/v/tasks.json',
+      readFile: (file) => {
+        if (!(file in files)) throw new Error('ENOENT');
+        return files[file];
+      },
+      writeFile: (file, content) => (files[file] = content),
+      rename: (from, to) => {
+        files[to] = files[from];
+        delete files[from];
+      },
+    };
+    const links = createTaskLinks(io);
+    expect(links.numberOf('/r', 's1')).toBeNull();
+    links.link('/r', 5, 's1');
+    links.link('/r', 22, 's1');
+    expect(links.numberOf('/r', 's1')).toBe(22);
+    links.link('/r', 22, 's2'); // s1 is no longer the newest on 22
+    expect(links.numberOf('/r', 's1')).toBe(5);
+    expect(links.numberOf('/other', 's1')).toBeNull();
+    expect(links.numberOf(null, 's1')).toBeNull();
+  });
+});

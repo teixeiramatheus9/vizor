@@ -870,3 +870,349 @@ body[data-chat-hidden='true'] #terminal-pane {
 #topbar .voice-state[data-voice='muted'] {
   color: var(--muted);
 }
+
+/* --- Maestro (#159): orchestra | code | impact, the chat out of the way --- */
+.maestro-only {
+  display: none;
+}
+body[data-maestro='true'] #columns {
+  grid-template-columns: 170px minmax(0, 1fr) 33% !important;
+}
+body[data-maestro='true'] #sidebar,
+body[data-maestro='true'] #terminal-pane,
+body[data-maestro='true'] #inspector-head,
+body[data-maestro='true'] #task-picker,
+body[data-maestro='true'] #timeline,
+body[data-maestro='true'] #rail {
+  display: none !important;
+}
+body[data-maestro='true'] .maestro-only {
+  display: block;
+}
+body[data-maestro='true'] #inspector {
+  position: relative;
+}
+#maestro-orchestra,
+#maestro-impact {
+  overflow-y: auto;
+  background: var(--bg-footer);
+  padding: 8px;
+}
+#maestro-orchestra {
+  border-right: 1px solid var(--border);
+}
+#maestro-impact {
+  border-left: 1px solid var(--border);
+}
+.maestro-title {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 2px 0 6px;
+}
+.musician {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 5px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.musician[aria-current='true'] {
+  background: var(--bg-surface);
+  outline: 1px solid var(--accent);
+}
+.musician.manager {
+  cursor: default;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.musician-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  margin-top: 4px;
+  background: var(--muted);
+}
+.musician-status {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.orchestra-empty,
+.impact-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px;
+}
+#maestro-order:empty,
+#maestro-balloon:empty,
+#maestro-consequences:empty {
+  display: none;
+}
+.maestro-order {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--warn);
+  border-radius: 6px;
+  color: var(--warn);
+  font-size: 13px;
+}
+.maestro-order .order-hint {
+  color: var(--muted);
+}
+#maestro-balloon {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  z-index: 3;
+  pointer-events: none;
+  transition: transform 0.15s ease-out;
+}
+#maestro-balloon .balloon {
+  pointer-events: auto;
+  position: relative;
+  background: var(--text);
+  color: var(--bg-surface);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 13px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 30%);
+}
+#maestro-balloon .balloon::after {
+  content: '';
+  position: absolute;
+  left: 18px;
+  bottom: -6px;
+  border: 6px solid transparent;
+  border-top-color: var(--text);
+  border-bottom: 0;
+}
+#maestro-balloon .balloon.full {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.balloon-who {
+  font-weight: 700;
+}
+.balloon-more {
+  border: 0;
+  background: none;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+#maestro-consequences {
+  border-top: 1px solid var(--border);
+  background: var(--bg-footer);
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.consequence {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.impact-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+}
+.impact-files li {
+  padding: 3px 4px;
+}
+.impact-files li.writing {
+  color: var(--accent);
+}
+.impact-files .added {
+  color: var(--accent);
+}
+.impact-files .removed {
+  color: var(--warn);
+}
+#topbar .toggle-maestro {
+  margin-right: 8px;
+}
+#topbar .toggle-maestro[aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+body[data-maestro='true'] #detail:empty::before {
+  content: 'o código aparece aqui quando o músico em foco mexer num arquivo';
+  display: block;
+  padding: 40px 24px;
+  color: var(--muted);
+  text-align: center;
+}
+body[data-maestro='true'] #topbar .toggle-chat {
+  display: none;
+}
+
+/* --- Maestro graph (#159, part 2) --- */
+#maestro-impact {
+  display: none;
+}
+body[data-maestro='true'] #maestro-impact {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+svg.graph {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  cursor: grab;
+  user-select: none;
+}
+svg.graph:active {
+  cursor: grabbing;
+}
+svg.graph .group-area {
+  fill: var(--bg-surface);
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.55;
+}
+svg.graph .group-label,
+svg.graph .module-label,
+svg.graph .fn-label {
+  fill: var(--muted);
+  font-family: inherit;
+  pointer-events: none;
+}
+svg.graph .module-label {
+  fill: var(--text);
+}
+svg.graph .fn-label {
+  fill: var(--text);
+}
+svg.graph .fn-label.outside {
+  fill: var(--muted);
+}
+svg.graph line.import {
+  stroke: var(--border);
+}
+svg.graph [data-module] {
+  cursor: pointer;
+}
+svg.graph [data-module].opened {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+svg.graph .graph-note {
+  fill: var(--warn);
+  font-size: 12px;
+}
+.graph-unavailable {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 4px;
+}
+/* the graph, take 2: folder colors, readable labels, names on click */
+svg.graph .group-area {
+  fill: var(--bg-surface);
+  opacity: 0.5;
+  stroke-width: 1.5;
+}
+svg.graph .group-label {
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--bg-footer);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+svg.graph line.import {
+  opacity: 0.35;
+}
+svg.graph line.import.lit,
+svg.graph line.call.lit {
+  opacity: 1;
+}
+svg.graph .selected-label rect {
+  fill: var(--bg-footer);
+  stroke: var(--accent);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+svg.graph .selected-label text {
+  fill: var(--text);
+  pointer-events: none;
+}
+svg.graph [data-function] {
+  cursor: pointer;
+}
+svg.graph .open-backdrop {
+  fill: var(--bg-footer);
+  fill-opacity: 0.94;
+  stroke: var(--accent);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+/* links: folders far away, files near; picked and lit always */
+svg.graph line.folder-link {
+  opacity: 0.55;
+  stroke-linecap: round;
+}
+svg.graph line.folder-link.lit,
+svg.graph line.import.picked {
+  opacity: 1;
+}
+svg.graph line.call.picked {
+  opacity: 1;
+}
+.musician-order {
+  display: block;
+  color: var(--accent);
+  font-size: 11px;
+}
+/* the backstage (#142): chips in the consequences strip, a detail on click */
+.backstage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.backstage-chip {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.backstage-chip.open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.backstage-detail {
+  max-height: 30vh;
+  overflow-y: auto;
+  margin: 4px 0;
+}
+.backstage-item {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--hairline, var(--border));
+}
+.backstage-state,
+.backstage-files {
+  color: var(--muted);
+  font-size: 11px;
+}
+.backstage-log {
+  margin: 3px 0 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: var(--muted);
+}

@@ -142,3 +142,24 @@ describe('the gerente in English, for an English voice', () => {
     expect(buildChatPrompt({ digest: '-', userMessage: 'oi' })).toContain('Responda em pt-BR');
   });
 });
+
+describe('the gerente reads, the músicos act (#159)', () => {
+  it('proposes actions in fixed phrases the voice detects, in either language', () => {
+    const pt = buildChatPrompt({ digest: '-', userMessage: 'puxa uma issue' });
+    expect(pt).toContain('Quer que eu puxe a issue N?');
+    expect(pt).toContain('Quer que eu peça revisão da PR N?');
+    expect(pt).toContain('Quer que eu retome a N?');
+    expect(pt).toContain('Você só lê o GitHub');
+    const en = buildChatPrompt({ digest: '-', userMessage: 'x', lang: 'en' });
+    expect(en).toContain('Want me to pick up issue N?');
+    expect(en).toContain('Want me to get PR N reviewed?');
+  });
+});
+
+describe('the gerente never offers to assign (live test)', () => {
+  it('to start work on an issue it offers to pick it up', () => {
+    const prompt = buildChatPrompt({ digest: '-', userMessage: 'vamos pegar a 162' });
+    expect(prompt).toContain('Nunca ofereça atribuir');
+    expect(buildChatPrompt({ digest: '-', userMessage: 'x', lang: 'en' })).toContain('Never offer to assign');
+  });
+});

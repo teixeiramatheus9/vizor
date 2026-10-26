@@ -268,6 +268,37 @@ describe('hook-emit', () => {
     expect(got.tool_output_tail).toContain('3 failed');
   });
 
+  it('a background Bash run forwards its task id, nothing else of the response (#142)', async () => {
+    const { socketFile, received } = await listenOnce('bg.sock');
+    const event = {
+      hook_event_name: 'PostToolUse',
+      session_id: 'abc',
+      tool_name: 'Bash',
+      tool_input: { command: 'npm run dev', run_in_background: true },
+      tool_response: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bfn73e9dt' },
+    };
+    expect(await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile })).toBe(0);
+    const got = await received;
+    expect(got.background_task_id).toBe('bfn73e9dt');
+    expect(got.tool_response).toBeUndefined();
+  });
+
+  it('a failed Bash command keeps the tail of its error (PostToolUseFailure, #162)', async () => {
+    const { socketFile, received } = await listenOnce('bashfail.sock');
+    const event = {
+      hook_event_name: 'PostToolUseFailure',
+      session_id: 'abc',
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      error: 'Exit code 1\n' + 'x'.repeat(2000) + '\n Tests  3 failed | 10 passed',
+    };
+    expect(await runHook(JSON.stringify(event), { VIZOR_SOCKET: socketFile })).toBe(0);
+    const got = await received;
+    expect(got.error).toBeUndefined();
+    expect(got.tool_output_tail.length).toBeLessThanOrEqual(300);
+    expect(got.tool_output_tail).toContain('3 failed');
+  });
+
   it('truncates strings nested in MultiEdit edits', async () => {
     const { socketFile, received } = await listenOnce('multi.sock');
     const event = {
