@@ -1,10 +1,9 @@
 // The músico's plan (the core flow): a checklist it writes to a file of its
-// own, `.vizor/plano.md` in the folder it works in, and ticks as it goes.
+// own, `.vizor/plano-<task>.md` in the folder it works in, and ticks as it goes.
 // The hooks tell the Vizor when it was written; the Vizor reads it from the
 // path it computes itself, never from the one the event names. Pure.
 import path from 'node:path';
 
-export const PLAN_FILE = '.vizor/plano.md';
 const MAX_STEPS = 30;
 const MAX_TEXT = 200;
 const CHECK_LINE = /^\s*[-*+]\s+\[([ xX])\]\s+(.+?)\s*$/;
@@ -27,11 +26,22 @@ export function planProgress(steps) {
   return { done, total: steps.length, current: steps.findIndex((step) => !step.done) };
 }
 
-export function isPlanEdit(event) {
+// A task's own file, so chats sharing a folder never share a plan:
+// .vizor/plano-169.md (plano.md, with no task, still counts).
+const PLAN_NAME = /^plano(-\d{1,6})?\.md$/;
+export const planFileName = (number) => `.vizor/plano-${number}.md`;
+
+// The plan file an edit wrote, as a bare name checked against PLAN_NAME, or
+// null. Only <cwd>/.vizor/<name> counts.
+export function planFileOf(event) {
   const file = event?.tool_input?.file_path;
-  if (!EDIT_TOOLS.has(event?.tool_name) || typeof file !== 'string' || typeof event.cwd !== 'string') return false;
-  return path.resolve(event.cwd, file) === path.join(event.cwd, PLAN_FILE);
+  if (!EDIT_TOOLS.has(event?.tool_name) || typeof file !== 'string' || typeof event.cwd !== 'string') return null;
+  const name = path.basename(file);
+  if (!PLAN_NAME.test(name)) return null;
+  return path.resolve(event.cwd, file) === path.join(event.cwd, '.vizor', name) ? name : null;
 }
+
+export const isPlanEdit = (event) => planFileOf(event) !== null;
 
 // The plan stays out of git: `.vizor/` joins the repo's info/exclude once.
 export function excludeWithPlan(text) {

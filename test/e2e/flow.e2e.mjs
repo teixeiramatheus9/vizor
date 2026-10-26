@@ -43,7 +43,7 @@ delete env.XDG_CONFIG_HOME;
 delete env.CLAUDECODE;
 delete env.VIZOR_INTERNAL;
 
-const app = await _electron.launch({ executablePath: electronPath, args: [appRoot, '--no-sandbox', '--ozone-platform=x11'], env, cwd: appRoot });
+const app = await _electron.launch({ executablePath: electronPath, args: [appRoot, '--no-sandbox', '--ozone-platform=x11'], env, cwd: home });
 let failed = false;
 try {
   const workspace = await (async () => {
@@ -78,6 +78,8 @@ try {
   await workspace.waitForSelector('#plan-card >> text=Plano · 1/3', { timeout: 30000 });
   assert.equal(await workspace.isVisible('[data-plan="approve"]'), false);
   if (shots) await workspace.screenshot({ path: path.join(shots, 'e2e-approved.png') });
+  // Nothing landed in the real checkout.
+  assert.equal(fs.existsSync(path.join(appRoot, '.vizor')), false);
   console.log('e2e: core flow OK (Ctrl+K → issue → plan 0/3 → approve → 1/3)');
 } catch (error) {
   failed = true;

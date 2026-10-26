@@ -65,7 +65,7 @@ de dev (GitHub, PR, push, deploy…) saem com a pronúncia que dev brasileiro us
 No workspace, **Ctrl+K** abre a barra de comandos: digite o número ou um pedaço
 do título de uma issue e Enter. O Vizor abre um chat do Claude pra ela (a aba
 leva o nome da issue), que lê a issue e escreve o **plano** como checklist em
-`.vizor/plano.md` (fora do git). O plano aparece no topo do painel da direita e
+`.vizor/plano-<issue>.md` (fora do git). O plano aparece no topo do painel da direita e
 se marca sozinho conforme o chat avança. "Aprovar plano" manda ele seguir;
 com tudo feito, "Abrir PR" pede pra rodar os testes e abrir a PR. A mesma barra
 leva a qualquer chat, interrompe um que está rodando, chama a revisão de uma PR

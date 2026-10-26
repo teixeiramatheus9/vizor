@@ -49,8 +49,10 @@ describe('following a músico plan', () => {
     expect(reads).toEqual([]);
   });
 
-  it('a Stop re-reads the file (a plan written by a shell command counts); a file gone drops the plan', async () => {
-    const { tracker, files } = setup({ files: { '/repo/.vizor/plano.md': PLAN } });
+  it('a Stop re-reads the file the chat wrote; a file gone drops the plan', async () => {
+    const { tracker, files } = setup({ files: { '/repo/.vizor/plano.md': '- [ ] um\n' } });
+    await tracker.onEvent(write('/repo/.vizor/plano.md'));
+    files['/repo/.vizor/plano.md'] = PLAN;
     expect(await tracker.onEvent({ hook_event_name: 'Stop', session_id: 's1', cwd: '/repo' })).toBe(true);
     expect(tracker.planOf('s1').steps).toHaveLength(3);
     delete files['/repo/.vizor/plano.md'];
@@ -96,5 +98,30 @@ describe('following a músico plan', () => {
     await tracker.onEvent(write('/repo/.vizor/plano.md'));
     expect(tracker.textOf('s1')).toContain('Vizor-plano: src/a.js#f');
     expect(tracker.textOf('nobody')).toBeNull();
+  });
+
+  it('C1: two chats in one folder each follow their own task file; a chat that wrote none sees none', async () => {
+    const { tracker } = setup({ files: { '/repo/.vizor/plano-169.md': '- [ ] menu\n', '/repo/.vizor/plano-170.md': '- [ ] outra\n' } });
+    await tracker.onEvent(write('/repo/.vizor/plano-169.md'));
+    await tracker.onEvent(write('/repo/.vizor/plano-170.md', { session_id: 's2' }));
+    await tracker.onEvent({ hook_event_name: 'Stop', session_id: 's1', cwd: '/repo' });
+    expect(tracker.planOf('s1').steps).toEqual([{ text: 'menu', done: false }]);
+    expect(tracker.planOf('s2').steps).toEqual([{ text: 'outra', done: false }]);
+    expect(await tracker.onEvent({ hook_event_name: 'Stop', session_id: 's3', cwd: '/repo' })).toBe(false);
+    expect(tracker.planOf('s3')).toBeNull();
+  });
+
+  it('I3: a plan rewritten from scratch waits for the ok again', async () => {
+    const { tracker, files } = setup({ files: { '/repo/.vizor/plano.md': PLAN } });
+    await tracker.onEvent(write('/repo/.vizor/plano.md'));
+    tracker.approve('s1');
+    files['/repo/.vizor/plano.md'] = '- [ ] outro jeito\n- [ ] de fazer\n';
+    await tracker.onEvent(write('/repo/.vizor/plano.md'));
+    expect(tracker.planOf('s1').approved).toBe(false);
+    // Ticking a step of the same plan keeps it approved.
+    tracker.approve('s1');
+    files['/repo/.vizor/plano.md'] = '- [x] outro jeito\n- [ ] de fazer\n';
+    await tracker.onEvent(write('/repo/.vizor/plano.md'));
+    expect(tracker.planOf('s1').approved).toBe(true);
   });
 });

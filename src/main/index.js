@@ -39,8 +39,9 @@ import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
 import { createConductor } from './maestro/conductor.js';
 import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
 import { excludeWithPlan, isPlanEdit } from './work/plan.js';
-import { createPlanTracker } from './work/plans.js';
-import { APPROVE_PROMPT, OPEN_PR_PROMPT, reviewPrPrompt, startIssuePrompt, taskTabTitle } from './work/prompts.js';
+import { createPlanActions, createPlanTracker } from './work/plans.js';
+import { catalogFrom, catalogStale } from './work/catalog.js';
+import { reviewPrPrompt, startIssuePrompt, taskTabTitle } from './work/prompts.js';
 import { readTail } from './maestro/log-tail.js';
 import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
@@ -869,15 +870,16 @@ async function startIssue(number) {
 }
 
 // What the Ctrl+K bar lists from GitHub: open issues and PRs, read by gh.
-ipcMain.handle('workspace:catalog', async () => {
-  if (!lastGhResults || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
-  if (!lastGhResults) return { issues: [], prs: [], error: true };
-  const pick = (list) => (list ?? []).map(({ number, title }) => ({ number, title }));
-  return { issues: pick(lastGhResults.openIssues), prs: pick(lastGhResults.prs), error: false };
+ipcMain.handle('workspace:catalog', async (event) => {
+  if (!fromWorkspace(event)) return { issues: [], prs: [], error: true };
+  const root = voiceRoot();
+  if (catalogStale({ resultsRoot: lastGhResultsRoot, root, at: lastGhDigestAt, now: Date.now(), maxAge: GH_DIGEST_MAX_AGE_MS })) await voiceGhDigest();
+  return catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root });
 });
 
 // The action the bar picked; focus is the renderer's own.
-ipcMain.handle('workspace:command', async (_event, action = {}) => {
+ipcMain.handle('workspace:command', async (event, action = {}) => {
+  if (!fromWorkspace(event)) return { error: 'Ação desconhecida.' };
   try {
     if (action.type === 'pick-issue' && Number.isInteger(action.number)) return await startIssue(action.number);
     if (action.type === 'review-pr' && Number.isInteger(action.number)) {
@@ -904,18 +906,16 @@ ipcMain.handle('workspace:command', async (_event, action = {}) => {
 });
 
 // The plan card's buttons: the ok, and the PR once every step is done.
-function planAction(sessionId, action) {
-  if (typeof sessionId !== 'string') return 'failed';
-  if (action === 'approve') {
-    if (!workPlans.planOf(sessionId)) return 'failed';
+const planActions = createPlanActions({
+  planOf: (sessionId) => workPlans.planOf(sessionId),
+  approve: (sessionId) => {
     workPlans.approve(sessionId);
     pushWorkspaceState();
-    return deliverWhenFree(sessionId, APPROVE_PROMPT);
-  }
-  if (action === 'pr') return deliverWhenFree(sessionId, OPEN_PR_PROMPT);
-  return 'failed';
-}
-ipcMain.handle('workspace:plan', (_event, { sessionId, action } = {}) => planAction(sessionId, action));
+  },
+  deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
+});
+const planAction = (sessionId, action) => planActions.run(sessionId, action);
+ipcMain.handle('workspace:plan', (event, { sessionId, action } = {}) => (fromWorkspace(event) ? planAction(sessionId, action) : 'failed'));
 ipcMain.on('maestro:focus', (_event, sessionId) => {
   if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
 });
@@ -3924,6 +3924,9 @@ function refreshVocabulary(root) {
 
 async function voiceGhDigest() {
   const root = voiceRoot();
+  // Whatever is read now belongs to this root; until then, nothing does.
+  lastGhResults = null;
+  lastGhResultsRoot = root;
   const english = spokenLang() === 'en';
   if (!root) return { speech: english ? 'Open a project in the workspace first.' : 'Abra um projeto no workspace primeiro.', lines: [] };
   try {
@@ -4022,7 +4025,7 @@ async function voiceOpenNew({ cwd, prompt, task = null }) {
   const opened = openTerminal({ cwd, kind: 'claude', prompt });
   if (opened.error) return Promise.resolve({ sessionId: null });
   if (Number.isInteger(task)) {
-    const issue = (lastGhResults?.openIssues ?? []).find((item) => item.number === task);
+    const issue = catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root: voiceRoot() }).issues.find((item) => item.number === task);
     taskTitles.set(opened.id, taskTabTitle(task, issue?.title));
   }
   return new Promise((resolve) => {
@@ -4053,6 +4056,7 @@ const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
 let lastGhDigestAt = 0;
 let lastGhContext = null;
 let lastGhResults = null; // the raw gh lists, for the Ctrl+K bar
+let lastGhResultsRoot = null; // the project they were read for
 
 // The gerente has no tools of its own: it gets the project's GitHub state
 // with the question (live test: "não tenho acesso ao GitHub").

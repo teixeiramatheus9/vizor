@@ -8,6 +8,12 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
+// The app's own `claude -p` calls (the gerente's alerts) get an empty answer
+// and never touch a folder.
+if (process.argv.includes('-p') || process.argv.includes('--print') || process.env.VIZOR_INTERNAL) {
+  process.stdout.write(JSON.stringify({ type: 'result', result: '', usage: { input_tokens: 0, output_tokens: 0 } }));
+  process.exit(0);
+}
 const prompt = process.argv[2] ?? '';
 const sessionId = crypto.randomUUID();
 const cwd = process.cwd();
@@ -27,7 +33,7 @@ const say = (text) => {
   fs.appendFileSync(transcript, `${JSON.stringify({ type: 'assistant', sessionId, message: { role: 'assistant', content: [{ type: 'text', text }] } })}\n`);
   process.stdout.write(`${text}\r\n`);
 };
-const planFile = path.join(cwd, '.vizor', 'plano.md');
+const planFile = path.join(cwd, '.vizor', `plano-${prompt.match(/issue #(\d+)/)?.[1] ?? 'x'}.md`);
 const steps = ['Ler a issue', 'Criar o menu', 'Testar o menu'];
 const writePlan = (done) => {
   fs.mkdirSync(path.dirname(planFile), { recursive: true });

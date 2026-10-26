@@ -492,7 +492,12 @@ function renderPlanCard() {
   const note = planNote?.sessionId === sessionId ? `<div class="plan-note">${planNote.text}</div>` : '';
   planCardEl.innerHTML = sessionId ? renderPlan(plans[sessionId]) + (plans[sessionId] ? note : '') : '';
 }
-const PLAN_NOTES = { failed: 'não achei a aba desse chat', timeout: 'o chat seguiu ocupado; tente de novo quando ele parar' };
+const PLAN_NOTES = {
+  failed: 'não achei a aba desse chat',
+  timeout: 'o chat não ficou livre em 1 minuto; tente de novo quando ele parar',
+  busy: 'já estou esperando o chat ficar livre pra mandar',
+  'no-plan': 'esse chat não tem plano',
+};
 planCardEl.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-plan]');
   const sessionId = planSessionId();

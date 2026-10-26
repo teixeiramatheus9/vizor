@@ -60,6 +60,8 @@ const LINES = {
     planSent: { approve: 'Mandei seguir com o plano.', pr: 'Pedi pra rodar os testes e abrir a PR.' },
     whichPlanChat: 'De qual chat? Diga o número da task.',
     planFailed: 'Não consegui falar com esse chat.',
+    planNone: 'Esse chat não tem plano.',
+    planBusy: 'Já estou esperando ele ficar livre.',
     understood: (label) => `Entendi: ${label}.`,
     // Memory (#163).
     stoppedAt: (number, where) => `Na ${number}: ${where}`,
@@ -145,6 +147,8 @@ const LINES = {
     planSent: { approve: 'Told it to go ahead with the plan.', pr: 'Asked it to run the tests and open the PR.' },
     whichPlanChat: 'Which chat? Say the task number.',
     planFailed: "Couldn't reach that chat.",
+    planNone: "That chat has no plan.",
+    planBusy: "I'm already waiting for it to be free.",
     understood: (label) => `Got it: ${label}.`,
     stoppedAt: (number, where) => `On ${number}: ${where}`,
     noTask: (number) => `I didn't find a chat for ${number}.`,
@@ -295,7 +299,8 @@ export function createVoiceSession(deps) {
     if (!sessionId) return say(lines().whichPlanChat);
     return held(ORDER.plan(musicianOfSession(sessionId), action), async () => {
       const result = await deps.planAction(sessionId, action);
-      say(result === 'sent' ? lines().planSent[action] : lines().planFailed);
+      const said = { sent: lines().planSent[action], 'no-plan': lines().planNone, busy: lines().planBusy };
+      say(said[result] ?? lines().planFailed);
     });
   }
 

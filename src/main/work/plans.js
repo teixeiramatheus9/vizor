@@ -1,9 +1,10 @@
-// Follows each músico's plan file: re-read when the hooks say it was written,
-// and on every Stop (a shell command may have written it). The path is always
-// <cwd>/.vizor/plano.md for a cwd the workspace knows, never one an event
-// names. readFile and knownCwd are injected, so this stays testable.
+// Follows each chat's plan file: the one it wrote (.vizor/plano-<task>.md) is
+// bound to it and re-read when the hooks say it was written, and on its Stops.
+// A chat that wrote none has none, even sharing the folder. The path is always
+// <cwd>/.vizor/<checked name> for a cwd the workspace knows. readFile and knownCwd are injected, so this stays testable.
 import path from 'node:path';
-import { PLAN_FILE, isPlanEdit, parseChecklist } from './plan.js';
+import { parseChecklist, planFileOf } from './plan.js';
+import { APPROVE_PROMPT, OPEN_PR_PROMPT } from './prompts.js';
 
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 
@@ -12,13 +13,16 @@ export function createPlanTracker({ readFile, knownCwd }) {
   const texts = new Map(); // sessionId → the file as read (its Vizor-plano line feeds the graph)
   const approvedByHand = new Set();
   const reading = new Map(); // sessionId → the latest read's token
+  const bound = new Map(); // sessionId → the plan file name it wrote
+
+  const sameSteps = (a, b) => a.length === b.length && a.every((step, index) => step.text === b[index].text);
 
   async function reread(sessionId, cwd) {
     const token = Symbol(sessionId);
     reading.set(sessionId, token);
     let text = null;
     try {
-      text = await readFile(path.join(cwd, PLAN_FILE));
+      text = await readFile(path.join(cwd, '.vizor', bound.get(sessionId)));
     } catch {
       // gone or unreadable: no plan
     }
@@ -31,7 +35,10 @@ export function createPlanTracker({ readFile, knownCwd }) {
       texts.delete(sessionId);
       return Boolean(before);
     }
-    const approved = approvedByHand.has(sessionId) || Boolean(before?.approved) || steps.some((step) => step.done);
+    // A plan rewritten from scratch waits for the ok again.
+    if (before && !steps.some((step) => step.done) && !sameSteps(before.steps, steps)) approvedByHand.delete(sessionId);
+    const kept = before && (sameSteps(before.steps, steps) || steps.some((step) => step.done));
+    const approved = approvedByHand.has(sessionId) || Boolean(kept && before.approved) || steps.some((step) => step.done);
     plans.set(sessionId, { steps, approved });
     texts.set(sessionId, text);
     return true;
@@ -40,9 +47,13 @@ export function createPlanTracker({ readFile, knownCwd }) {
   async function onEvent(event) {
     const sessionId = event?.session_id;
     if (typeof sessionId !== 'string' || typeof event.cwd !== 'string' || !knownCwd(event.cwd)) return false;
-    if (event.hook_event_name === 'Stop') return reread(sessionId, event.cwd);
+    if (event.hook_event_name === 'Stop') return bound.has(sessionId) ? reread(sessionId, event.cwd) : false;
     if (event.hook_event_name !== 'PostToolUse') return false;
-    if (isPlanEdit(event)) return reread(sessionId, event.cwd);
+    const planFile = planFileOf(event);
+    if (planFile) {
+      bound.set(sessionId, planFile);
+      return reread(sessionId, event.cwd);
+    }
     // Code touched after the plan: it was given the ok.
     const plan = plans.get(sessionId);
     if (plan && !plan.approved && EDIT_TOOLS.has(event.tool_name)) {
@@ -67,6 +78,31 @@ export function createPlanTracker({ readFile, knownCwd }) {
       texts.delete(sessionId);
       approvedByHand.delete(sessionId);
       reading.delete(sessionId);
+      bound.delete(sessionId);
+    },
+  };
+}
+
+// The card's buttons (and the voice's "aprova o plano", "abre a PR"): the ok
+// counts only once it reached the chat, and a click while one still waits for
+// the chat's turn sends nothing more. deliver(sessionId, text) → 'sent' |
+// 'failed' | 'timeout'.
+export function createPlanActions({ planOf, approve, deliver }) {
+  const inFlight = new Set();
+  return {
+    async run(sessionId, action) {
+      if (typeof sessionId !== 'string' || !['approve', 'pr'].includes(action)) return 'failed';
+      if (action === 'approve' && !planOf(sessionId)) return 'no-plan';
+      const key = `${sessionId}:${action}`;
+      if (inFlight.has(key)) return 'busy';
+      inFlight.add(key);
+      try {
+        const result = await deliver(sessionId, action === 'approve' ? APPROVE_PROMPT : OPEN_PR_PROMPT);
+        if (action === 'approve' && result === 'sent') approve(sessionId);
+        return result;
+      } finally {
+        inFlight.delete(key);
+      }
     },
   };
 }

@@ -631,6 +631,15 @@ describe('voice session — the plan by voice', async () => {
     await tick();
     expect(texts().at(-1)).toBe('Não consegui falar com esse chat.');
   });
+
+  it('a chat with no plan, or one already waited on, is said so', async () => {
+    for (const [result, line] of [['no-plan', 'Esse chat não tem plano.'], ['busy', 'Já estou esperando ele ficar livre.']]) {
+      const { session, texts } = setup({ focusedSession: () => 's169', planAction: async () => result });
+      await session.onUtterance('aprova o plano');
+      await tick();
+      expect(texts().at(-1)).toBe(line);
+    }
+  });
 });
 
 describe('voice session — músicos named A1, A2…', async () => {

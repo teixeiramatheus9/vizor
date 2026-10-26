@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PLAN_FILE, excludeWithPlan, isPlanEdit, parseChecklist, planProgress } from '../src/main/work/plan.js';
+import { excludeWithPlan, planFileName, planFileOf, isPlanEdit, parseChecklist, planProgress } from '../src/main/work/plan.js';
 
 describe('the músico plan file', () => {
   it('reads a markdown checklist, done and pending, ignoring the rest', () => {
@@ -35,7 +35,11 @@ describe('the músico plan file', () => {
     expect(isPlanEdit(at('/repo/../x/.vizor/plano.md'))).toBe(false);
     expect(isPlanEdit(at('/repo/.vizor/plano.md', 'Read'))).toBe(false);
     expect(isPlanEdit({ ...at('/repo/.vizor/plano.md'), cwd: undefined })).toBe(false);
-    expect(PLAN_FILE).toBe('.vizor/plano.md');
+    expect(isPlanEdit(at('/repo/.vizor/plano-169.md'))).toBe(true);
+    expect(isPlanEdit(at('/repo/.vizor/plano-../x.md'))).toBe(false);
+    expect(planFileOf(at('/repo/.vizor/plano-169.md'))).toBe('plano-169.md');
+    expect(planFileOf(at('/repo/src/a.js'))).toBeNull();
+    expect(planFileName(169)).toBe('.vizor/plano-169.md');
   });
 
   it('the git exclude gains .vizor/ once', () => {

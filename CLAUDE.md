@@ -37,7 +37,7 @@ App Electron (src/main/index.js)
   ├── display-mode.js      → decide modo managed (XWayland) vs Wayland (puro)
   ├── cc-sessions.js       → resolve sessionId → socket/token/pid do Claude Code
   ├── cc-peer.js           → cliente NDJSON do socket da sessão
-  ├── work/                → fluxo principal: plano do chat (.vizor/plano.md),
+  ├── work/                → fluxo principal: plano do chat (.vizor/plano-<issue>.md),
   │                          prompts compartilhados entre voz e Ctrl+K
   ├── terminal-target.js   → foco EXATO de aba via CLI do terminal (kitty/wezterm/tmux),
   │                          com a identidade que o hook capturou do env da sessão
