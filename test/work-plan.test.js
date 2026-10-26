@@ -1,0 +1,49 @@
+import { describe, expect, it } from 'vitest';
+import { PLAN_FILE, excludeWithPlan, isPlanEdit, parseChecklist, planProgress } from '../src/main/work/plan.js';
+
+describe('the músico plan file', () => {
+  it('reads a markdown checklist, done and pending, ignoring the rest', () => {
+    const markdown = '# Plano\n\nContexto solto.\n- [ ] Ler a issue\n- [x] Criar o menu\n  * [X] item aninhado\n- normal bullet\nVizor-plano: src/a.js';
+    expect(parseChecklist(markdown)).toEqual([
+      { text: 'Ler a issue', done: false },
+      { text: 'Criar o menu', done: true },
+      { text: 'item aninhado', done: true },
+    ]);
+  });
+
+  it('a plan without a checklist has no steps, a huge one is capped and its lines cut', () => {
+    expect(parseChecklist('só texto, nada de checklist')).toEqual([]);
+    expect(parseChecklist(null)).toEqual([]);
+    const huge = Array.from({ length: 300 }, (_, index) => `- [ ] passo ${index} ${'x'.repeat(400)}`).join('\n');
+    const steps = parseChecklist(huge);
+    expect(steps).toHaveLength(30);
+    expect(steps[0].text.length).toBe(200);
+  });
+
+  it('progress counts the done steps and points at the first pending one', () => {
+    expect(planProgress([{ done: true }, { done: false }, { done: false }])).toEqual({ done: 1, total: 3, current: 1 });
+    expect(planProgress([{ done: true }])).toEqual({ done: 1, total: 1, current: -1 });
+    expect(planProgress([])).toEqual({ done: 0, total: 0, current: -1 });
+  });
+
+  it('only a write to the plan file at the session root counts, never one elsewhere', () => {
+    const at = (file, tool = 'Write') => ({ hook_event_name: 'PostToolUse', tool_name: tool, cwd: '/repo', tool_input: { file_path: file } });
+    expect(isPlanEdit(at('/repo/.vizor/plano.md'))).toBe(true);
+    expect(isPlanEdit(at('.vizor/plano.md', 'Edit'))).toBe(true);
+    expect(isPlanEdit(at('/repo/.vizor/plano.md', 'MultiEdit'))).toBe(true);
+    expect(isPlanEdit(at('/repo/docs/.vizor/plano.md'))).toBe(false);
+    expect(isPlanEdit(at('/repo/../x/.vizor/plano.md'))).toBe(false);
+    expect(isPlanEdit(at('/repo/.vizor/plano.md', 'Read'))).toBe(false);
+    expect(isPlanEdit({ ...at('/repo/.vizor/plano.md'), cwd: undefined })).toBe(false);
+    expect(PLAN_FILE).toBe('.vizor/plano.md');
+  });
+
+  it('the git exclude gains .vizor/ once', () => {
+    expect(excludeWithPlan('# git ls-files --others --exclude-from=.git/info/exclude\n')).toBe(
+      '# git ls-files --others --exclude-from=.git/info/exclude\n.vizor/\n',
+    );
+    expect(excludeWithPlan('')).toBe('.vizor/\n');
+    expect(excludeWithPlan('node_modules')).toBe('node_modules\n.vizor/\n');
+    expect(excludeWithPlan('a\n.vizor/\n')).toBeNull();
+  });
+});
