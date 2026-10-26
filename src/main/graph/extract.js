@@ -7,7 +7,7 @@ import { parse } from '@babel/parser';
 const TOP = '<topo>';
 const SKIP_KEYS = new Set(['loc', 'start', 'end', 'range', 'extra', 'comments', 'leadingComments', 'trailingComments', 'innerComments', 'tokens']);
 
-function pluginsFor(relPath) {
+export function pluginsFor(relPath) {
   if (/\.tsx$/.test(relPath)) return ['typescript', 'jsx'];
   if (/\.(ts|mts|cts)$/.test(relPath)) return ['typescript'];
   return ['jsx'];
