@@ -2754,6 +2754,7 @@ const reviewService = createReviewService({
   readFile: (file, encoding) => fs.promises.readFile(file, encoding),
   stat: (file) => fs.promises.stat(file),
   graphFor,
+  graphBuilt: (root) => graphIndexers.get(root)?.graph() ?? null,
   verifier: reviewVerifier,
   storeFor: reviewStoreFor,
   sessionsOf: reviewSessionsIn,

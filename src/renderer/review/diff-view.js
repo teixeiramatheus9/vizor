@@ -36,8 +36,10 @@ function renderHunk(hunk, { highlight, untracked, selected, errorsByLine }) {
       } else if (line.kind === '-') oldState = out.state;
       else newState = out.state;
     } else body = escapeHtml(line.text);
-    const sign = line.kind === ' ' ? '&nbsp;' : escapeHtml(line.kind);
-    let html = `<div class="diff-line ${cls}"><span class="ln old">${escapeHtml(line.oldNo ?? '')}</span><span class="ln new">${escapeHtml(line.newNo ?? '')}</span><span class="sign">${sign}</span><code>${body}</code></div>`;
+    // The gutter is generated content (CSS ::before on data-gutter), not three
+    // spans: a long diff costs the renderer three fewer DOM nodes per line.
+    const gutter = `${String(line.oldNo ?? '').padStart(5)}${String(line.newNo ?? '').padStart(5)} ${line.kind}`;
+    let html = `<div class="diff-line ${cls}" data-gutter="${escapeHtml(gutter)}"><code>${body}</code></div>`;
     if (line.noNewline) html += '<div class="diff-line nonl"><code>\\ sem quebra de linha no fim</code></div>';
     // tsc reports against the new file, so only lines that exist there.
     if (line.kind !== '-' && line.newNo != null) {

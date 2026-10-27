@@ -159,3 +159,29 @@ describe('the drawer across worktrees', () => {
     expect(review.tab()).toBe('live');
   });
 });
+
+describe('coming back to a tab', () => {
+  it('does not redraw a diff main answered with the same data', async () => {
+    const file = { path: 'a.js', status: 'modified', tscErrors: [], hunks: [{ id: 'h1', header: '@@ -1 +1 @@', newStart: 1, newLines: 1, lines: [{ kind: '+', text: 'x', oldNo: null, newNo: 1 }] }] };
+    const doc = fakeDoc();
+    let html = '';
+    let draws = 0;
+    Object.defineProperty(doc.getElementById('changes-diff'), 'innerHTML', { get: () => html, set: (value) => { html = value; draws++; } });
+    const api = {
+      reviewPrefs: async (worktree, set) => (set ? {} : { tab: 'changes', openFiles: ['a.js'] }),
+      reviewSummary: async () => ({ files: [{ path: 'a.js', status: 'modified' }], order: ['a.js'], verdict: [], contract: [] }),
+      reviewSlice: async () => ({ status: 'building', done: 0, total: 0 }),
+      reviewFile: async () => structuredClone(file),
+      onReviewChanged() {},
+    };
+    const review = createReviewController({ api, doc });
+    review.setContext({ worktree: '/a', sessions: [] });
+    await flush();
+    expect(html).toContain('data-hunk-id="h1"');
+    const first = draws;
+    review.setTab('summary');
+    review.setTab('changes');
+    await flush();
+    expect(draws).toBe(first);
+  });
+});

@@ -107,6 +107,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
   let summary = null;
   let selectedPath = null;
   let fileView = null;
+  let fileDrawn = null; // what the diff panel shows now, as JSON: an unchanged answer is not redrawn
   let selectedHunk = null; // { id, path, newStart, newLines }
   let pendingReject = null;
   const forceOpen = new Set();
@@ -156,6 +157,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     summaryHead.innerHTML = '<p class="review-note">Escolha um worktree ou uma sessão na barra da esquerda.</p>';
     filesEl.innerHTML = '';
     diffEl.innerHTML = '';
+    fileDrawn = null;
     impactEl.innerHTML = '';
     impactTools.innerHTML = '';
   }
@@ -210,6 +212,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     summary = null;
     selectedPath = null;
     fileView = null;
+    fileDrawn = null;
     selectedHunk = null;
     pendingReject = null;
     forceOpen.clear();
@@ -307,7 +310,11 @@ export function createReviewController({ api, doc = document, notify = () => {},
     if (mine !== serial.file || wt !== worktree || path !== selectedPath) return;
     fileView = result;
     if (result?.hunks?.length) progress[path] = { approved: result.hunks.filter((h) => h.approved).length, total: result.hunks.length };
-    drawFile();
+    // Coming back to the tab asks again; rebuilding a long diff for the same
+    // answer costs CPU and renderer memory for nothing.
+    const drawn = JSON.stringify([path, forceOpen.has(path), result]);
+    if (drawn !== fileDrawn) drawFile();
+    fileDrawn = drawn;
     drawList();
   }
 
@@ -344,6 +351,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     selectedPath = path;
     if (changed) {
       fileView = null;
+      fileDrawn = null;
       selectedHunk = null;
       pendingReject = null;
       diffEl.scrollTop = 0;
@@ -575,8 +583,10 @@ export function createReviewController({ api, doc = document, notify = () => {},
       if (!picked.files.includes(selectedPath)) {
         selectedPath = null;
         fileView = null;
+        fileDrawn = null;
       }
       selectedHunk = null;
+      fileDrawn = null; // the next draw goes to this node's first hunk
       setComposerContext(nodeContext(picked));
     }
     drawSlice();

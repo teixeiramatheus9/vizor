@@ -19,8 +19,7 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
   const gitMap = {
     'rev-parse --abbrev-ref --symbolic-full-name @{upstream}': new Error('no upstream'),
     'merge-base HEAD origin/main': 'BASE\n',
-    'diff --numstat -z -M BASE': '1\t1\ta.js\0',
-    'diff --name-status -z -M BASE': 'M\0a.js\0',
+    'diff --raw --numstat -z -M BASE': ':100644 100644 a b M\0a.js\x001\t1\ta.js\0',
     'ls-files --others --exclude-standard -z': '',
     'cat-file --batch': 'abc blob 1\nx\n',
     'diff -U3 BASE': PATCH,
@@ -66,7 +65,7 @@ describe('review service', () => {
     expect(s.files).toEqual([]);
   });
 
-  it('lists files cheaply from numstat and name-status, with the request from the source', async () => {
+  it('lists files cheaply from one raw+numstat call, with the request from the source', async () => {
     const { service, calls } = setup({ files: { '/w/a.js': 'x' } });
     service.setRequestSource((wt) => ({ wt }));
     const s = await service.summary(WT);
@@ -93,7 +92,7 @@ describe('review service', () => {
 
   it('reads all merge-base texts through one cat-file --batch', async () => {
     const { service, calls } = setup({
-      git: { 'diff --numstat -z -M BASE': '1\t1\ta.js\0 1\t1\tb.ts\0'.replace(' ', ''), 'diff --name-status -z -M BASE': 'M\0a.js\0M\0b.ts\0', 'cat-file --batch': 'o blob 1\nx\no blob 3\nçz\n' },
+      git: { 'diff --raw --numstat -z -M BASE': ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.ts\x001\t1\ta.js\x001\t1\tb.ts\0', 'cat-file --batch': 'o blob 1\nx\no blob 3\nçz\n' },
       files: { '/w/a.js': 'x', '/w/b.ts': 'çz' },
     });
     await service.summary(WT);
@@ -106,11 +105,9 @@ describe('review service', () => {
   it('evicts cached patches of files that left the list', async () => {
     const { service, calls, gitMap } = setup({ files: { '/w/a.js': 'x' } });
     await service.summary(WT);
-    gitMap['diff --numstat -z -M BASE'] = '';
-    gitMap['diff --name-status -z -M BASE'] = '';
+    gitMap['diff --raw --numstat -z -M BASE'] = '';
     await service.summary(WT);
-    gitMap['diff --numstat -z -M BASE'] = '1\t1\ta.js\0';
-    gitMap['diff --name-status -z -M BASE'] = 'M\0a.js\0';
+    gitMap['diff --raw --numstat -z -M BASE'] = ':100644 100644 a b M\0a.js\x001\t1\ta.js\0';
     const before = calls.filter((c) => c.key === 'diff -U3 BASE').length;
     await service.summary(WT);
     expect(calls.filter((c) => c.key === 'diff -U3 BASE').length).toBe(before + 1);
@@ -222,7 +219,7 @@ describe('review service', () => {
   it('compares a renamed file against its old path at the base', async () => {
     const same = 'export function f(a) { return a; }\n';
     const { service, calls } = setup({
-      git: { 'diff --numstat -z -M BASE': '0\t0\t\0old.js\0new.js\0', 'diff --name-status -z -M BASE': 'R100\0old.js\0new.js\0', 'diff -U3 BASE': '', 'cat-file --batch': `o blob ${same.length}\n${same}\n` },
+      git: { 'diff --raw --numstat -z -M BASE': ':100644 100644 a b R100\0old.js\0new.js\x000\t0\t\0old.js\0new.js\0', 'diff -U3 BASE': '', 'cat-file --batch': `o blob ${same.length}\n${same}\n` },
       files: { '/w/new.js': same },
     });
     const s = await service.summary(WT);
@@ -232,7 +229,7 @@ describe('review service', () => {
   });
 
   it('never throws out of summary when git fails (unborn HEAD, no repo)', async () => {
-    const { service } = setup({ git: { 'diff --numstat -z -M BASE': new Error('fatal: bad revision\nmore') } });
+    const { service } = setup({ git: { 'diff --raw --numstat -z -M BASE': new Error('fatal: bad revision\nmore') } });
     const s = await service.summary(WT);
     expect(s.files).toEqual([]);
     expect(s.baseError).toBe('não deu pra ler as mudanças: fatal: bad revision');
@@ -257,5 +254,29 @@ describe('review service', () => {
   it('slice is unavailable when the indexer says so', async () => {
     const { service } = setup({ graph: { graph: () => ({ unavailable: 'sem git neste projeto' }) } });
     expect(await service.slice(WT, {})).toEqual({ status: 'unavailable', reason: 'sem git neste projeto' });
+  });
+
+  it('works out the changed functions once per file version and graph, not on every summary or slice', async () => {
+    let lookups = 0;
+    const modules = Object.assign([{ id: 'a.js', functions: [] }], { find(...args) { lookups++; return Array.prototype.find.apply(this, args); } });
+    const graph = { modules, functions: [], imports: [], calls: [], edges: [] };
+    const { service } = setup({ files: { '/w/a.js': 'new' }, graph: { graph: () => graph } });
+    await service.summary(WT);
+    const first = lookups;
+    expect(first).toBeGreaterThan(0);
+    await service.summary(WT);
+    await service.slice(WT, {});
+    expect(lookups).toBe(first);
+  });
+
+  it('starts a cold graph only after the summary is worked out, and looks without starting while it works', async () => {
+    const order = [];
+    const indexer = { graph: () => null, refresh: () => new Promise(() => {}) };
+    const { service, calls } = setup({
+      files: { '/w/a.js': 'new' },
+      extra: { graphFor: () => { order.push(`graphFor after ${calls.length} git calls`); return indexer; }, graphBuilt: () => null },
+    });
+    await service.summary(WT);
+    expect(order).toEqual([`graphFor after ${calls.length} git calls`]);
   });
 });

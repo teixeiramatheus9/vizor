@@ -28,22 +28,23 @@ const ERR_BUSY = 'espere o agente parar';
 const ERR_NEW_FILE = 'arquivo novo: peça pro agente apagar';
 const ERR_CHANGED = 'o arquivo mudou; atualize';
 
-// `git diff --name-status -z -M`: "M\0path\0", renames "R100\0old\0new\0".
-function parseNameStatusZ(text) {
+// `git diff --raw --numstat -z -M`: the raw records first (":100644 100644 a b M\0path\0",
+// renames "…R100\0old\0new\0"), then the numstat ones. Returns the status of each path
+// and the numstat text left over.
+function splitRawNumstat(text) {
   const parts = text.split('\0');
-  const out = new Map();
-  for (let i = 0; i < parts.length;) {
-    const code = parts[i];
-    if (!code) { i++; continue; }
-    const kind = code[0];
-    if (kind === 'R' || kind === 'C') { out.set(parts[i + 2], STATUS[kind]); i += 3; }
-    else { out.set(parts[i + 1], STATUS[kind] ?? 'modified'); i += 2; }
+  const status = new Map();
+  let i = 0;
+  while (i < parts.length && parts[i].startsWith(':')) {
+    const kind = parts[i].slice(parts[i].lastIndexOf(' ') + 1)[0];
+    if (kind === 'R' || kind === 'C') { status.set(parts[i + 2], STATUS[kind]); i += 3; }
+    else { status.set(parts[i + 1], STATUS[kind] ?? 'modified'); i += 2; }
   }
-  return out;
+  return { status, numstat: parts.slice(i).join('\0') };
 }
 
 export function createReviewService({
-  git, readFile, stat, graphFor, verifier, storeFor, sessionsOf,
+  git, readFile, stat, graphFor, graphBuilt = (wt) => graphFor(wt)?.graph(), verifier, storeFor, sessionsOf,
   setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout,
   cacheDir = path.join(os.homedir(), '.cache', 'vizor', 'tsc'),
 }) {
@@ -124,12 +125,11 @@ export function createReviewService({
 
   // The changed files with their cheap numbers, no patches.
   async function listChanged(wt, sha) {
-    const [numstat, names, others] = await Promise.all([
-      run(wt, ['diff', '--numstat', '-z', '-M', sha]),
-      run(wt, ['diff', '--name-status', '-z', '-M', sha]),
+    const [changed, others] = await Promise.all([
+      run(wt, ['diff', '--raw', '--numstat', '-z', '-M', sha]),
       run(wt, ['ls-files', '--others', '--exclude-standard', '-z']).catch(() => ''),
     ]);
-    const status = parseNameStatusZ(names);
+    const { status, numstat } = splitRawNumstat(changed);
     const files = parseNumstatZ(numstat).map((f) => ({
       path: f.path, oldPath: f.oldPath, status: status.get(f.path) ?? 'modified', added: f.added, removed: f.removed, binary: f.binary, contract: false, untracked: false,
     }));
@@ -166,14 +166,19 @@ export function createReviewService({
       }
       s.files.set(`a\0${key}`, entry);
     }
-    let functions = [];
-    if (graph && entry.after !== undefined && SOURCE.test(file.path)) functions = touchedFunctions(graph, file.path, entry.before ?? null, entry.after ?? '');
-    return { changes: entry.changes, functions };
+    // The diff of the two texts against the graph is the dear part and repeats
+    // on every summary and slice: keep it for as long as this graph object lives.
+    if (entry.graph !== graph) {
+      entry.graph = graph;
+      entry.functions = graph && entry.after !== undefined && SOURCE.test(file.path) ? touchedFunctions(graph, file.path, entry.before ?? null, entry.after ?? '') : [];
+    }
+    return { changes: entry.changes, functions: entry.functions };
   }
 
-  const readyGraph = (wt) => {
+  // graphFor starts the build when there is none; graphBuilt only looks.
+  const readyGraph = (wt, ask = (root) => graphFor(root)?.graph()) => {
     try {
-      const g = graphFor(wt)?.graph();
+      const g = ask(wt);
       return g && !g.unavailable ? g : null;
     } catch {
       return null;
@@ -247,11 +252,15 @@ export function createReviewService({
     const base = await baseOf(wt);
     if (base.error) return emptySummary(wt, base.error);
     const files = await listChanged(wt, base.sha);
-    const graph = readyGraph(wt);
+    // A cold graph starts building only after the answer is worked out: its parsing
+    // and file reads would compete with the first list for the main thread.
+    const graph = readyGraph(wt, graphBuilt);
     const stamps = await stampsOf(wt, files);
-    await prefetchBase(wt, base.sha, files);
-    const analysed = await chunked(files, (f) => analyse(wt, base.sha, f, graph, stamps.get(f.path)));
-    await ensurePatches(wt, base.sha, files, stamps);
+    // Two independent git runs: the merge-base texts feed the analysis, the full patch feeds the hunk counts.
+    const [analysed] = await Promise.all([
+      prefetchBase(wt, base.sha, files).then(() => chunked(files, (f) => analyse(wt, base.sha, f, graph, stamps.get(f.path)))),
+      ensurePatches(wt, base.sha, files, stamps),
+    ]);
     evict(wt, base.sha, files, stamps);
     const contract = [];
     analysed.forEach((a, i) => {
@@ -276,6 +285,7 @@ export function createReviewService({
       live.push(...ids);
     }
     s.store.prune?.(live);
+    if (!graph) readyGraph(wt);
     const order = readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path);
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,

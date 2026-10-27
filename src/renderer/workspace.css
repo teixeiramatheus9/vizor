@@ -1540,6 +1540,8 @@ svg.graph line.call.picked {
   color: var(--muted);
 }
 .hunk {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
   margin: 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1594,18 +1596,11 @@ svg.graph line.call.picked {
   line-height: 1.5;
   white-space: pre;
 }
-.diff-line .ln {
+.diff-line::before {
+  content: attr(data-gutter);
   flex: none;
-  width: 40px;
-  padding-right: 6px;
-  text-align: right;
+  padding-right: 8px;
   color: var(--dim);
-  user-select: none;
-}
-.diff-line .sign {
-  flex: none;
-  width: 14px;
-  color: var(--muted);
   user-select: none;
 }
 .diff-line code {
