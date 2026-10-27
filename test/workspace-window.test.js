@@ -13,7 +13,8 @@ class FakeWindow extends EventEmitter {
     this.visible = false;
     FakeWindow.last = this;
   }
-  loadFile() {}
+  loadFile(file, options) { this.loads.push([file, options]); }
+  loads = [];
   isDestroyed() { return false; }
   isVisible() { return this.visible; }
   show() { this.visible = true; }
@@ -123,8 +124,23 @@ describe('backlog review fixes', () => {
     FakeWindow.last.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
     expect(workspace.isReady()).toBe(false);
     workspace.show();
-    expect(FakeWindow.last.reloaded).toBe(1);
+    expect(FakeWindow.last.loads).toHaveLength(2);
     expect(events).toEqual(['load', 'show', 'gone', 'show']);
+  });
+
+  it('reloads a crashed page with a query rebuilt from the current config', () => {
+    let density = 'comfortable';
+    const workspace = createWorkspaceWindowManager({
+      BrowserWindow: FakeWindow, preloadPath: 'p', htmlPath: 'h', loadBounds: () => null, saveBounds: () => {},
+      bootQuery: () => ({ density }), onShow: () => {}, isQuitting: () => false,
+    });
+    workspace.show();
+    expect(FakeWindow.last.loads).toEqual([['h', { query: { density: 'comfortable' } }]]);
+    FakeWindow.last.webContents.emit('did-finish-load');
+    FakeWindow.last.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    density = 'compact';
+    workspace.show();
+    expect(FakeWindow.last.loads.at(-1)).toEqual(['h', { query: { density: 'compact' } }]);
   });
 
   it('tells onVisibility when the window hides, minimizes, shows and restores', () => {

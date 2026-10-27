@@ -107,7 +107,8 @@ export function createWorkspaceWindowManager({
       create();
       return;
     }
-    if (crashed) win.webContents.reload();
+    // Reload through loadFile, not reload(): the query is rebuilt from the current config.
+    if (crashed) win.loadFile(htmlPath, { query: bootQuery?.() ?? {} });
     win.show();
     win.focus();
     onShow();
