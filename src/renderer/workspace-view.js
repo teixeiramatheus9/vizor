@@ -218,15 +218,16 @@ const VOICE_STATES = {
 };
 
 // voice: { state, target } while the voice mode is on (#161).
-export function renderTopBar(tree, { voice = null, maestro = false } = {}) {
+// extra: { working, waiting } running automações, added to the chats' counts.
+export function renderTopBar(tree, { voice = null, maestro = false, extra = {} } = {}) {
   const voiceLabel = voice
     ? `<span class="voice-state" data-voice="${escapeHtml(voice.state)}" title="modo voz">🎙 ${escapeHtml(
         VOICE_STATES[voice.state] ?? voice.state,
       )}${voice.target ? ` · ${escapeHtml(voice.target)}` : ''}</span>`
     : '';
   return `<button class="brand" data-action-menu title="Menu do Vizor">vzr · workspace</button><span class="count-item" title="rodando">${ICONS.working}${
-    tree.counts.working
-  } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span>${voiceLabel}<span class="spacer"></span><button class="toggle-maestro" data-toggle-maestro aria-pressed="${maestro}" title="${
+    tree.counts.working + (extra.working ?? 0)
+  } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting + (extra.waiting ?? 0)} esperando</span>${voiceLabel}<span class="spacer"></span><button class="toggle-maestro" data-toggle-maestro aria-pressed="${maestro}" title="${
     maestro ? 'Sair do modo Maestro' : 'Modo Maestro: você rege pela voz, o Vizor segue o músico em foco'
   }">♪ Maestro</button><button class="add-project" data-add-project>Abrir projeto…</button>`;
 }

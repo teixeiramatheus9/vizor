@@ -60,7 +60,7 @@ describe('list', () => {
 
   it('draws each state', () => {
     const draw = (over) => renderList([automation(over)], { projects, now: NOW });
-    expect(draw({ running: { startedAt: NOW - 65000, late: false } })).toContain('rodando há 1 min 05 s');
+    expect(draw({ running: { startedAt: NOW - 65000, late: false } })).toMatch(/rodando há <span data-au-elapsed="\d+">1 min 05 s<\/span>/);
     expect(draw({ running: { startedAt: NOW - 5000, late: true } })).toContain('atrasada');
     expect(draw({ running: { startedAt: NOW - 5000 } })).toContain('data-au-action="cancel"');
     expect(draw({ queued: true })).toContain('na fila');

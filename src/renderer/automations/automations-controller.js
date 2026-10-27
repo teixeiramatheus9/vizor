@@ -2,7 +2,7 @@
 // actions. No globals: the DOM regions, the IPC api and the clock come in, so
 // vitest drives it with fakes. Nothing reads or ticks while the tab is hidden;
 // the "rodando há N min" clock is one 1 s setTimeout, only while a run exists.
-import { PRESETS, blankForm, formFromAutomation, renderForm, renderHistory, renderList, renderSideEmpty, renderTop, validateForm, worktreeOf } from './automations-view.js';
+import { PRESETS, elapsedLabel, blankForm, formFromAutomation, renderForm, renderHistory, renderList, renderSideEmpty, renderTop, validateForm, worktreeOf } from './automations-view.js';
 
 export const CLOCK_MS = 1000;
 
@@ -114,7 +114,8 @@ export function createAutomationsController({
     timer = setTimer(() => {
       timer = null;
       if (!visible) return;
-      drawList();
+      // Text only: a repaint would drop focus, a click in flight and an open confirmation.
+      for (const node of regions.list.querySelectorAll?.('[data-au-elapsed]') ?? []) node.textContent = elapsedLabel(Number(node.dataset.auElapsed), now());
       schedule();
     }, CLOCK_MS);
   }
@@ -417,6 +418,7 @@ export function createAutomationsController({
     hasTimer: () => timer !== null,
     // Ctrl+K: "nova automação" and "rodar <nome>".
     startNew: () => runAction('new'),
+    showHistory: (id) => runAction('history', id),
     runNow: (id) => runAction('run', id),
     guardEnabled,
   };

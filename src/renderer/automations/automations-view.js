@@ -226,7 +226,7 @@ function renderItem(a, { projects, now, ui, readError, selected }) {
   const level = levelOf(a.level);
   const button = (action, label, extra = '') => `<button type="button" class="au-btn" data-au-action="${action}" data-id="${id}"${extra}>${label}</button>`;
   const chip = {
-    running: `<span class="au-state running">rodando há ${escapeHtml(elapsedLabel(a.running?.startedAt ?? now, now))}${state.late ? ' · atrasada' : ''}</span>`,
+    running: `<span class="au-state running">rodando há <span data-au-elapsed="${Number(a.running?.startedAt ?? now)}">${escapeHtml(elapsedLabel(a.running?.startedAt ?? now, now))}</span>${state.late ? ' · atrasada' : ''}</span>`,
     queued: '<span class="au-state queued">na fila</span>',
     blocked: '<span class="au-state blocked">bloqueada: passou do teto ou do tempo</span>',
     paused: '<span class="au-state paused">pausada</span>',
@@ -288,11 +288,11 @@ export function renderTop({ budget = null, readError = null, ui = {} } = {}) {
 
 // --- the side panel: history and report --------------------------------------
 
-// runs: newest first; report: { file, text } | null; loading: the history is being read.
-export function renderHistory({ automation, runs = null, report = null, loading = false, now = Date.now() } = {}) {
+// runs: newest first; report: { file, text } | null; runs null: still being read.
+export function renderHistory({ automation, runs = null, report = null, now = Date.now() } = {}) {
   if (!automation) return '';
   const head = `<header class="au-side-head"><h3>${escapeHtml(automation.name)}</h3><button type="button" class="au-btn" data-au-action="close-side">Fechar</button></header>`;
-  if (loading || runs === null) return `${head}${skeleton('list', 3)}`;
+  if (runs === null) return `${head}${skeleton('list', 3)}`;
   if (!runs.length) return `${head}<div class="au-empty empty-state">ainda não rodou</div>`;
   const rows = runs.map((run) => {
     const on = report?.file === run.report;

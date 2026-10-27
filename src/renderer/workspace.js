@@ -391,7 +391,23 @@ let nextAutomationAt = null; // from the state push; the status line's "próxima
 function drawStatusBar() {
   const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), nextAutomation: nextAutomationAt != null ? { at: nextLabel(nextAutomationAt, Date.now()) } : null });
   if (statusBarEl.innerHTML !== html) statusBarEl.innerHTML = html;
+  scheduleStatusClock();
 }
+// "próxima automação" is a clock time: redraw at the next minute, once, only while visible.
+let statusClock = null;
+function scheduleStatusClock() {
+  clearTimeout(statusClock);
+  statusClock = null;
+  if (document.hidden || nextAutomationAt == null) return;
+  statusClock = setTimeout(() => {
+    statusClock = null;
+    drawStatusBar();
+  }, 60000 - (Date.now() % 60000) + 50);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) drawStatusBar();
+  else scheduleStatusClock();
+});
 statusBarEl.addEventListener('click', (event) => {
   if (event.target.closest('[data-top-tab]')) setTopTab('agents');
 });
@@ -422,6 +438,11 @@ const agents = createAgentsController({
   openSession: (sessionId) => {
     setTopTab('workspace');
     selectSession(sessionId);
+  },
+  // A running automação's card: its history in the Automações tab.
+  openAutomation: (id) => {
+    setTopTab('automations');
+    automations.showHistory(id);
   },
 });
 // The GitHub tab reads and keeps its 5-min refresh only while it is on screen.
@@ -472,7 +493,7 @@ topTabsEl.addEventListener('click', (event) => {
 
 function render() {
   if (!lastTree) return;
-  topbar.innerHTML = renderTopBar(lastTree, { voice: voiceInfo, maestro: maestro.on });
+  topbar.innerHTML = renderTopBar(lastTree, { voice: voiceInfo, maestro: maestro.on, extra: agents.automationCounts() });
   drawTopTabs();
   renderSidebarOnly();
   renderTerminalArea();

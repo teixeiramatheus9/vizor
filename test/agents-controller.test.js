@@ -281,5 +281,23 @@ describe('agents controller', () => {
     expect(el.innerHTML).not.toContain('liberar-sessao');
     expect(el.innerHTML).not.toContain('>rm<');
   });
-});
 
+  it('counts running automações as rodando, and as esperando with a pending guard ask', () => {
+    const { controller } = setup();
+    const run = (id, column) => ({ id: `automation:${id}`, automationId: id, column, title: id, projectRoot: null, avatarKey: null, since: NOW, badge: 'automação' });
+    controller.setState({ sessions: [session()], automationRuns: [run('a1', 'working'), run('a2', 'waiting')] });
+    expect(controller.counts()).toEqual({ working: 2, waiting: 1 });
+    expect(controller.automationCounts()).toEqual({ working: 1, waiting: 1 });
+    expect(controller.waitingCount()).toBe(1);
+  });
+
+  it('a click on an automação card opens that automação, never a chat', () => {
+    const openAutomation = vi.fn();
+    const { listeners, controller, api } = setup({ openAutomation });
+    controller.setVisible(true);
+    controller.setState({ sessions: [], automationRuns: [{ id: 'automation:a1', automationId: 'a1', column: 'working', title: 'PRs', projectRoot: null, avatarKey: null, since: NOW, badge: 'automação' }] });
+    click(listeners, { '[data-card]': { dataset: { card: 'automation:a1' } } });
+    expect(openAutomation).toHaveBeenCalledWith('a1');
+    expect(api.agentsSeen).not.toHaveBeenCalled();
+  });
+});

@@ -15,12 +15,14 @@ const MOVE_MS = 150;
 //   api           { agentsSeen, agentsDismiss, agentsInterrupt, agentsAnswer,
 //                   planAction, answerGuard, focusOutside }
 //   projects()    root -> { name, uri, accent } for the workspace's projects
+//   openAutomation(id)       Automações tab with that automação's history
 //   openSession(sessionId)   Workspace tab + select + drawer + terminal focus
 export function createAgentsController({
   el,
   api,
   projects = () => ({}),
   openSession,
+  openAutomation = () => {},
   now = () => Date.now(),
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (handle) => clearTimeout(handle),
@@ -61,6 +63,13 @@ export function createAgentsController({
     return [...runCards, ...chatCards];
   }
 
+  // A running automação is rodando, or esperando while its guard ask is open.
+  function automationCounts() {
+    const result = { working: 0, waiting: 0 };
+    for (const card of cards().filter((item) => item.automationId)) result[card.guardAsk || card.column === 'waiting' ? 'waiting' : 'working']++;
+    return result;
+  }
+
   function counts() {
     const at = now();
     const result = { working: 0, waiting: 0 };
@@ -68,6 +77,9 @@ export function createAgentsController({
       const column = sessionCard(session, { guardAsk: guardOf(session.id), now: at }).column;
       if (column === 'working' || column === 'waiting') result[column]++;
     }
+    const runs = automationCounts();
+    result.working += runs.working;
+    result.waiting += runs.waiting;
     return result;
   }
 
@@ -141,6 +153,7 @@ export function createAgentsController({
   }
 
   function open(sessionId) {
+    if (String(sessionId).startsWith('automation:')) return openAutomation(sessionId.slice('automation:'.length));
     const session = sessions.find((item) => item.id === sessionId);
     if (!session || session.status === 'failed') return;
     api.agentsSeen(sessionId);
@@ -272,6 +285,7 @@ export function createAgentsController({
     refresh: render,
     waitingCount,
     counts,
+    automationCounts,
     hasTimer: () => timer !== null,
     OTHER_PROJECTS,
   };

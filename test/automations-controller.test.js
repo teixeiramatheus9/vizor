@@ -14,7 +14,14 @@ const state = (list = [], over = {}) => ({ list, budget: { spent: 0.42, cap: 5, 
 function setup({ initial = state(), apiOver = {}, visible = true } = {}) {
   const handlers = {};
   const el = { addEventListener: (type, fn) => (handlers[type] = fn) };
-  const regions = { top: { innerHTML: '' }, list: { innerHTML: '' }, side: { innerHTML: '' } };
+  const writes = { list: 0 };
+  const elapsed = [];
+  let listHtml = '';
+  const regions = {
+    top: { innerHTML: '' },
+    list: { get innerHTML() { return listHtml; }, set innerHTML(value) { listHtml = value; writes.list++; elapsed.length = 0; for (const m of value.matchAll(/data-au-elapsed="(\d+)"/g)) elapsed.push({ dataset: { auElapsed: m[1] }, textContent: '' }); }, querySelectorAll: (selector) => (selector === '[data-au-elapsed]' ? elapsed : []) },
+    side: { innerHTML: '' },
+  };
   const clock = { now: NOW };
   const timers = [];
   const api = {
@@ -42,7 +49,7 @@ function setup({ initial = state(), apiOver = {}, visible = true } = {}) {
   if (initial) controller.setState(initial);
   if (visible) controller.setVisible(true);
   const live = () => timers.filter((timer) => !timer.cleared);
-  return { controller, regions, api, handlers, clock, timers, live, openReview, notify };
+  return { writes, elapsed, controller, regions, api, handlers, clock, timers, live, openReview, notify };
 }
 
 const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
@@ -81,12 +88,26 @@ describe('automations controller', () => {
       t.clock.now += 1000;
       const [timer] = t.live();
       timer.fn();
-      expect(t.regions.list.innerHTML).toContain('rodando há 6 s');
+      expect(t.elapsed[0].textContent).toBe('6 s');
       // the fired one is spent; the next second is armed again
       expect(t.timers).toHaveLength(2);
       expect(t.timers.at(-1)).toMatchObject({ ms: CLOCK_MS, cleared: false });
       t.controller.setState(state([automation()]));
       expect(t.timers.at(-1).cleared).toBe(true);
+    });
+
+    it('a tick only rewrites the elapsed text: the list, its focus and an open delete confirmation stay', () => {
+      const t = setup({ initial: state([automation({ running: { startedAt: NOW - 5000 } }), automation({ id: 'a2', name: 'Outra' })]) });
+      click(t, act('delete', 'a2'));
+      const writes = t.writes.list;
+      const html = t.regions.list.innerHTML;
+      expect(html).toContain('apagar a skill também');
+      t.clock.now += 1000;
+      t.timers.at(-1).fn();
+      expect(t.writes.list).toBe(writes);
+      expect(t.regions.list.innerHTML).toBe(html);
+      expect(t.elapsed[0].textContent).toBe('6 s');
+      expect(t.timers.at(-1)).toMatchObject({ ms: CLOCK_MS, cleared: false });
     });
 
     it('has no timer with nothing running or with the tab hidden', () => {
@@ -251,10 +272,11 @@ describe('automations controller', () => {
       t.handlers.change({ target: target(field('whenKind', 'days', { tagName: 'SELECT' })) });
       t.handlers.change({ target: target({ '[data-au-day]': { dataset: { auDay: '1' }, checked: false } }) });
       t.handlers.change({ target: target({ '[data-au-day]': { dataset: { auDay: '6' }, checked: true } }) });
+      t.handlers.input({ target: target(field('name', 'Dias')) });
+      t.handlers.input({ target: target(field('prompt', 'p', { tagName: 'TEXTAREA' })) });
       click(t, act('save'));
       return flush().then(() => {
-        // the name is still empty: nothing saved, but the days are in the form
-        expect(t.api.automationsSave).not.toHaveBeenCalled();
+        expect(t.api.automationsSave).toHaveBeenCalledWith(expect.objectContaining({ when: { kind: 'days', days: [2, 3, 4, 5, 6], at: '09:00' } }));
       });
     });
 
@@ -266,6 +288,7 @@ describe('automations controller', () => {
       expect(t.regions.side.innerHTML).toContain('melhorando…');
       await flush();
       expect(t.api.automationsImprove).toHaveBeenCalledWith('meu texto');
+      expect(t.api.automationsSave).not.toHaveBeenCalled();
       expect(t.regions.side.innerHTML).toContain('## Objetivo');
       expect(t.regions.side.innerHTML).toContain('voltar ao meu texto');
       click(t, act('undo-improve'));
@@ -350,7 +373,9 @@ describe('automations controller', () => {
       click(t, act('history', 'a1'));
       await flush();
       t.controller.setState(state([]));
-      expect(t.regions.side.innerHTML).toContain('Histórico');
+      expect(t.regions.side.innerHTML).toContain('ou crie uma nova');
+      expect(t.regions.side.innerHTML).not.toContain('Fechar');
+      expect(t.regions.side.innerHTML).not.toContain('PRs');
     });
   });
 
@@ -385,6 +410,14 @@ describe('automations controller', () => {
       expect(stop).toHaveBeenCalled();
       expect(t.regions.top.innerHTML).not.toContain('data-au-cap-input');
     });
+  });
+
+  it('the history of an automação opens from outside (a kanban card)', async () => {
+    const t = setup({ initial: state([automation()]), apiOver: { automationsHistory: vi.fn(async () => []) } });
+    t.controller.showHistory('a1');
+    await flush();
+    expect(t.api.automationsHistory).toHaveBeenCalledWith('a1');
+    expect(t.regions.side.innerHTML).toContain('ainda não rodou');
   });
 
   it('Ctrl+K hooks: startNew opens the form and runNow runs by id', () => {
