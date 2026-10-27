@@ -70,6 +70,7 @@ import {
   readFirstPrompt,
   readInterrupted,
   readTranscriptSnapshot,
+  readTurnClosed,
 } from './transcript.js';
 import { createHash } from 'node:crypto';
 import { createReviewService } from './review/service.js';
@@ -895,6 +896,10 @@ function maestroFocus(sessionId) {
 function maestroInterrupt(ptyId) {
   if (!ptyHost?.list().some((terminal) => terminal.id === ptyId && terminal.alive)) return false;
   ptyHost.write(ptyId, '\x1b'); // Esc: Claude Code stops the turn, the session lives on
+  // Esc fires no Stop hook: without this the card stays "Trabalhando", and
+  // closing the terminal later would leave a false "Falhou".
+  for (const session of registry.list())
+    if (session.term?.VIZOR_PTY_ID === ptyId || resumedChats.get(ptyId) === session.id) registry.markInterrupted(session.id);
   return true;
 }
 
@@ -5011,7 +5016,28 @@ function hydrateRegistry() {
 
 // Drops the sessions whose terminal was closed: they never send a hook on the
 // way out, so without this they linger frozen on their last status.
+// A working chat missing from Claude Code's registry is only a failure if
+// its turn was really open: an Esc, or a Stop lost while the Vizor was down,
+// already ended it. Those transcripts are read first (async); the reaping
+// itself stays one synchronous pass.
+let reaping = false;
 function reapDeadSessions() {
+  if (reaping) return;
+  const liveIds = readLiveSessionIds();
+  const unsure = liveIds
+    ? registry.list().filter((session) => session.status === 'working' && session.transcriptPath && !liveIds.has(session.id) && (liveIds.size > 0 || session.seenAlive))
+    : [];
+  if (!unsure.length) return reapNow(new Set());
+  reaping = true;
+  Promise.all(unsure.map(async (session) => ((await readTurnClosed(session.transcriptPath)) ? session.id : null)))
+    .then((ids) => reapNow(new Set(ids.filter(Boolean))))
+    .catch((error) => log(`reap failed: ${error}`))
+    .finally(() => {
+      reaping = false;
+    });
+}
+
+function reapNow(closedTurns) {
   adoptResumedChats();
   const liveIds = readLiveSessionIds();
   if (!appQuitting) {
@@ -5021,7 +5047,7 @@ function reapDeadSessions() {
     scheduleTabsSave();
   }
   const before = [...registry.sessions.keys()];
-  registry.reconcileLiveSessions(liveIds);
+  registry.reconcileLiveSessions(liveIds, { closedTurns });
   for (const sessionId of before)
     if (!registry.sessions.has(sessionId)) {
       editTracker.forgetSession(sessionId);

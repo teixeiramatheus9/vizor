@@ -13,6 +13,7 @@ import {
   parseEditReason,
   parseLastBashCommand,
   parseInterrupted,
+  parseTurnClosed,
   readEditReason,
 } from '../src/main/transcript.js';
 
@@ -285,6 +286,26 @@ describe('parseInterrupted (#94 review)', () => {
   it('is false once the conversation moved on, or never stopped', () => {
     expect(parseInterrupted([userLine('faz'), interrupt, userLine('de novo'), reply].join('\n'))).toBe(false);
     expect(parseInterrupted([userLine('faz'), reply].join('\n'))).toBe(false);
+  });
+});
+
+describe('parseTurnClosed', () => {
+  const interrupt = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } });
+  const ended = JSON.stringify({ type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'pronto' }] } });
+  const toolCall = JSON.stringify({ type: 'assistant', message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't', name: 'Bash', input: {} }] } });
+  const toolResult = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });
+  const system = JSON.stringify({ type: 'system', subtype: 'turn_duration' });
+
+  it('an Esc marker or an end-turn reply closes the turn, whatever bookkeeping follows', () => {
+    expect(parseTurnClosed([userLine('faz'), toolCall, interrupt].join('\n'))).toBe(true);
+    expect(parseTurnClosed([userLine('faz'), ended, system, '{"type":"last-prompt"}'].join('\n'))).toBe(true);
+  });
+
+  it('a prompt, a tool call or a tool result last means the turn was still open', () => {
+    expect(parseTurnClosed([ended, userLine('de novo')].join('\n'))).toBe(false);
+    expect(parseTurnClosed([userLine('faz'), toolCall].join('\n'))).toBe(false);
+    expect(parseTurnClosed([userLine('faz'), toolCall, toolResult].join('\n'))).toBe(false);
+    expect(parseTurnClosed('')).toBe(false);
   });
 });
 

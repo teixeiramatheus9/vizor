@@ -142,6 +142,17 @@ export class SessionRegistry extends EventEmitter {
     this.emit('change');
   }
 
+  // Esc ends the turn without a Stop hook: the chat is finished, not working.
+  markInterrupted(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session?.status !== STATUS.WORKING) return;
+    session.status = STATUS.DONE;
+    session.needsPermission = false;
+    session.updatedAt = this.now();
+    session.stoppedAt = session.updatedAt;
+    this.emit('change');
+  }
+
   setQuestion(sessionId, question) {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -171,8 +182,10 @@ export class SessionRegistry extends EventEmitter {
   // to know a session is gone is to compare the list against the sessions
   // Claude Code itself registers. A session is only reaped once it has been
   // seen alive there: absence on its own is not proof of death, because builds
-  // without the registry never list anything.
-  reconcileLiveSessions(liveIds) {
+  // without the registry never list anything. closedTurns: ids whose transcript
+  // shows the turn already ended (an Esc, or a Stop lost while the app was
+  // down) — read by the caller, so a chat that closed idle is no "Falhou".
+  reconcileLiveSessions(liveIds, { closedTurns = new Set() } = {}) {
     if (!liveIds) return;
     // One live session is proof the registry works on this machine, which is
     // what makes another session's absence from it meaningful. When it lists
@@ -189,7 +202,7 @@ export class SessionRegistry extends EventEmitter {
       if (!session.seenAlive && !registryWorks) continue;
       // Dying with the turn open is a failure worth showing; after the Stop
       // (or while waiting on the user) it is just a closed chat.
-      if (session.status === STATUS.WORKING) {
+      if (session.status === STATUS.WORKING && !closedTurns.has(sessionId)) {
         session.status = STATUS.FAILED;
         session.failedAt = this.now();
         session.failReason = DIED_MID_TURN;

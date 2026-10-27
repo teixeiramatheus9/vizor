@@ -577,6 +577,18 @@ describe('tombstones and seen marks', () => {
     expect(registry.list()).toEqual([]);
   });
 
+  it('a chat that closed after an Esc (turn ended without a Stop) is dropped, not tombstoned', () => {
+    const registry = live(() => 1000);
+    registry.reconcileLiveSessions(new Set(), { closedTurns: new Set([S1]) });
+    expect(registry.list()).toEqual([]);
+  });
+
+  it('a chat the caller could not prove closed still dies mid-turn', () => {
+    const registry = live(() => 1000);
+    registry.reconcileLiveSessions(new Set(), { closedTurns: new Set(['other']) });
+    expect(registry.list()[0].status).toBe(STATUS.FAILED);
+  });
+
   it('dismiss removes the tombstone', () => {
     const registry = live(() => 1000);
     registry.reconcileLiveSessions(new Set());
@@ -653,4 +665,25 @@ describe('the Stop time and the interrupt', () => {
     expect(registry.list()[0].stoppedAt).toBeNull();
   });
 
+  it('markInterrupted ends a running turn as done, with its Stop time', () => {
+    let t = 1000;
+    const registry = new SessionRegistry({ now: () => t });
+    registry.applyEvent(promptEvent());
+    t = 5000;
+    const onChange = vi.fn();
+    registry.on('change', onChange);
+    registry.markInterrupted('s1');
+    expect(registry.list()[0]).toMatchObject({ status: STATUS.DONE, stoppedAt: 5000, updatedAt: 5000, needsPermission: false });
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('markInterrupted leaves a chat that is not working alone', () => {
+    const registry = new SessionRegistry({ now: () => 1000 });
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    const onChange = vi.fn();
+    registry.on('change', onChange);
+    registry.markInterrupted('s1');
+    registry.markInterrupted('nope');
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
