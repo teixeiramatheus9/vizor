@@ -141,6 +141,8 @@ describe('automação: secrets are never read through Bash', () => {
     'cat keys/id_rsa', 'cat .env', 'cat sub/.env.local', `cat ${outside}/.env`, 'grep -r token ~', 'grep -rn token ~/.config',
     'rg token ~', 'rg token ~/.config', 'git diff --no-index ~/.ssh/id_rsa /dev/null', "cat '~/.ssh/id_rsa'", 'cat ~/.s"sh"/id_rsa',
     `grep --file=${home}/.netrc x`, 'cat a.txt && cat ~/.netrc',
+    'grep -R BEGIN .', 'grep -rnR BEGIN .', 'grep -rn BEGIN --dereference-recursive .', 'rg -L BEGIN .', 'rg -nL BEGIN .', 'rg --follow BEGIN .',
+    'grep -f/home/u/.netrc x', 'grep -f .netrc x', 'grep --file .netrc x', 'rg -f.netrc x', 'rg --file=.netrc x',
   ];
   for (const command of reads) {
     it(`denies at every level: ${command}`, () => {

@@ -671,6 +671,16 @@ function readsSecret(segments, cwd, home) {
   const roots = secretRoots(home);
   return segments.some((segment) => {
     const [program, ...args] = segment.map((word) => word.text);
+    if (program === 'grep' || program === 'rg') {
+      // Searches that follow links, or read patterns from a file, can reach a
+      // secret the words never name: deny them outright.
+      const shorts = program === 'grep' ? 'Rf' : 'Lf';
+      const banned = (arg) =>
+        arg === '--file' || arg.startsWith('--file=') || arg === '--follow' ||
+        (program === 'grep' && arg === '--dereference-recursive') ||
+        (/^-[A-Za-z]/.test(arg) && !arg.startsWith('--') && [...shorts].some((flag) => arg.includes(flag)));
+      if (args.some(banned)) return true;
+    }
     const recursive =
       program === 'rg' || (program === 'grep' && args.some((arg) => /^--(?:dereference-)?recursive$/.test(arg) || /^-[A-Za-z]*[rR]/.test(arg)));
     return args.some((arg) => {
