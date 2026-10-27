@@ -65,17 +65,56 @@ export function cliArgs(a, { testCmd, lintCmd, prompt } = {}) {
   ];
 }
 
-export function guardRules(a, { worktreePath } = {}) {
-  const worktree = a.level === 'worktree';
+// A test/lint command as the guard's allowlist entry: `npm test` → npm + test.
+// npm-like runners take their own options (--script-shell…) before `--`, so
+// extra words are only allowed after it.
+const OPTION_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+function commandEntry(cmd) {
+  const safe = safeCmd(cmd);
+  if (!safe) return null;
+  const [program, ...argsPrefix] = safe.split(/\s+/);
+  return { program, argsPrefix, extra: OPTION_RUNNERS.has(program) ? 'after-dashdash' : 'any' };
+}
+
+// Read-only helpers the guard lets through at every level.
+const READ_PROGRAMS = ['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'pwd'];
+const GH_READ_GUARD = [
+  ['issue', 'list'], ['issue', 'view'], ['issue', 'status'],
+  ['pr', 'list'], ['pr', 'view'], ['pr', 'status'], ['pr', 'checks'], ['pr', 'diff'],
+  ['repo', 'view'], ['api'], // gh api: the guard lets only a plain GET through
+];
+const GH_WRITE_GUARD = [['issue', 'create'], ['issue', 'comment'], ['pr', 'create'], ['pr', 'comment']];
+
+// The Bash commands the guard allows for a level: an allowlist, so anything
+// it cannot match (wrappers, expansions, other programs) is denied.
+function allowBash(level, { testCmd, lintCmd } = {}) {
+  const edits = level === 'worktree' || level === 'project';
+  return [
+    { program: 'git', sub: ['log', 'diff', 'status', 'show', ...(edits ? ['add', 'commit'] : [])] },
+    ...READ_PROGRAMS.map((program) => ({ program })),
+    ...GH_READ_GUARD.map((argsPrefix) => ({ program: 'gh', argsPrefix })),
+    ...(level === 'project'
+      ? [
+          ...GH_WRITE_GUARD.map((argsPrefix) => ({ program: 'gh', argsPrefix })),
+          { program: 'gh', argsPrefix: ['pr', 'review'], requireArgs: ['--comment', '-c'], forbidArgs: ['--approve', '-a', '--request-changes', '-r'] },
+        ]
+      : []),
+    ...[commandEntry(testCmd), commandEntry(lintCmd)].filter(Boolean),
+  ];
+}
+
+// What the rule-guard holds this automação to (it writes regras.json with one
+// of these per id). Edits are allowed only under the worktree.
+export function guardRules(a, { worktreePath, testCmd, lintCmd } = {}) {
+  const edits = a.level === 'worktree' || a.level === 'project';
   // Normalized so `..` cannot widen the allowed tree; relative paths are refused.
-  const under = worktree && typeof worktreePath === 'string' && isAbsolute(worktreePath) ? resolve(worktreePath) : null;
+  const under = edits && typeof worktreePath === 'string' && isAbsolute(worktreePath) ? resolve(worktreePath) : null;
   return {
     id: a.id,
     level: a.level,
-    denyAlways: [...DENY_ALWAYS],
-    denyGhWrite: a.level !== 'project',
-    // A worktree level without a usable worktree path fails closed: no edits at all.
-    denyEdits: a.level === 'read' || (worktree && !under),
+    allowBash: allowBash(a.level, { testCmd, lintCmd }),
+    // A level that edits but has no usable worktree path fails closed: no edits at all.
+    denyEdits: !under,
     allowEditsUnder: under,
   };
 }

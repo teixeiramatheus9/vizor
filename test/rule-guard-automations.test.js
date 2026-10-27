@@ -5,292 +5,177 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MISSING_AUTOMATION_RULES, automationVerdict, decide, loadAutomationRules } from '../src/hook/rule-guard.js';
+import { guardRules } from '../src/main/automations/permissions.js';
 
 const GUARD = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'hook', 'rule-guard.js');
-const NEVER = [
-  'git push', 'git merge', '--force', 'gh pr merge',
-  'git branch -D', 'git branch -d', 'git reset --hard', 'git clean -f', 'git push --force-with-lease',
-];
+const LEVELS = ['read', 'worktree', 'project'];
+const MISSING = 'Automação do Vizor: não achei as regras desta automação; só leitura até o Vizor gravar as regras.';
 
-// Built at load time: the test names below spell these paths out.
-const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vzauto-'))); // realpath'd, like the guard sees it
-const root = path.join(scratch, 'repo-auto-x'); // the automação's worktree
-const outside = path.join(scratch, 'outside'); // a directory next to it
+// Built at load time: the test names below spell these paths out. A fake
+// home, so ~/.claude is ours to link to.
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vzauto-')));
+const home = path.join(scratch, 'home');
+const root = path.join(home, 'repo-auto-x'); // the automação's worktree
+const outside = path.join(home, 'outside');
+const claude = path.join(home, '.claude');
+fs.mkdirSync(claude, { recursive: true });
+fs.writeFileSync(path.join(claude, 'settings.json'), '{}');
 fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
 fs.mkdirSync(outside);
 fs.writeFileSync(path.join(root, 'a.txt'), 'a');
 fs.symlinkSync(outside, path.join(root, 'escape'));
+fs.symlinkSync(claude, path.join(root, 'cl'));
 fs.symlinkSync(path.join(outside, 'nope.txt'), path.join(root, 'dangling'));
+fs.linkSync(path.join(claude, 'settings.json'), path.join(root, 'hl'));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
-const rulesFor = (level) => ({
-  id: 'auto-1',
-  level,
-  denyAlways: [...NEVER],
-  denyGhWrite: level !== 'project',
-  denyEdits: level === 'read',
-  allowEditsUnder: level === 'worktree' ? root : null,
-});
+const rulesFor = (level) => guardRules({ id: 'auto-1', level }, { worktreePath: root, testCmd: 'npm test', lintCmd: 'npx eslint .' });
 const bash = (command) => ({ tool: 'Bash', input: { command } });
 const edit = (file, tool = 'Edit') => ({ tool, input: tool === 'NotebookEdit' ? { notebook_path: file } : { file_path: file } });
-const verdict = (call, level = 'worktree', cwd = root) => automationVerdict({ rules: rulesFor(level), call, cwd });
-// bash -c "bash -c \"…\"", n deep.
-const nest = (command, n) => (n === 0 ? command : `bash -c ${JSON.stringify(nest(command, n - 1))}`);
-const denied = (command, level, cwd) => verdict(bash(command), level, cwd) !== null;
+const verdict = (call, level = 'worktree') => automationVerdict({ rules: rulesFor(level), call, home });
+const deniedEverywhere = (call) => LEVELS.every((level) => verdict(call, level) !== null);
 
-describe('automação: never, at any level', () => {
-  const bypasses = [
-    'git push',
-    'git push origin main',
-    'bash -c "git push"',
-    "sh -lc 'git push'",
-    'env git push',
-    'env -S "git push"',
-    'sudo -u x git push',
-    'timeout 5 git push',
-    'nohup git push &',
-    'xargs git push',
-    'git -C . push',
-    'git -c x=y push origin main',
-    'git --no-pager --git-dir=.git --work-tree=. push',
-    '/usr/bin/git push',
-    'true && git push',
-    'ls; git push',
-    'echo $(git push)',
-    'echo `git push`',
-    'cat <(git push)',
-    'eval git push',
-    "echo 'git push' | sh",
-    "find . -exec git push \\;",
-    "git submodule foreach 'git push'",
-    'watch git push',
-    'git send-pack origin main',
-    'git push --force-with-lease',
-    'git push origin +main',
-    'git merge feat/x',
-    'git pull',
-    'gh pr merge 3',
-    'gh pr merge --auto 3',
-    'git branch -D x',
-    'git branch -d x',
-    'git branch --delete x',
-    'git reset --hard HEAD~1',
-    'git clean -f',
-    'git clean -xdf',
-    'git clean -fd',
-    'git clean --force',
-    'npm install --force',
-    'gh api -X PUT repos/o/r/pulls/1/merge',
-    "gh api graphql -f query='mutation { mergePullRequest(input:{}) { clientMutationId } }'",
-    'gh alias set m "pr merge"',
-    'git -c alias.p=push p',
-    'git config core.hooksPath hooks',
-    nest('git push', 3),
-  ];
-  for (const command of bypasses) {
-    it(`denies: ${command}`, () => {
-      for (const level of ['read', 'worktree', 'project']) expect(denied(command, level), level).toBe(true);
+// Every probe of the adversarial review: each must be denied at every level.
+const PUSH_PROBES = [
+  'git push', 'git push origin main', "g''it push", '"git" push', '\\git push', 'command git push', 'exec git push',
+  'gi\\\nt push', 'git\\\n push', "$'git' push", "git $'push'", 'IFS=,; x=git,push; $x', 'G=git; $G push', 'eval "git push"',
+  'xargs git push', 'echo push | xargs git', 'echo push | xargs -I{} git {}', 'find . -exec git push \;', 'bash <<EOF\ngit push\nEOF',
+  "bash <<< 'git push'", 'sh < x.sh', 'git -c alias.p=push p', 'git --exec-path=/tmp push', 'GIT_DIR=.git git push',
+  'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push git p', "GIT_CONFIG_PARAMETERS=\"'alias.p'='push'\" git p",
+  'bash -c -- "git push"', 'bash -c "git push"', "sh -lc 'git push'", 'env git push', 'git {push,}', '{git,push}', '/usr/bin/g?t push',
+  '/usr/*/git push', '$(echo git) push', '`echo git` push', 'echo $(git push)', 'cat <(git push)', 'git pu"sh"', 'git ${X:-push}',
+  'ssh localhost "git push"', 'f(){ git push; }; f', 'sudo -E git push', 'git push&>/dev/null', 'git status&>/dev/null',
+  'true && git push', 'git status; git push', 'git status | git push', 'git -C . push', 'git -C . status', 'git -c x=y status',
+  'git merge x', 'git pull', 'git push --force-with-lease', 'git reset --hard HEAD', 'git clean -xdf', 'git branch -D x',
+  'git branch -f main HEAD', 'git update-ref refs/heads/main HEAD', 'git stash', 'git stash -u', 'git status # x', 'git status &',
+  'git log --output=/tmp/x', 'git diff --output /tmp/x', 'git diff --ext-diff', 'rg --pre ./evil x', 'rg --pre=./evil x',
+  'npm test --script-shell=/tmp/evil', 'npm install', 'npm run build', 'npx eslint . ; git push', '/usr/bin/git status',
+  'gh pr merge 3', 'gh api --method=DELETE repos/o/r/issues/1', 'gh api -XPOST repos/o/r/issues', 'gh api -X PUT repos/o/r/pulls/1/merge',
+  'gh api graphql -f query="$(cat m.graphql)"', 'gh api graphql -f query="$Q"', "gh api graphql -f query='query { viewer { login } }'",
+  'gh api https://api.github.com/graphql -f query="mutation{x}"', 'gh api -X PUT https://api.github.com/repos/o/r/pulls/1/merge',
+  'gh api -X PUT repos/o/r/pulls/1//merge', 'gh api repos/o/r/issues -f title=t', 'gh api repos/o/r/issues --input b.json',
+  'gh api -Ftitle=t repos/o/r/issues', 'gh pr update-branch 1', 'gh repo sync', 'gh project item-add 1', 'gh pr revert 1',
+  'gh repo deploy-key add k', 'gh ssh-key add k', 'gh alias set m "pr merge"', 'gh pr review 1 --approve', 'gh -R o/r pr view 1',
+];
+const WRITE_PROBES = [
+  `ln -s ${claude}/settings.json x && echo pwn > x`, `ln -sf ${claude} d; cp /etc/hostname d/settings.json`, `ln ${claude}/settings.json h2`,
+  `builtin cd ${outside} && echo > a`, `CDPATH=${home} cd outside && echo > a`, `env -C ${outside} sh -c 'echo > a'`,
+  `find ${outside} -maxdepth 0 -execdir touch zz \;`, `tee -a ${outside}/x`, `dd of=${outside}/x`, `cp -t ${outside} a`,
+  `install -d ${outside}/n`, `rsync a ${outside}/`, `truncate -s0 ${outside}/x`, `echo >| ${outside}/x`, `echo x >|/tmp/x`,
+  'echo x 1>|/tmp/x', 'echo x <>/tmp/x', 'exec 3<>/tmp/x', `sed -n 'w ${outside}/x' a`, `sed -n 'w ${claude}/settings.json' a`,
+  `awk 'BEGIN{print 1 > "${claude}/settings.json"}'`, `sort -o ${claude}/settings.json a`, `tar -cf ${outside}/x.tar .`,
+  `D=${claude}; echo > $D/settings.json`, 'echo > ~root/.claude/settings.json', 'echo > $XDG/../.claude/settings.json',
+  "echo '[alias] p = push' >> ~/.gitconfig", `echo > ${outside}/./x/`, `cp a ${root}/cl/settings.json`, 'echo > cl/settings.json',
+  'echo > hl', `python3 -c 'open("${claude}/settings.json","w")'`, 'echo hi > a', 'cat a.txt > b', 'git status > out.txt',
+  'cat a.txt | tee b', 'git log 2>&1 > x', 'cat --x=~/y', 'cat a:~/y', 'touch a', 'rm a.txt', 'mkdir d', 'cd sub && ls', `cd ${outside} && ls`, 'ls ~root',
+];
+
+describe('automação: an allowlist, deny what the guard cannot read', () => {
+  for (const command of [...PUSH_PROBES, ...WRITE_PROBES]) {
+    it(`denies at every level: ${JSON.stringify(command)}`, () => {
+      expect(deniedEverywhere(bash(command))).toBe(true);
     });
   }
 
-  const fine = [
-    'git status',
-    'git log --merges --oneline',
-    'git diff HEAD~1',
-    'git commit -m "never git push here"',
-    'git add .',
-    'git clean -n',
-    'git branch',
-    'git config user.email',
-    'npm test',
-    'gh pr view 3',
-    'grep -rn "git push" src',
+  const reads = [
+    'git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', "git log --format='%H %s' -3", 'git status 2>/dev/null',
+    'git diff >/dev/null 2>&1', 'git log 2>&1 | head -5', 'git status && git diff', 'ls -la', 'ls ~', 'cat ~/notes.txt', 'cat a.txt',
+    'grep -rn "git push" .', 'rg x src', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'npm test', 'npm test -- a.test.js',
+    'npx eslint .', 'npx eslint . --fix', 'gh pr view 3', 'gh issue list', 'gh pr checks 3', 'gh repo view', 'gh api repos/o/r',
+    'gh api -X GET repos/o/r/pulls', 'gh api --method GET repos/o/r --jq .name',
   ];
-  for (const command of fine) {
-    it(`lets through at project level: ${command}`, () => {
+  for (const command of reads) {
+    it(`lets through at every level: ${command}`, () => {
+      for (const level of LEVELS) expect(verdict(bash(command), level), level).toBeNull();
+    });
+  }
+
+  it('git add and commit only where the level edits', () => {
+    for (const command of ['git add a.txt', 'git commit -m "feat: never git push here"', 'git add . && git commit -m x']) {
+      expect(verdict(bash(command), 'read')).not.toBeNull();
+      expect(verdict(bash(command), 'worktree')).toBeNull();
       expect(verdict(bash(command), 'project')).toBeNull();
-    });
-  }
-
-  it('a line nested too deep to read is denied, not waved through', () => {
-    expect(denied(nest('git status', 12), 'project')).toBe(true);
+    }
   });
 
-  it('says which level and what, in pt-BR, and not to dodge it', () => {
-    const reason = verdict(bash('true && git push'), 'worktree');
-    expect(reason).toMatch(/^Automação do Vizor \(nível [^)]+\): .+\. Não tente contornar\.$/);
-    expect(reason).toContain('git push');
+  it('the gh writes only on the project level, and never a merge', () => {
+    for (const command of ['gh issue create -t x -b y', 'gh issue comment 1 -b y', 'gh pr comment 1 -b y', 'gh pr create -t x -b y', 'gh pr review 1 --comment -b ok']) {
+      expect(verdict(bash(command), 'worktree')).not.toBeNull();
+      expect(verdict(bash(command), 'project')).toBeNull();
+    }
+    for (const command of ['gh pr review 1 --approve', 'gh pr review 1 --comment --approve', 'gh pr review 1 -c -a', 'gh pr review 1', 'gh pr merge 1', 'gh issue close 1'])
+      expect(verdict(bash(command), 'project'), command).not.toBeNull();
+  });
+
+  it('says which level, in pt-BR', () => {
+    expect(verdict(bash('true && git push'))).toBe('Automação do Vizor (nível worktree): comando fora do permitido para esta automação.');
+    expect(verdict(bash('git push'), 'read')).toContain('(nível ler)');
   });
 });
 
-describe('automação: gh that writes (levels 1 and 2)', () => {
-  const writes = [
-    'gh issue create -t x -b y',
-    'gh issue comment 1 -b y',
-    'gh issue close 1',
-    'gh issue reopen 1',
-    'gh pr create -t x',
-    'gh pr comment 1 -b y',
-    'gh pr review 1 --approve',
-    'gh pr ready 1',
-    'gh pr edit 1 -t x',
-    'gh -R o/r issue create -t x',
-    'gh release create v1',
-    'gh repo delete o/r',
-    'gh label create x',
-    'gh api -X DELETE repos/x/y',
-    'gh api -XDELETE repos/x/y',
-    'gh api --method=PATCH repos/x/y',
-    'gh api repos/x/y/issues -f title=t',
-    'gh api repos/x/y/issues --input body.json',
-    "gh api graphql -f query='mutation { addComment(input:{}) { clientMutationId } }'",
-    'env gh issue create -t x',
-  ];
-  for (const command of writes) {
-    it(`denies on worktree and read: ${command}`, () => {
-      expect(denied(command, 'worktree')).toBe(true);
-      expect(denied(command, 'read')).toBe(true);
-    });
-  }
-  it('the project level may write with gh', () => {
-    for (const command of ['gh issue create -t x', 'gh pr comment 1 -b y', 'gh api repos/x/y/issues -f title=t'])
-      expect(verdict(bash(command), 'project')).toBeNull();
-  });
-  it('reading with gh is fine everywhere', () => {
-    for (const command of ['gh pr view 1', 'gh issue list', 'gh api repos/x/y', 'gh api -X GET search/issues -f q=x', "gh api graphql -f query='query { viewer { login } }'"])
-      expect(verdict(bash(command), 'worktree')).toBeNull();
+describe('automação: tools', () => {
+  it('only Read, Grep, Glob, Skill, LS, Bash and the edit tools', () => {
+    for (const tool of ['Read', 'Grep', 'Glob', 'Skill', 'LS']) expect(verdict({ tool, input: {} }, 'read')).toBeNull();
+    for (const tool of ['mcp__github__merge_pull_request', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent', ''])
+      expect(deniedEverywhere({ tool, input: {} }), tool).toBe(true);
   });
 });
 
 describe('automação: edit tools', () => {
   it('level 1 denies every edit tool', () => {
-    for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
-      expect(verdict(edit(path.join(root, 'a.txt'), tool), 'read')).toContain('Automação do Vizor');
+    for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) expect(verdict(edit(path.join(root, 'a.txt'), tool), 'read')).not.toBeNull();
   });
 
-  it('level 2 edits inside the worktree only', () => {
-    expect(verdict(edit(path.join(root, 'a.txt')))).toBeNull();
-    expect(verdict(edit(path.join(root, 'sub', 'new', 'deep.txt'), 'Write'))).toBeNull();
-    expect(verdict(edit(path.join(outside, 'a.txt')))).not.toBeNull();
-    expect(verdict(edit(path.join(root, '..', 'outside', 'a.txt')))).not.toBeNull();
-    expect(verdict(edit(`${root}-evil/a.txt`))).not.toBeNull(); // a prefix is not a parent
-    expect(verdict(edit('relative.txt'), 'worktree', null)).not.toBeNull();
-  });
-
-  it('level 2 follows symlinks out of the worktree', () => {
-    expect(verdict(edit(path.join(root, 'escape', 'a.txt')))).not.toBeNull();
-    expect(verdict(edit(path.join(root, 'escape', 'new', 'b.txt'), 'Write'))).not.toBeNull();
-    expect(verdict(edit(path.join(root, 'dangling'), 'Write'))).not.toBeNull();
-  });
-
-  it('never the Claude Code or Vizor config, nor git internals, at any level', () => {
-    const home = os.homedir();
-    for (const file of [
-      path.join(home, '.claude', 'settings.json'),
-      path.join(home, '.config', 'vizor', 'automacoes', 'regras.json'),
-      path.join(root, '.claude', 'settings.json'),
-      path.join(root, '.git', 'hooks', 'pre-commit'),
-    ])
-      for (const level of ['worktree', 'project']) expect(verdict(edit(file), level), `${level} ${file}`).not.toBeNull();
-  });
-
-  it('a symlink into ~/.claude is still ~/.claude', () => {
-    const link = path.join(root, 'claude-link');
-    fs.symlinkSync(path.join(os.homedir(), '.claude'), link);
-    try {
-      expect(verdict(edit(path.join(link, 'settings.json')), 'project', root)).not.toBeNull();
-    } finally {
-      fs.unlinkSync(link);
+  it('edits inside the worktree only, on worktree and project', () => {
+    for (const level of ['worktree', 'project']) {
+      expect(verdict(edit(path.join(root, 'a.txt')), level)).toBeNull();
+      expect(verdict(edit(path.join(root, 'sub', 'new', 'deep.txt'), 'Write'), level)).toBeNull();
     }
   });
 
-  it('the project level edits anywhere else', () => {
-    expect(verdict(edit(path.join(outside, 'a.txt')), 'project')).toBeNull();
-  });
-});
-
-describe('automação: Bash writes outside the worktree (level 2, best effort)', () => {
-  const out = (name) => path.join(outside, name);
   const escapes = [
-    `cd ${outside} && echo > a`,
-    'cd .. && touch a',
-    'cd ../.. && rm -rf x',
-    'cd && echo x > a',
-    `echo hi > ${out('a')}`,
-    `echo hi>${out('a')}`,
-    `echo hi >> ${out('a')}`,
-    `echo hi &> ${out('a')}`,
-    `echo hi | tee ${out('a')}`,
-    `cp a.txt ${outside}/`,
-    `mv a.txt ${out('a')}`,
-    `mv ${out('a')} here.txt`,
-    `rm -rf ${outside}`,
-    `sed -i s/a/b/ ${out('f')}`,
-    `touch ${out('t')}`,
-    `mkdir -p ${out('d')}`,
-    `chmod 600 ${out('f')}`,
-    `ln -s a.txt ${out('l')}`,
-    `git -C ${outside} commit -m x`,
-    `git -C ${outside} add .`,
-    'echo hi > escape/a',
-    'echo hi > ../outside/a',
-    `bash -c "echo hi > ${out('a')}"`,
-    'echo hi > "$OUT"',
+    ['Edit', path.join(root, 'hl')], // a hard link into ~/.claude
+    ['Write', path.join(root, 'cl', 'new.json')], // a symlink to ~/.claude
+    ['Write', path.join(root, 'cl', 'settings.json')],
+    ['Write', path.join(root, 'escape', 'x')],
+    ['Write', path.join(root, 'dangling')],
+    ['Write', path.join(root, 'a', '..', '..', 'outside', 'x')],
+    ['Write', `${root}-evil/a.txt`],
+    ['Write', `${root}/sub/`], // a directory
+    ['Write', `${root}/not-yet/`], // a directory that does not exist yet
+    ['NotebookEdit', path.join(outside, 'n.ipynb')],
+    ['MultiEdit', path.join(claude, 'settings.json')],
+    ['Write', '~/.gitconfig'],
+    ['Write', path.join(home, '.config', 'git', 'config')],
+    ['Write', path.join(home, '.bashrc')],
+    ['Write', 'rel/x'],
+    ['Write', path.join(root, '.git', 'hooks', 'pre-commit')],
+    ['Write', path.join(root, '.claude', 'settings.json')],
+    ['Edit', ''],
   ];
-  for (const command of escapes) {
-    it(`denies: ${command}`, () => {
-      expect(denied(command, 'worktree')).toBe(true);
+  for (const [tool, file] of escapes) {
+    it(`denies at every level: ${tool} ${file}`, () => {
+      expect(deniedEverywhere(edit(file, tool))).toBe(true);
     });
   }
 
-  const inside = [
-    'echo hi > a',
-    'echo hi > sub/a',
-    'npm test 2>/dev/null',
-    'npm test > /dev/null 2>&1',
-    'echo hi >&2',
-    `cd ${outside} && ls`,
-    'cp /etc/hosts ./h',
-    "sed -i '/x/d' a.txt",
-    'cd sub && touch a',
-    `cd ${root}/sub && touch a`,
-    'git add a.txt && git commit -m x',
-    `git -C ${outside} log`,
-  ];
-  for (const command of inside) {
-    it(`lets through: ${command}`, () => {
-      expect(verdict(bash(command), 'worktree')).toBeNull();
-    });
-  }
-
-  it('a session whose cwd already left the worktree cannot write relative paths', () => {
-    expect(denied('echo hi > a', 'worktree', outside)).toBe(true);
-  });
-
-  it('level 1 writes nothing with Bash either', () => {
-    for (const command of ['echo hi > a', 'touch a', 'git commit -m x', 'git add .']) expect(denied(command, 'read')).toBe(true);
-    for (const command of ['git status', 'npm test > /dev/null']) expect(verdict(bash(command), 'read')).toBeNull();
-  });
-
-  it('no level writes the Claude Code or Vizor config through Bash', () => {
-    expect(denied('echo x > ~/.claude/settings.json', 'project')).toBe(true);
-    expect(denied('cd ~/.config/vizor && echo {} > automacoes/regras.json', 'project')).toBe(true);
-    expect(denied('cp evil.json $HOME/.claude/settings.json', 'project')).toBe(true);
-    expect(verdict(bash(`echo hi > ${out('a')}`), 'project')).toBeNull();
+  it('protected paths hold even when they are inside the root', () => {
+    const rules = { ...rulesFor('worktree'), allowEditsUnder: home };
+    for (const file of [path.join(claude, 'settings.json'), path.join(home, '.gitconfig'), path.join(home, '.config', 'gh', 'hosts.yml'), path.join(home, '.config', 'vizor', 'automacoes', 'regras.json')])
+      expect(automationVerdict({ rules, call: edit(file, 'Write'), home }), file).not.toBeNull();
+    expect(automationVerdict({ rules, call: edit(path.join(home, 'ok.txt'), 'Write'), home })).toBeNull();
   });
 });
 
 describe('automação without its rules: read only (fail closed)', () => {
-  const MESSAGE = 'Automação do Vizor: não achei as regras desta automação; só leitura até o Vizor gravar as regras.';
-  const check = (call) => automationVerdict({ rules: MISSING_AUTOMATION_RULES, call, cwd: root });
-  const reads = ['git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', 'git -C sub status', 'ls -la', 'cat a.txt', 'grep -rn x .', 'rg x', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'echo hi', 'cat a.txt | grep a | wc -l', 'cd sub && ls', 'git status 2>/dev/null'];
-  for (const command of reads) it(`lets read: ${command}`, () => expect(check(bash(command))).toBeNull());
-  const writes = ['echo hi > a', 'git diff --output=x', 'git commit -m x', 'git push', 'gh pr view 1', 'gh issue create -t x', 'npm test', 'touch a', 'rm a.txt', 'bash -c "ls"', 'ls $(touch a)', 'cat a.txt | tee b', 'git -c x=y status', 'sed -n 1p a.txt'];
-  for (const command of writes) it(`denies: ${command}`, () => expect(check(bash(command))).toBe(MESSAGE));
-  it('denies every edit tool', () => {
-    for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) expect(check(edit(path.join(root, 'a.txt'), tool))).toBe(MESSAGE);
-  });
-  it('other tools (Read, Grep) pass', () => {
+  const check = (call) => automationVerdict({ rules: MISSING_AUTOMATION_RULES, call, home });
+  for (const command of ['git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', 'ls -la', 'cat a.txt', 'grep -rn x .', 'rg x', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'cat a.txt | grep a | wc -l', 'git status 2>/dev/null'])
+    it(`lets read: ${command}`, () => expect(check(bash(command))).toBeNull());
+  for (const command of ['echo hi', 'echo hi > a', 'git diff --output=x', 'git diff --ext-diff', 'rg --pre ./evil x', 'git -C /x status', 'git --exec-path=. status', 'git commit -m x', 'git push', 'gh pr view 1', 'npm test', 'ls | xargs rm', 'cat a | sh', 'echo $(git push)', "$'git' push", 'git {push,}'])
+    it(`denies: ${command}`, () => expect(check(bash(command))).toBe(MISSING));
+  it('denies every edit tool and other tools', () => {
+    for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) expect(check(edit(path.join(root, 'a.txt'), tool))).toBe(MISSING);
+    expect(check({ tool: 'mcp__x__y', input: {} })).toBe(MISSING);
     expect(check({ tool: 'Read', input: { file_path: path.join(root, 'a.txt') } })).toBeNull();
   });
 });
@@ -303,7 +188,7 @@ describe('loadAutomationRules', () => {
   };
   const good = JSON.stringify({ version: 1, automations: { 'auto-1': rulesFor('worktree') } });
 
-  it('reads the entry of this automação', () => {
+  it('reads the entry of this automação, as guardRules wrote it', () => {
     expect(loadAutomationRules(read(good), file, 'auto-1')).toEqual(rulesFor('worktree'));
   });
   it('no id, no file, a corrupt file or an unknown id: no rules', () => {
@@ -314,9 +199,12 @@ describe('loadAutomationRules', () => {
     expect(loadAutomationRules(read(good), file, 'other')).toBeNull();
     expect(loadAutomationRules(read(good), file, '__proto__')).toBeNull();
   });
-  it('a damaged entry fails closed: no edits, no gh writes, no relative root', () => {
-    const damaged = JSON.stringify({ version: 1, automations: { a: { level: 'worktree', allowEditsUnder: 'rel/dir' } } });
-    expect(loadAutomationRules(read(damaged), file, 'a')).toMatchObject({ denyGhWrite: true, denyEdits: true, allowEditsUnder: null });
+  it('a damaged entry fails closed: bad allowBash items dropped, a relative root means no edits', () => {
+    const damaged = JSON.stringify({
+      version: 1,
+      automations: { a: { level: 'worktree', denyEdits: false, allowEditsUnder: 'rel/dir', allowBash: [{ program: 'git', sub: 'push' }, { program: '/bin/sh' }, null, { program: 'ls' }] } },
+    });
+    expect(loadAutomationRules(read(damaged), file, 'a')).toEqual({ id: 'a', level: 'worktree', allowBash: [{ program: 'ls' }], denyEdits: true, allowEditsUnder: null });
   });
 });
 
@@ -330,7 +218,7 @@ describe('decide with an automação', () => {
     let asked = false;
     const output = await decide({
       ...base,
-      event: event('echo prod && git push'),
+      event: event('cat prod && git push'),
       rules: { version: 1, global: [DEV_ASK], repos: {} },
       automation: rulesFor('project'),
       automationId: 'auto-1',
@@ -353,7 +241,7 @@ describe('decide with an automação', () => {
     let request;
     await decide({
       ...base,
-      event: event('echo prod'),
+      event: event('cat prod'),
       rules: { version: 1, global: [DEV_ASK], repos: {} },
       automation: rulesFor('project'),
       automationId: 'auto-1',
@@ -434,7 +322,7 @@ describe('rule-guard script with VIZOR_AUTOMATION', () => {
 
   it('without its rules the dev rules still apply to what reads pass', async () => {
     writeDevRules();
-    const result = await guard('echo "drop table x"', { VIZOR_AUTOMATION: 'auto-1' });
+    const result = await guard('cat "drop table x"', { VIZOR_AUTOMATION: 'auto-1' });
     expect(result.code).toBe(0);
     expect(reasonOf(result)).toContain('Barrado pela regra do usuário');
   });

@@ -103,16 +103,20 @@ describe('cliArgs', () => {
 });
 
 describe('guardRules', () => {
-  const always = ['git push', 'git merge', '--force', 'gh pr merge', 'git branch -D', 'git branch -d', 'git reset --hard', 'git clean -f', 'git push --force-with-lease'];
-  it('read: denies edits and gh writes', () => {
-    expect(guardRules({ ...base, level: 'read' }, {})).toEqual({
-      id: 'a1', level: 'read', denyAlways: always, denyGhWrite: true, denyEdits: true, allowEditsUnder: null,
-    });
+  const programs = (r) => r.allowBash.map((e) => [e.program, ...(e.sub ?? e.argsPrefix ?? [])].join(' '));
+  it('read: no edits, reads only', () => {
+    const r = guardRules({ ...base, level: 'read' }, { worktreePath: '/r-auto-varredura' });
+    expect(r).toMatchObject({ id: 'a1', level: 'read', denyEdits: true, allowEditsUnder: null });
+    expect(r.allowBash[0]).toEqual({ program: 'git', sub: ['log', 'diff', 'status', 'show'] });
+    expect(programs(r)).toContain('gh pr view');
+    expect(programs(r)).not.toContain('gh issue create');
+    expect(programs(r).some((p) => /push|merge/.test(p))).toBe(false);
   });
-  it('worktree: edits only under the worktree', () => {
-    expect(guardRules({ ...base, level: 'worktree' }, { worktreePath: '/r-auto-varredura' })).toEqual({
-      id: 'a1', level: 'worktree', denyAlways: always, denyGhWrite: true, denyEdits: false, allowEditsUnder: '/r-auto-varredura',
-    });
+  it('worktree: edits only under the worktree, git add and commit', () => {
+    const r = guardRules({ ...base, level: 'worktree' }, { worktreePath: '/r-auto-varredura' });
+    expect(r).toMatchObject({ denyEdits: false, allowEditsUnder: '/r-auto-varredura' });
+    expect(r.allowBash[0].sub).toEqual(['log', 'diff', 'status', 'show', 'add', 'commit']);
+    expect(programs(r)).not.toContain('gh issue create');
   });
   it('normalizes the worktree path and fails closed on a relative one', () => {
     expect(guardRules({ ...base, level: 'worktree' }, { worktreePath: '/x/../y/' }).allowEditsUnder).toBe('/y');
@@ -120,14 +124,23 @@ describe('guardRules', () => {
     expect(r.denyEdits).toBe(true);
     expect(r.allowEditsUnder).toBeNull();
   });
-  it('worktree without a path fails closed', () => {
-    const r = guardRules({ ...base, level: 'worktree' }, {});
-    expect(r.denyEdits).toBe(true);
-    expect(r.allowEditsUnder).toBeNull();
+  it('worktree or project without a path fails closed', () => {
+    for (const level of ['worktree', 'project']) {
+      const r = guardRules({ ...base, level }, {});
+      expect(r.denyEdits).toBe(true);
+      expect(r.allowEditsUnder).toBeNull();
+    }
   });
-  it('project: edits and gh writes allowed, push still denied', () => {
-    expect(guardRules({ ...base, level: 'project' }, {})).toEqual({
-      id: 'a1', level: 'project', denyAlways: always, denyGhWrite: false, denyEdits: false, allowEditsUnder: null,
-    });
+  it('project: the gh writes the spec allows, never a merge', () => {
+    const r = guardRules({ ...base, level: 'project' }, { worktreePath: '/wt' });
+    expect(r).toMatchObject({ denyEdits: false, allowEditsUnder: '/wt' });
+    for (const c of ['gh issue create', 'gh issue comment', 'gh pr comment', 'gh pr create', 'gh pr review']) expect(programs(r)).toContain(c);
+    expect(programs(r).some((p) => /merge|update-branch|sync/.test(p))).toBe(false);
+  });
+  it('the test and lint commands become entries; unsafe ones are dropped', () => {
+    const r = guardRules({ ...base, level: 'read' }, { testCmd: 'npm test', lintCmd: 'npx eslint .' });
+    expect(r.allowBash).toContainEqual({ program: 'npm', argsPrefix: ['test'], extra: 'after-dashdash' });
+    expect(r.allowBash).toContainEqual({ program: 'npx', argsPrefix: ['eslint', '.'], extra: 'any' });
+    expect(guardRules({ ...base, level: 'read' }, { testCmd: 'npm test; git push' }).allowBash.some((e) => e.program === 'npm')).toBe(false);
   });
 });
