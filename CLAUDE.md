@@ -59,6 +59,9 @@ App Electron (src/main/index.js)
   ├── graph/               → grafo do Maestro: extrai funções/imports/chamadas
   │                          (@babel/parser, num worker), liga em módulos e
   │                          chamadas, e calcula o que cada músico tocou/planejou
+  ├── automations/         → Automações: skill + `claude -p` agendado por projeto, em 3
+  │                          níveis (ler / worktree / projeto), tetos por execução e
+  │                          por dia, histórico e relatórios em ~/.config/vizor/automacoes/
   ├── warp.js              → FALLBACK: foco de janela/aba do terminal (xdotool)
   └── renderer (app.*)     → bolha, tooltip, painel, chat, configurações
       └── workspace: shell/ (abas do topo, atalhos, barra de status), agents/ (kanban),
@@ -80,6 +83,20 @@ Pontos críticos:
   terminal e de display server, e não pode cair no chat errado porque endereça
   por `sessionId`. O canal está atrás de feature gate remoto, então o fallback
   via `xdotool` continua obrigatório.
+- **Automações e a trava**: o `claude -p` de uma automação leva
+  `VIZOR_AUTOMATION=<id>` e o `rule-guard.js` entra em modo allowlist: lê as
+  regras do id em `~/.config/vizor/automacoes/regras.json` (gravadas pelo
+  `permissions.guardRules`) e só deixa passar o que está listado (git/gh de
+  leitura, o teste e o lint exatamente como configurados, edição só sob a
+  worktree). Falha fechado: sem arquivo, corrompido ou sem entrada pro id =
+  só leitura; nível que edita sem caminho de worktree válido = zero edição;
+  leitura de segredos (`~/.ssh`, `.env`…) barrada em qualquer nível. Push/merge
+  são negados sempre, e `runEnv` desliga o push no processo (sem
+  `GH_TOKEN`/`SSH_AUTH_SOCK`, `pushInsteadOf` inválido, sem credential helper)
+  pra cobrir o que roda dentro do teste, onde a trava não enxerga. A trava é
+  instalada em `settings.json` sempre que existe ao menos uma automação, e os
+  níveis que editam recusam rodar com ela desligada. Os flags do CLI são só a
+  primeira barreira; quem segura é a trava.
 - **Sessão morta**: fechar o terminal mata o `claude` sem disparar hook nenhum,
   então a lista só descobre isso comparando com `~/.claude/sessions/`. Ausência
   ali não é prova de morte: builds sem o registro não listam nada. Só se reapa
