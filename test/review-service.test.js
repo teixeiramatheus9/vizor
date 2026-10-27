@@ -130,20 +130,20 @@ describe('review service', () => {
     expect(s.files.find((f) => f.path === 'n.js')).toMatchObject({ status: 'added', untracked: true, added: 2, removed: 0 });
   });
 
-  it('asks the patch only for the requested file and caches by mtime and size', async () => {
+  it('fills a file opened before the summary from the full diff, and caches by mtime and size', async () => {
     const { service, calls } = setup({ files: { '/w/a.js': 'x' } });
     const f = await service.file(WT, 'a.js');
     expect(f.hunks).toHaveLength(1);
     expect(f.hunks[0]).toMatchObject({ committed: true, approved: false });
     const diffs = calls.filter((c) => c.key?.startsWith('diff')).map((c) => c.key);
-    expect(diffs).toEqual(['diff -U3 BASE -- a.js', 'diff -U3 HEAD -- a.js']);
+    expect(diffs).toEqual(['diff --raw --numstat -z -M BASE', 'diff -U3 BASE', 'diff -U3 HEAD']);
     const before = calls.length;
     await service.file(WT, 'a.js');
     expect(calls.length).toBe(before);
   });
 
   describe('reject', () => {
-    const open = { 'diff -U3 HEAD -- a.js': PATCH };
+    const open = { 'diff -U3 HEAD': PATCH };
 
     it('refuses a hunk already in a commit', async () => {
       const { service } = setup({ files: { '/w/a.js': 'x' } });
@@ -172,7 +172,7 @@ describe('review service', () => {
 
     it('re-emits the no-newline marker in the reverse patch', async () => {
       const real = 'diff --git a/a.js b/a.js\nindex 1..2 100644\n--- a/a.js\n+++ b/a.js\n@@ -1,2 +1,2 @@\n keep\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n';
-      const { service, calls } = setup({ git: { ...open, 'diff -U3 BASE -- a.js': real, 'diff -U3 HEAD -- a.js': real, 'apply -R --check': '', 'apply -R': '' }, files: { '/w/a.js': 'x' }, sessions: [] });
+      const { service, calls } = setup({ git: { ...open, 'diff -U3 BASE': real, 'diff -U3 HEAD': real, 'apply -R --check': '', 'apply -R': '' }, files: { '/w/a.js': 'x' }, sessions: [] });
       const f = await service.file(WT, 'a.js');
       expect((await service.reject(WT, 'a.js', f.hunks[0].id)).ok).toBe(true);
       expect(calls.find((c) => c.key === 'apply -R').input).toBe('diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1,2 +1,2 @@\n keep\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n');
@@ -237,6 +237,51 @@ describe('review service', () => {
     expect(calls.find((c) => c.key === 'cat-file --batch').input).toBe('BASE:old.js\n');
     expect(s.contract).toEqual([]);
     expect(s.files[0]).toMatchObject({ path: 'new.js', oldPath: 'old.js', status: 'renamed' });
+  });
+
+  it('opens a renamed file as renamed even before the summary, and the summary keeps it', async () => {
+    const renamed = [
+      'diff --git a/old.js b/new.js',
+      'similarity index 90%',
+      'rename from old.js',
+      'rename to new.js',
+      '--- a/old.js',
+      '+++ b/new.js',
+      '@@ -1,2 +1,2 @@',
+      ' keep',
+      '-old',
+      '+new',
+      '',
+    ].join('\n');
+    const { service } = setup({
+      git: {
+        'diff --raw --numstat -z -M BASE': ':100644 100644 a b R090\0old.js\0new.js\x001\t1\t\0old.js\0new.js\0',
+        'diff -U3 BASE': renamed,
+        'diff -U3 BASE -- new.js': 'diff --git a/new.js b/new.js\nnew file mode 100644\n--- /dev/null\n+++ b/new.js\n@@ -0,0 +1,2 @@\n+keep\n+new\n',
+        'cat-file --batch': 'o blob 9\nkeep\nold\n\n',
+      },
+      files: { '/w/new.js': 'keep\nnew\n' },
+    });
+    const f = await service.file(WT, 'new.js');
+    expect(f.status).toBe('renamed');
+    expect(f.hunks).toHaveLength(1);
+    expect(f.hunks[0].lines.map((l) => l.kind)).toEqual([' ', '-', '+']);
+    await service.summary(WT);
+    expect((await service.file(WT, 'new.js')).status).toBe('renamed');
+  });
+
+  it('lets the summary replace a one-path patch cached for a file outside the list', async () => {
+    const { service, gitMap } = setup({
+      git: {
+        'diff --raw --numstat -z -M BASE': '',
+        'diff -U3 BASE -- a.js': 'diff --git a/a.js b/a.js\nnew file mode 100644\n--- /dev/null\n+++ b/a.js\n@@ -0,0 +1 @@\n+new\n',
+      },
+      files: { '/w/a.js': 'x' },
+    });
+    expect((await service.file(WT, 'a.js')).status).toBe('added');
+    gitMap['diff --raw --numstat -z -M BASE'] = ':100644 100644 a b M\0a.js\x001\t1\ta.js\0';
+    await service.summary(WT);
+    expect((await service.file(WT, 'a.js')).status).toBe('modified');
   });
 
   it('never throws out of summary when git fails (unborn HEAD, no repo)', async () => {

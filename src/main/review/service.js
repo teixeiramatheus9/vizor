@@ -216,13 +216,13 @@ export function createReviewService({
   // untracked files read as all-added), only when some entry is cold.
   async function ensurePatches(wt, sha, files, stamps) {
     const s = stateOf(wt);
-    const cold = files.filter((f) => !s.files.has(`p\0${suffix(sha, f.path, stamps.get(f.path))}`));
+    const cold = files.filter((f) => s.files.get(`p\0${suffix(sha, f.path, stamps.get(f.path))}`)?.lone !== false);
     if (cold.length) {
       const parsed = new Map(!cold.some((f) => !f.untracked) ? [] : parseUnifiedDiff(await run(wt, ['diff', '-U3', sha])).map((f) => [f.path, f]));
       for (const f of cold) {
         const text = f.untracked ? await readText(wt, f.path) : null;
         const file = f.untracked ? untrackedAsFiles([f.path], () => text)[0] : parsed.get(f.path) ?? null;
-        s.files.set(`p\0${suffix(sha, f.path, stamps.get(f.path))}`, { file, untracked: f.untracked, bytes: approxBytes(file), epoch: -1, committedIds: null });
+        s.files.set(`p\0${suffix(sha, f.path, stamps.get(f.path))}`, { file, untracked: f.untracked, bytes: approxBytes(file), epoch: -1, committedIds: null, lone: false });
       }
     }
     await openIds(wt);
@@ -303,6 +303,22 @@ export function createReviewService({
     return { base: base.sha, baseError: null, files, order, verdict, contract, request: requestSource(wt) ?? null };
   }
 
+  // A file opened before any summary: its patch comes from the same full-diff
+  // parse the summary uses, since a diff limited to one path cannot pair a
+  // rename (it would show the file as added, with one all-added hunk).
+  async function coldPatch(wt, sha, rel, st) {
+    const s = stateOf(wt);
+    const key = `p\0${suffix(sha, rel, keyOf(st))}`;
+    const files = await listChanged(wt, sha);
+    if (files.some((f) => f.path === rel)) {
+      await ensurePatches(wt, sha, files, await stampsOf(wt, files));
+      if (s.files.has(key)) return s.files.get(key);
+    }
+    return parsedPatch(wt, sha, rel, st);
+  }
+
+  // One path's own diff, for a file outside the list (or one that changed
+  // between the stat and the list). Marked lone: the next summary replaces it.
   async function parsedPatch(wt, sha, rel, st) {
     const s = stateOf(wt);
     const key = `p\0${sha}\0${rel}\0${keyOf(st)}`;
@@ -321,7 +337,7 @@ export function createReviewService({
           untracked = true;
         }
       }
-      entry = { file, untracked, bytes, epoch: -1, committedIds: null };
+      entry = { file, untracked, bytes, epoch: -1, committedIds: null, lone: true };
       s.files.set(key, entry);
     }
     return entry;
@@ -332,7 +348,7 @@ export function createReviewService({
     if (base.error) return { path: rel, status: 'modified', hunks: [], error: base.error, tscErrors: [] };
     const s = stateOf(wt);
     const st = await statOf(wt, rel);
-    const entry = s.files.get(`p\0${suffix(base.sha, rel, keyOf(st))}`) ?? await parsedPatch(wt, base.sha, rel, st);
+    const entry = s.files.get(`p\0${suffix(base.sha, rel, keyOf(st))}`) ?? await coldPatch(wt, base.sha, rel, st);
     const parsed = entry.file ?? { path: rel, status: st ? 'modified' : 'deleted', binary: false, hunks: [] };
     const tscErrors = (s.tsc?.errors ?? []).filter((e) => e.file === rel).map(({ line, col, message }) => ({ line, col, message }));
     if (parsed.binary) return { path: rel, status: parsed.status, binary: true, hunks: [], tscErrors };
