@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { cliArgs, guardRules } from '../src/main/automations/permissions.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cliArgs, guardRules, runEnv } from '../src/main/automations/permissions.js';
 
 const base = { id: 'a1', slug: 'varredura', model: 'sonnet', capUsd: 1, timeoutMin: 15 };
 const flag = (args, name) => args[args.indexOf(name) + 1];
@@ -142,5 +146,60 @@ describe('guardRules', () => {
     expect(r.allowBash).toContainEqual({ program: 'npm', argsPrefix: ['test'], extra: 'after-dashdash' });
     expect(r.allowBash).toContainEqual({ program: 'npx', argsPrefix: ['eslint', '.'], extra: 'any' });
     expect(guardRules({ ...base, level: 'read' }, { testCmd: 'npm test; git push' }).allowBash.some((e) => e.program === 'npm')).toBe(false);
+  });
+});
+
+describe('runEnv', () => {
+  const base = { id: 'a1', level: 'worktree' };
+  const configOf = (env) =>
+    Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_, n) => [env[`GIT_CONFIG_KEY_${n}`], env[`GIT_CONFIG_VALUE_${n}`]]);
+
+  it('drops the push credentials and marks the run, at every level', () => {
+    for (const level of ['read', 'worktree', 'project']) {
+      const env = runEnv({ ...base, level }, {
+        PATH: '/bin', HOME: '/h', SSH_AUTH_SOCK: '/s', GH_TOKEN: 't', GITHUB_TOKEN: 't', GH_ENTERPRISE_TOKEN: 't',
+        GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'x', GIT_CONFIG_VALUE_0: 'y', GIT_CONFIG_KEY_42: 'stale', GIT_CONFIG_PARAMETERS: "'a'='b'",
+      });
+      expect(env).toMatchObject({
+        PATH: '/bin', HOME: '/h', VIZOR_INTERNAL: '1', VIZOR_AUTOMATION: 'a1', VIZOR_GUARD_ASK_MS: '300000',
+        GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '/bin/false', SSH_ASKPASS: '/bin/false',
+      });
+      for (const name of ['SSH_AUTH_SOCK', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_KEY_42'])
+        expect(env).not.toHaveProperty(name);
+      const config = configOf(env);
+      expect(config).toContainEqual(['credential.helper', '']);
+      expect(config).toContainEqual(['push.default', 'nothing']);
+      const rewritten = config.filter(([key]) => key === 'url.invalid://vizor-automation/.pushInsteadOf').map(([, value]) => value);
+      for (const prefix of ['https://', 'http://', 'ssh://', 'git@', 'git://', 'file://', '/']) expect(rewritten).toContain(prefix);
+      expect(config).not.toContainEqual(['x', 'y']);
+    }
+  });
+
+  it('does not change the env it was given', () => {
+    const given = { GH_TOKEN: 't' };
+    runEnv(base, given);
+    expect(given).toEqual({ GH_TOKEN: 't' });
+  });
+
+  it('real git: a push fails with the env applied, and works without it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vzpush-'));
+    try {
+      const bare = path.join(dir, 'remote.git');
+      const work = path.join(dir, 'work');
+      const plain = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@x', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@x' };
+      const git = (args, env = plain) => spawnSync('git', args, { cwd: work, env, encoding: 'utf8' });
+      execFileSync('git', ['init', '-q', '--bare', bare], { env: plain });
+      execFileSync('git', ['init', '-q', '-b', 'main', work], { env: plain });
+      git(['remote', 'add', 'origin', bare]);
+      git(['commit', '-q', '--allow-empty', '-m', 'one']);
+      const env = runEnv(base, plain);
+      for (const args of [['push'], ['push', 'origin', 'main'], ['push', bare, 'main'], ['push', `file://${bare}`, 'main']])
+        expect(git(args, env).status, args.join(' ')).not.toBe(0);
+      expect(git(['log', '--oneline'], env).status).toBe(0); // reads still work
+      expect(execFileSync('git', ['--git-dir', bare, 'branch'], { env: plain, encoding: 'utf8' })).toBe('');
+      expect(git(['push', 'origin', 'main']).status).toBe(0); // the repo itself is fine
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

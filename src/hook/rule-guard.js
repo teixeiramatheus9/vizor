@@ -454,7 +454,7 @@ const LEVEL_LABEL = { read: 'ler', worktree: 'worktree', project: 'projeto' };
 const PLAIN_PROGRAM = /^[A-Za-z0-9._+-]+$/;
 const WORD_CHAR = /[A-Za-z0-9_\-./:@%+=,^~]/;
 const DEVICE = /^\/dev\/(?:null|stdout|stderr)$/;
-const AUTOMATION_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Skill', 'LS', 'Bash', ...EDIT_TOOLS]);
+const AUTOMATION_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Skill', 'LS', 'TodoWrite', 'Bash', ...EDIT_TOOLS]);
 
 // The line as segments of words (quotes removed: { text, plain }), split on
 // && || ; and |, with /dev/null-style redirections dropped; null for
@@ -638,7 +638,7 @@ function editReason(rules, call, home) {
 export const MISSING_AUTOMATION_RULES = Object.freeze({
   missing: true,
   level: '?',
-  allowBash: [{ program: 'git', sub: ['status', 'log', 'diff', 'show'] }, ...['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'pwd'].map((program) => ({ program }))],
+  allowBash: [{ program: 'git', sub: ['status', 'log', 'diff', 'show'] }, ...['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'pwd', 'echo'].map((program) => ({ program }))],
   denyEdits: true,
   allowEditsUnder: null,
 });

@@ -83,6 +83,7 @@ describe('automação: an allowlist, deny what the guard cannot read', () => {
     'grep -rn "git push" .', 'rg x src', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'npm test', 'npm test -- a.test.js',
     'npx eslint .', 'npx eslint . --fix', 'gh pr view 3', 'gh issue list', 'gh pr checks 3', 'gh repo view', 'gh api repos/o/r',
     'gh api -X GET repos/o/r/pulls', 'gh api --method GET repos/o/r --jq .name',
+    'echo hi', 'echo "feito: tudo certo"', 'echo ok >/dev/null', 'git status && echo ok', 'pwd',
   ];
   for (const command of reads) {
     it(`lets through at every level: ${command}`, () => {
@@ -114,9 +115,9 @@ describe('automação: an allowlist, deny what the guard cannot read', () => {
 });
 
 describe('automação: tools', () => {
-  it('only Read, Grep, Glob, Skill, LS, Bash and the edit tools', () => {
-    for (const tool of ['Read', 'Grep', 'Glob', 'Skill', 'LS']) expect(verdict({ tool, input: {} }, 'read')).toBeNull();
-    for (const tool of ['mcp__github__merge_pull_request', 'WebFetch', 'WebSearch', 'TodoWrite', 'Task', 'Agent', ''])
+  it('only Read, Grep, Glob, Skill, LS, TodoWrite, Bash and the edit tools', () => {
+    for (const tool of ['Read', 'Grep', 'Glob', 'Skill', 'LS', 'TodoWrite']) expect(verdict({ tool, input: {} }, 'read')).toBeNull();
+    for (const tool of ['mcp__github__merge_pull_request', 'WebFetch', 'WebSearch', 'Task', 'Agent', ''])
       expect(deniedEverywhere({ tool, input: {} }), tool).toBe(true);
   });
 });
@@ -169,9 +170,9 @@ describe('automação: edit tools', () => {
 
 describe('automação without its rules: read only (fail closed)', () => {
   const check = (call) => automationVerdict({ rules: MISSING_AUTOMATION_RULES, call, home });
-  for (const command of ['git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', 'ls -la', 'cat a.txt', 'grep -rn x .', 'rg x', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'cat a.txt | grep a | wc -l', 'git status 2>/dev/null'])
+  for (const command of ['git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', 'ls -la', 'cat a.txt', 'grep -rn x .', 'rg x', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'cat a.txt | grep a | wc -l', 'git status 2>/dev/null', 'echo hi'])
     it(`lets read: ${command}`, () => expect(check(bash(command))).toBeNull());
-  for (const command of ['echo hi', 'echo hi > a', 'git diff --output=x', 'git diff --ext-diff', 'rg --pre ./evil x', 'git -C /x status', 'git --exec-path=. status', 'git commit -m x', 'git push', 'gh pr view 1', 'npm test', 'ls | xargs rm', 'cat a | sh', 'echo $(git push)', "$'git' push", 'git {push,}'])
+  for (const command of ['echo hi > a', 'git diff --output=x', 'git diff --ext-diff', 'rg --pre ./evil x', 'git -C /x status', 'git --exec-path=. status', 'git commit -m x', 'git push', 'gh pr view 1', 'npm test', 'ls | xargs rm', 'cat a | sh', 'echo $(git push)', "$'git' push", 'git {push,}'])
     it(`denies: ${command}`, () => expect(check(bash(command))).toBe(MISSING));
   it('denies every edit tool and other tools', () => {
     for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) expect(check(edit(path.join(root, 'a.txt'), tool))).toBe(MISSING);

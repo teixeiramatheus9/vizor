@@ -77,7 +77,8 @@ function commandEntry(cmd) {
 }
 
 // Read-only helpers the guard lets through at every level.
-const READ_PROGRAMS = ['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'pwd'];
+// echo only prints: the guard refuses any redirection but /dev/*.
+const READ_PROGRAMS = ['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'pwd', 'echo'];
 const GH_READ_GUARD = [
   ['issue', 'list'], ['issue', 'view'], ['issue', 'status'],
   ['pr', 'list'], ['pr', 'view'], ['pr', 'status'], ['pr', 'checks'], ['pr', 'diff'],
@@ -117,4 +118,41 @@ export function guardRules(a, { worktreePath, testCmd, lintCmd } = {}) {
     denyEdits: !under,
     allowEditsUnder: under,
   };
+}
+
+// Tokens and agents that could push or write to GitHub from inside a test
+// script, where the guard cannot see.
+const PUSH_CREDENTIALS = ['SSH_AUTH_SOCK', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN'];
+// Every push URL is rewritten to a scheme git cannot reach (pushInsteadOf is
+// multi-valued: one entry per prefix). '/' and file:// cover local remotes.
+const PUSH_PREFIXES = ['https://', 'http://', 'ssh://', 'git@', 'git://', 'file://', '/'];
+const NO_PUSH_CONFIG = [
+  ['credential.helper', ''], // an empty value clears every helper
+  ...PUSH_PREFIXES.map((prefix) => ['url.invalid://vizor-automation/.pushInsteadOf', prefix]),
+  ['push.default', 'nothing'],
+];
+
+// The env of an automação's run: push disabled at the process level for
+// every level, on top of the CLI flags and the guard. Pure: baseEnv is copied.
+export function runEnv(a, baseEnv = {}) {
+  const env = {};
+  for (const [name, value] of Object.entries(baseEnv)) {
+    // The run's own git config replaces any the parent passed down.
+    if (PUSH_CREDENTIALS.includes(name) || /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$/.test(name)) continue;
+    env[name] = value;
+  }
+  Object.assign(env, {
+    VIZOR_INTERNAL: '1',
+    VIZOR_AUTOMATION: String(a.id),
+    VIZOR_GUARD_ASK_MS: '300000',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '/bin/false',
+    SSH_ASKPASS: '/bin/false',
+    GIT_CONFIG_COUNT: String(NO_PUSH_CONFIG.length),
+  });
+  NO_PUSH_CONFIG.forEach(([key, value], index) => {
+    env[`GIT_CONFIG_KEY_${index}`] = key;
+    env[`GIT_CONFIG_VALUE_${index}`] = value;
+  });
+  return env;
 }
