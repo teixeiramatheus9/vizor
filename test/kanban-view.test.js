@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { renderKanban, skeleton } from '../src/renderer/agents/kanban-view.js';
+import { renderKanban } from '../src/renderer/agents/kanban-view.js';
+import { skeleton } from '../src/renderer/shared/skeleton.js';
 
 const NOW = 1_000_000_000;
 const card = (over = {}) => ({

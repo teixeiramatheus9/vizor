@@ -1,6 +1,7 @@
 // Pure HTML builder for the Agents tab's kanban. No DOM access; everything
 // from a session or a project goes through escapeHtml.
 import { escapeHtml } from '../workspace-view.js';
+import { skeleton } from '../shared/skeleton.js';
 import { renderGuardCard } from '../guard-card.js';
 import { monogramColor, monogramOf } from '../project-accent.js';
 
@@ -120,10 +121,4 @@ export function renderFilters(projectList, { filter = {}, hasOthers = false } = 
   if (hasOthers) chips.push(chip(`data-kb-filter="project" data-value="${OTHER_PROJECTS}"`, filter.project === OTHER_PROJECTS, 'Outros'));
   const needs = chip('data-kb-filter="needsMe"', Boolean(filter.needsMe), 'Só o que precisa de mim');
   return `<div class="kb-filters"><div class="kb-chips">${chips.join('')}</div>${needs}</div>`;
-}
-
-// Loading placeholder: shape-only rows.
-export function skeleton(kind = 'list', rows = 3) {
-  const row = '<div class="skeleton-row"><span class="skeleton-bar"></span><span class="skeleton-bar short"></span></div>';
-  return `<div class="skeleton skeleton-${escapeHtml(kind)}" aria-hidden="true">${row.repeat(Math.max(0, rows))}</div>`;
 }

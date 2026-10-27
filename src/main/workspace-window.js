@@ -21,6 +21,7 @@ export function createWorkspaceWindowManager({
   BrowserWindow,
   preloadPath,
   htmlPath,
+  bootQuery,
   loadBounds,
   saveBounds,
   onShow,
@@ -98,7 +99,7 @@ export function createWorkspaceWindowManager({
       crashed = true;
       onGone();
     });
-    win.loadFile(htmlPath);
+    win.loadFile(htmlPath, { query: bootQuery?.() ?? {} });
   }
 
   function show() {

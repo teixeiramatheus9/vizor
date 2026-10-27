@@ -1,7 +1,7 @@
 // The review screen's HTML builders: the file list and one file's diff. Pure
 // strings, like plan-view; every path, line and message goes through escapeHtml.
 import { escapeHtml } from '../workspace-view.js';
-import { skeleton } from '../agents/kanban-view.js';
+import { skeleton } from '../shared/skeleton.js';
 import { highlightLine, initialState } from './highlight.js';
 
 const MAX_VIEW_LINES = 3000;

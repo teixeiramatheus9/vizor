@@ -122,6 +122,7 @@ import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
 import { VOICES, speechLang } from './sherpa-installer.js';
 import { THEMES, PALETTES, backgroundFor } from './themes.js';
+import { bootQuery } from './workspace-boot.js';
 import { PANEL_SCALE, clampScale, panelSizeForScale } from './panel-size.js';
 import {
   anchorVisible,
@@ -1887,6 +1888,7 @@ workspaceWindow = workspaceAvailable(process.platform)
       BrowserWindow,
       preloadPath: path.join(rendererDir, 'workspace-preload.cjs'),
       htmlPath: path.join(rendererDir, 'workspace.html'),
+      bootQuery: () => bootQuery(managerConfig),
       loadBounds: () => {
         const saved = loadPersistedState().workspace ?? null;
         return boundsVisible(saved, screen.getAllDisplays()) ? saved : null;
