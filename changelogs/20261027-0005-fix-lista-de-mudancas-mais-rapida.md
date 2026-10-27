@@ -1,0 +1,1 @@
+- A lista de Mudanças abre mais rápido na primeira vez: o Vizor pede ao git, ao mesmo tempo, a base da revisão e os hunks já commitados, em vez de um depois do outro.

@@ -59,7 +59,7 @@ export function createReviewService({
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, refreshing: null, order: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, openRun: null, refreshing: null, order: null });
     }
     return states.get(wt);
   };
@@ -80,14 +80,16 @@ export function createReviewService({
     const s = stateOf(wt);
     s.base ??= (async () => {
       const config = await configOf(wt);
+      const probe = (candidate) => run(wt, ['merge-base', 'HEAD', candidate]).then((out) => out.trim(), () => '');
+      // The fixed candidates do not depend on the upstream: they are probed while
+      // it is asked for, so a repo without one resolves in a single round of git.
+      const probes = new Map(baseCandidates({ config }).map((candidate) => [candidate, probe(candidate)]));
       const upstream = (await run(wt, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).catch(() => '')).trim();
       // The branch name only matters to tell an upstream that is this branch pushed.
       const branch = upstream ? (await run(wt, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim() : '';
       for (const candidate of baseCandidates({ upstream, config, branch })) {
-        try {
-          const sha = (await run(wt, ['merge-base', 'HEAD', candidate])).trim();
-          if (sha) return { sha };
-        } catch { /* next candidate */ }
+        const sha = await (probes.get(candidate) ?? probe(candidate));
+        if (sha) return { sha };
       }
       return { error: BASE_ERROR };
     })();
@@ -226,13 +228,22 @@ export function createReviewService({
   const approxBytes = (file) => (file?.hunks ?? []).reduce((n, h) => n + h.header.length + h.lines.reduce((m, l) => m + l.text.length + 2, 0), 0);
 
   // HEAD→worktree hunk ids, one process for the whole worktree, per epoch.
-  async function openIds(wt) {
+  // Callers asking while the run is in flight share it.
+  function openIds(wt) {
     const s = stateOf(wt);
-    if (s.open?.epoch !== s.epoch) {
-      const head = parseUnifiedDiff(await run(wt, ['diff', '-U3', 'HEAD']));
-      s.open = { epoch: s.epoch, ids: new Set(head.flatMap((f) => f.hunks.map((h) => h.id))) };
+    if (s.open?.epoch === s.epoch) return Promise.resolve(s.open.ids);
+    if (s.openRun?.epoch !== s.epoch) {
+      const epoch = s.epoch;
+      const promise = run(wt, ['diff', '-U3', 'HEAD'])
+        .then((text) => {
+          const ids = new Set(parseUnifiedDiff(text).flatMap((f) => f.hunks.map((h) => h.id)));
+          if (s.epoch === epoch) s.open = { epoch, ids };
+          return ids;
+        })
+        .finally(() => { if (s.openRun?.promise === promise) s.openRun = null; });
+      s.openRun = { epoch, promise };
     }
-    return s.open.ids;
+    return s.openRun.promise;
   }
 
   // Every changed file's parsed patch from ONE `git diff -U3 <base>` (plus
@@ -240,15 +251,20 @@ export function createReviewService({
   async function ensurePatches(wt, sha, files, stamps) {
     const s = stateOf(wt);
     const cold = files.filter((f) => s.files.get(`p\0${suffix(sha, f.path, stamps.get(f.path))}`)?.lone !== false);
+    // The HEAD hunk ids are a separate git run: started together with the base
+    // diff, not after it (a cold list would otherwise wait for two in a row).
+    const full = cold.some((f) => !f.untracked) ? run(wt, ['diff', '-U3', sha]) : null;
+    const heads = openIds(wt);
+    heads.catch(() => {}); // awaited below; a base-diff failure must not leave it unhandled
     if (cold.length) {
-      const parsed = new Map(!cold.some((f) => !f.untracked) ? [] : parseUnifiedDiff(await run(wt, ['diff', '-U3', sha])).map((f) => [f.path, f]));
+      const parsed = new Map(full ? parseUnifiedDiff(await full).map((f) => [f.path, f]) : []);
       for (const f of cold) {
         const info = f.untracked ? await untrackedInfo(wt, f.path, s.untrackedSeen) : null;
         const file = info ? info.file : parsed.get(f.path) ?? null;
         s.files.set(`p\0${suffix(sha, f.path, stamps.get(f.path))}`, { file, untracked: f.untracked, bytes: info ? info.bytes : approxBytes(file), epoch: -1, committedIds: null, lone: false });
       }
     }
-    await openIds(wt);
+    await heads;
   }
 
   // Drop what no longer belongs: other bases, files that left the list, and
@@ -278,6 +294,8 @@ export function createReviewService({
   async function summarise(wt) {
     const base = await baseOf(wt);
     if (base.error) return emptySummary(wt, base.error);
+    // The HEAD hunk ids need no file list: that git run goes out alongside it.
+    openIds(wt).catch(() => {}); // ensurePatches shares it and reports a failure
     const files = await listChanged(wt, base.sha);
     // A cold graph starts building only after the answer is worked out: its parsing
     // and file reads would compete with the first list for the main thread.

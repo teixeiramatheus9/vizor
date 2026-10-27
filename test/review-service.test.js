@@ -39,7 +39,7 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
       const out = gitMap[key];
       if (out === undefined) throw new Error(`unexpected git ${key}`);
       if (out instanceof Error) throw out;
-      return out;
+      return typeof out === 'function' ? out() : out;
     },
     readFile: async (p) => { if (!(p in files)) throw new Error('ENOENT'); return files[p]; },
     stat: async (p) => { if (!(p in files)) throw new Error('ENOENT'); return { mtimeMs: 1, size: files[p].length }; },
@@ -67,6 +67,23 @@ describe('review service', () => {
     expect(s.files).toEqual([]);
   });
 
+  it('probes the fixed base candidates while it asks for the upstream, not one after the other', async () => {
+    let probedWhileUpstreamRuns = false;
+    const { service, calls } = setup({
+      files: { '/w/a.js': 'x' },
+      git: {
+        'rev-parse --abbrev-ref --symbolic-full-name @{upstream}': async () => {
+          for (let tick = 0; tick < 20 && !calls.some((c) => c.key === 'merge-base HEAD origin/main'); tick++) await new Promise((resolve) => setTimeout(resolve, 0));
+          probedWhileUpstreamRuns = calls.some((c) => c.key === 'merge-base HEAD origin/main');
+          throw new Error('no upstream');
+        },
+      },
+    });
+    const s = await service.summary(WT);
+    expect(probedWhileUpstreamRuns).toBe(true);
+    expect(s.base).toBe('BASE');
+  });
+
   it('never takes the current branch pushed as the base', async () => {
     const { service, calls } = setup({
       git: { 'rev-parse --abbrev-ref --symbolic-full-name @{upstream}': 'origin/feat/x\n', 'merge-base HEAD origin/feat/x': 'HEAD\n' },
@@ -86,7 +103,40 @@ describe('review service', () => {
     expect(s.order).toEqual(['a.js']);
     expect(s.request).toEqual({ wt: WT });
     expect(s.verdict.some((i) => i.key === 'tsc')).toBe(true);
-    expect(calls.filter((c) => c.key?.startsWith('diff -U3')).map((c) => c.key)).toEqual(['diff -U3 BASE', 'diff -U3 HEAD']);
+    expect(calls.filter((c) => c.key?.startsWith('diff -U3')).map((c) => c.key).sort()).toEqual(['diff -U3 BASE', 'diff -U3 HEAD']);
+  });
+
+  it('asks for the HEAD hunk ids while the base diff is still running, not after it', async () => {
+    let headSeenWhileBaseRuns = false;
+    const { service, calls } = setup({
+      files: { '/w/a.js': 'x' },
+      git: {
+        'diff -U3 BASE': async () => {
+          for (let tick = 0; tick < 20 && !calls.some((c) => c.key === 'diff -U3 HEAD'); tick++) await new Promise((resolve) => setTimeout(resolve, 0));
+          headSeenWhileBaseRuns = calls.some((c) => c.key === 'diff -U3 HEAD');
+          return PATCH;
+        },
+      },
+    });
+    await service.summary(WT);
+    expect(headSeenWhileBaseRuns).toBe(true);
+  });
+
+  it('asks for the HEAD hunk ids while the file list is still being read', async () => {
+    let headSeenWhileListing = false;
+    const { service, calls } = setup({
+      files: { '/w/a.js': 'x' },
+      git: {
+        'diff --raw --numstat -z -M BASE': async () => {
+          for (let tick = 0; tick < 20 && !calls.some((c) => c.key === 'diff -U3 HEAD'); tick++) await new Promise((resolve) => setTimeout(resolve, 0));
+          headSeenWhileListing = calls.some((c) => c.key === 'diff -U3 HEAD');
+          return ':100644 100644 a b M\0a.js\x001\t1\ta.js\0';
+        },
+      },
+    });
+    await service.summary(WT);
+    expect(headSeenWhileListing).toBe(true);
+    expect(calls.filter((c) => c.key === 'diff -U3 HEAD')).toHaveLength(1); // shared, not run twice
   });
 
   it('counts hunks from one full diff, prunes the store and serves file() warm', async () => {
