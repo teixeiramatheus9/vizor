@@ -3669,11 +3669,16 @@ ipcMain.on('agents:dismiss', (event, sessionId) => {
 // Esc into the chat's own pty; a chat outside the Vizor has none to write to.
 ipcMain.handle('agents:interrupt', (event, sessionId) => {
   if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
-  const ptyId = linkedSession(sessionId)?.term?.VIZOR_PTY_ID;
-  return ptyId && maestroInterrupt(ptyId) ? 'interrupted' : 'failed';
+  const session = linkedSession(sessionId);
+  const ptyId = session?.term?.VIZOR_PTY_ID;
+  // Esc only means "stop the turn" while a turn is running.
+  if (session?.status !== 'working' || !ptyId) return 'failed';
+  return maestroInterrupt(ptyId) ? 'interrupted' : 'failed';
 });
 ipcMain.handle('agents:answer', async (event, sessionId, text) => {
   if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
+  // A tombstone has no chat left to hear the reply.
+  if (registry.sessions.get(sessionId)?.status === 'failed') return 'failed';
   const outcome = await quickReply(sessionId, text);
   if (outcome === 'sent' || outcome === 'pasted') registry.markSeen(sessionId);
   return outcome;

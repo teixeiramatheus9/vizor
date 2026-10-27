@@ -135,6 +135,18 @@ describe('agents controller', () => {
     expect(api.agentsInterrupt).toHaveBeenCalledWith('s1');
   });
 
+  it('says so when the interrupt is refused', async () => {
+    const { el, api, listeners, controller } = setup();
+    api.agentsInterrupt.mockResolvedValue('failed');
+    controller.setState({ sessions: [session()] });
+    controller.setVisible(true);
+    click(listeners, actionButton('interrupt', 's1'));
+    click(listeners, actionButton('interrupt-confirm', 's1'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(el.innerHTML).toContain('não deu pra interromper');
+  });
+
   it('answers through the reply box and closes it when sent', async () => {
     const { el, api, listeners, controller } = setup();
     controller.setState({ sessions: [session({ status: 'waiting', question: 'Qual?' })] });

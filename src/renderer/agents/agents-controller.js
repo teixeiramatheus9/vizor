@@ -165,7 +165,13 @@ export function createAgentsController({
       ui.answering = null;
     } else if (action === 'interrupt-confirm') {
       ui.confirming = null;
-      api.agentsInterrupt(sessionId);
+      ui.error = null;
+      Promise.resolve(api.agentsInterrupt(sessionId)).then((outcome) => {
+        if (outcome !== 'failed') return;
+        ui.error = { id: sessionId, text: 'não deu pra interromper' };
+        lastHtml = null;
+        render();
+      });
     } else if (action === 'cancel') {
       ui.answering = null;
       ui.confirming = null;

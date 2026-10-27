@@ -76,6 +76,7 @@ function renderCard(card, projects, now, ui = {}) {
     card.guardAsk ? renderGuardCard(card.guardAsk) : '',
     reply,
     `<div class="kb-actions">${buttons}</div>`,
+    ui.error?.id === card.id && ui.answering !== card.id ? `<span class="kb-error" role="alert">${escapeHtml(ui.error.text)}</span>` : '',
     '</article>',
   ].join('');
 }
