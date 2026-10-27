@@ -60,6 +60,31 @@
   --fs-sm: 12.5px;
   --fs-base: 14px;
   --fs-lg: 16px;
+  /* motion: one length for every short transition (transform/opacity only) */
+  --motion: 150ms;
+  /* spacing scale; the compact density shrinks it */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --row-h: 26px;
+}
+
+/* Compact density (workspace pref): back near the old size, tighter rows. */
+body[data-density='compact'] {
+  --fs-xs: 10.5px;
+  --fs-sm: 11.5px;
+  --fs-base: 12.5px;
+  --fs-lg: 14px;
+  --sp-1: 3px;
+  --sp-2: 5px;
+  --sp-3: 8px;
+  --row-h: 22px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion: 0ms;
+  }
 }
 
 body[data-palette='ambar'] {

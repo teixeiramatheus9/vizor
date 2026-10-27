@@ -105,8 +105,10 @@ export function createReviewController({ api, doc = document, notify = () => {},
   let prefsSerial = 0;
   const serial = { summary: 0, file: 0, slice: 0 };
   let summary = null;
+  let summaryLoading = false; // first load of this worktree: a skeleton, not an empty list
   let selectedPath = null;
   let fileView = null;
+  let openedPath = null; // the diff fades in when another file opens, not on every live redraw
   let fileDrawn = null; // what the diff panel shows now, as JSON: an unchanged answer is not redrawn
   let selectedHunk = null; // { id, path, newStart, newLines }
   let pendingReject = null;
@@ -210,6 +212,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
   // --- worktree and prefs ------------------------------------------------------
   function resetWorktreeState() {
     summary = null;
+    summaryLoading = false;
     selectedPath = null;
     fileView = null;
     fileDrawn = null;
@@ -269,8 +272,13 @@ export function createReviewController({ api, doc = document, notify = () => {},
   async function loadSummary() {
     const mine = ++serial.summary;
     const wt = worktree;
+    if (!summary && wt) {
+      summaryLoading = true;
+      drawList();
+    }
     const result = await api.reviewSummary(wt);
     if (mine !== serial.summary || wt !== worktree) return;
+    summaryLoading = false;
     summary = result;
     drawSummary();
     drawList();
@@ -291,7 +299,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     if (tab !== 'changes') return;
     const files = nodeFilter ? (summary?.files ?? []).filter((f) => nodeFilter.files.includes(f.path)) : summary?.files ?? [];
     const top = filesEl.scrollTop;
-    filesEl.innerHTML = summary?.baseError ? `<div class="review-empty">${escapeHtml(summary.baseError)}</div>` : renderFileList(files, summary?.order, { selectedPath, approvedByFile: progress, filter });
+    filesEl.innerHTML = summary?.baseError ? `<div class="review-empty">${escapeHtml(summary.baseError)}</div>` : renderFileList(files, summary?.order, { selectedPath, approvedByFile: progress, filter, loading: summaryLoading });
     filesEl.scrollTop = top;
     nodeFilterEl.innerHTML = nodeFilter
       ? `<span class="node-filter">filtro: ${escapeHtml(nodeFilter.label)} <button data-review-action="clear-node-filter" title="Tirar o filtro">×</button></span>`
@@ -336,6 +344,10 @@ export function createReviewController({ api, doc = document, notify = () => {},
       );
     }
     diffEl.scrollTop = top;
+    if (fileView.path !== openedPath) {
+      openedPath = fileView.path;
+      for (const child of diffEl.children ?? []) child.classList?.add('opening');
+    }
     // From a node: the first hunk inside its lines, in view and selected.
     if (nodeFilter?.range && !selectedHunk && fileView.path === selectedPath) {
       const hunk = fileView.hunks?.find((h) => hunkInRange(h, nodeFilter.range));

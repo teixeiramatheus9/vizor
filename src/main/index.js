@@ -2062,6 +2062,7 @@ function pushWorkspaceStateNow() {
     plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
+    density: managerConfig.density,
     ...avatarsPayload(projects),
   });
   // A session in a known repo that matches no worktree: one was probably
@@ -3268,6 +3269,7 @@ function applyConfig(partial) {
   }
   if (Number.isFinite(partial?.panelScale)) allowed.panelScale = clampScale(partial.panelScale);
   if (typeof partial?.crt === 'boolean') allowed.crt = partial.crt;
+  if (partial?.density === 'comfortable' || partial?.density === 'compact') allowed.density = partial.density;
   if (typeof partial?.autoUpdate === 'boolean') allowed.autoUpdate = partial.autoUpdate;
   if (typeof partial?.announceWhenFocusUnknown === 'boolean')
     allowed.announceWhenFocusUnknown = partial.announceWhenFocusUnknown;

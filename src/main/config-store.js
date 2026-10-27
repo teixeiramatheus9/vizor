@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG = {
   theme: DEFAULT_THEME,
   palette: DEFAULT_PALETTE,
   crt: false,
+  density: 'comfortable', // workspace density: 'comfortable' | 'compact'
   panelScale: PANEL_SCALE.default,
   muted: false,
   soundVolume: 70,
@@ -44,6 +45,7 @@ export function loadConfig(file) {
     // Hand-edited lists must not break the workspace (#105).
     config.workspaceProjects = stringList(config.workspaceProjects);
     config.workspaceDismissed = stringList(config.workspaceDismissed);
+    if (!['comfortable', 'compact'].includes(config.density)) config.density = 'comfortable';
     // A voice that was dropped (Faber, #161) must not stick in the settings.
     if (!VOICES[config.voice]) config.voice = DEFAULT_VOICE;
     return config;

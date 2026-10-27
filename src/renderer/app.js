@@ -712,6 +712,9 @@ function applyTheme(theme, palette) {
     : '[testar voz]';
 }
 
+const densitySelect = document.getElementById('density');
+densitySelect.addEventListener('change', () => window.manager.setConfig({ density: densitySelect.value }));
+
 // The tube is orthogonal to the palette: it rides over whichever theme is on.
 const crtCheckbox = document.getElementById('crt');
 const crtState = document.getElementById('crt-state');
@@ -1001,6 +1004,7 @@ window.manager.getConfig().then((config) => {
   paletteSelect.value = config.palette;
   applyTheme(config.theme, config.palette);
   applyCrt(config.crt);
+  densitySelect.value = config.density ?? 'comfortable';
   const range = config.panelScaleRange;
   if (range) {
     panelScaleInput.min = String(range.min);

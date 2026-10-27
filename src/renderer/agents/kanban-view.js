@@ -89,7 +89,8 @@ function passes(card, filter) {
   return true;
 }
 
-export function renderKanban(cards, { filter = {}, projects = {}, now = Date.now(), ui = {} } = {}) {
+export function renderKanban(cards, { filter = {}, projects = {}, now = Date.now(), ui = {}, loading = false } = {}) {
+  if (loading) return skeleton('board', 4);
   const shown = (cards ?? []).filter((card) => passes(card, filter));
   if (!shown.length) {
     return '<div class="kb-empty empty-state">nenhum agente rodando</div>';

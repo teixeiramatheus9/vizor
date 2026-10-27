@@ -1,0 +1,3 @@
+- O workspace ganhou movimento curto e suave (abas, gaveta, toasts e abrir arquivo), que fica parado se o sistema pedir menos movimento.
+- Mudanças, Agentes e GitHub mostram um esqueleto enquanto os dados chegam, e as listas vazias dizem o próximo passo.
+- Nova densidade compacta do workspace, em Configurações > aparência > workspace: fonte menor e linhas mais justas.

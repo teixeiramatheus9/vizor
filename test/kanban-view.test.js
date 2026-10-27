@@ -19,6 +19,11 @@ describe('renderKanban', () => {
   it('shows the empty state', () => {
     expect(renderKanban([], { now: NOW })).toContain('nenhum agente rodando');
   });
+  it('shows a skeleton, not the empty state, until the first state arrives', () => {
+    const html = renderKanban([], { now: NOW, loading: true });
+    expect(html).toContain('skeleton');
+    expect(html).not.toContain('nenhum agente rodando');
+  });
   it('escapes every field', () => {
     const evil = '<img src=x onerror=alert(1)>';
     const html = renderKanban([card({ id: evil, title: evil, branch: evil, question: evil, planProgress: evil })], {

@@ -33,6 +33,7 @@ export function createAgentsController({
   let timer = null;
   let lastHtml = null;
   let rendered = false;
+  let hasState = false; // until the first push the board is a skeleton, not "nenhum agente"
   const filter = { project: null, needsMe: false };
   const ui = { answering: null, confirming: null, error: null };
   const marked = new Map(); // session id -> the updatedAt it was last marked seen at
@@ -105,7 +106,7 @@ export function createAgentsController({
     const all = cards();
     const html = [
       renderFilters(projectList(), { filter, hasOthers: all.some((card) => card.projectRoot === null) }),
-      renderKanban(all, { filter, projects: projects(), now: now(), ui }),
+      renderKanban(all, { filter, projects: projects(), now: now(), ui, loading: !hasState }),
     ].join('');
     schedule();
     if (html === lastHtml) return;
@@ -225,6 +226,7 @@ export function createAgentsController({
 
   return {
     setState(next) {
+      hasState = true;
       sessions = next.sessions ?? [];
       plans = next.plans ?? {};
       guardAsks = next.guardAsks ?? [];

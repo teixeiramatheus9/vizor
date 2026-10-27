@@ -85,7 +85,7 @@ button:hover {
   border: none;
   border-bottom: 2px solid transparent;
   border-radius: 0;
-  padding: 4px 12px;
+  padding: var(--sp-1) var(--sp-3);
   color: var(--text-3);
 }
 
@@ -173,7 +173,7 @@ button:hover {
 }
 
 .fold .icon {
-  transition: transform 0.12s ease;
+  transition: transform var(--motion) ease;
 }
 
 .fold[aria-expanded='true'] .icon {
@@ -1103,7 +1103,7 @@ body[data-maestro='true'] .maestro-only {
   right: 12px;
   z-index: 3;
   pointer-events: none;
-  transition: transform 0.15s ease-out;
+  transition: transform var(--motion) ease-out;
 }
 #maestro-balloon .balloon {
   pointer-events: auto;
@@ -1579,8 +1579,8 @@ svg.graph line.call.picked {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 26px;
-  padding: 0 8px;
+  min-height: var(--row-h);
+  padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
   border-left: 2px solid transparent;
@@ -2040,8 +2040,8 @@ select.composer-target {
 .kb-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
   background: var(--ws-raised);
   border: 1px solid var(--ws-line);
   border-left: 3px solid var(--project-accent, var(--ws-border));
@@ -2350,7 +2350,7 @@ body[data-palette='giz'] #view-github {
 }
 
 .gh-item {
-  padding: 6px 8px;
+  padding: var(--sp-1) var(--sp-2);
   border: 1px solid transparent;
   border-radius: 6px;
   background: var(--ws-raised);
@@ -2484,8 +2484,8 @@ body[data-palette='giz'] #view-github {
 /* Skeletons: a quiet pulse (opacity only), still under reduced motion. */
 .skeleton-row {
   display: flex;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
 }
 
 .skeleton-bar {
@@ -2513,5 +2513,43 @@ body[data-palette='giz'] #view-github {
 @media (prefers-reduced-motion: reduce) {
   .skeleton-bar {
     animation: none;
+  }
+}
+
+/* --- short motion (#smoothness): opacity/transform only, never layout, a single
+   animation per surface (not per row), and none at all under reduced motion. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
+
+.view:not([hidden]),
+#terminal-drawer.open #terminal-pane {
+  animation: fade-in var(--motion) ease-out;
+}
+
+#changes-diff > .opening {
+  animation: fade-in var(--motion) ease-out;
+}
+
+#command-toast:not([hidden]) {
+  animation: toast-in var(--motion) ease-out;
+}
+
+/* Last in the file so it wins: every transition and animation off. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
   }
 }

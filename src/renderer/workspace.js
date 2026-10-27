@@ -740,13 +740,14 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState, avatars }) => {
+window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars }) => {
   if (avatars) avatarUris = avatars;
   plans = planState ?? {};
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;
   if (palette) document.body.dataset.palette = palette;
+  document.body.dataset.density = density === 'compact' ? 'compact' : 'comfortable';
   lastTree = tree;
   agents.setState({ sessions: agentSessions, plans, guardAsks });
   terminals = list ?? [];
