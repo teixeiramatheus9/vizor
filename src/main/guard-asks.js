@@ -32,6 +32,7 @@ export function createGuardAsks({
   onChange = () => {},
   onReleased = () => {},
   onPromote = () => {},
+  automationNameOf = () => null,
 } = {}) {
   const asks = new Map(); // id → { ask, request, reply, shown }
   const grants = new Set();
@@ -74,7 +75,7 @@ export function createGuardAsks({
         ruleSource: request.ruleSource ?? '',
         explain: request.explain ?? '',
         irreversible: Boolean(request.irreversible),
-        ...(request.automationId ? { automationId: String(request.automationId) } : {}),
+        ...(request.automationId ? { automationId: String(request.automationId), automationName: automationNameOf(String(request.automationId)) ?? undefined } : {}),
         at: now(),
       };
       const entry = { ask, request, reply, shown: !duplicate };

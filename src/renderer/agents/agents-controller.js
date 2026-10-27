@@ -29,6 +29,7 @@ export function createAgentsController({
   let sessions = [];
   let plans = {};
   let guardAsks = [];
+  let automationRuns = []; // running automações, cards of their own
   let visible = false;
   let timer = null;
   let lastHtml = null;
@@ -42,7 +43,12 @@ export function createAgentsController({
 
   function cards() {
     const at = now();
-    return sessions.map((session) => {
+    // The question of an automação's step sits on its card.
+    const runCards = automationRuns.map((run) => {
+      const guardAsk = guardAsks.find((ask) => ask.automationId === run.automationId);
+      return { ...run, actions: [], ...(guardAsk ? { guardAsk } : {}) };
+    });
+    const chatCards = sessions.map((session) => {
       const plan = plans[session.id] ?? null;
       const guardAsk = guardOf(session.id);
       const card = sessionCard(session, { project: session.project, plan, guardAsk, now: at });
@@ -52,6 +58,7 @@ export function createAgentsController({
       if (plan && !plan.approved && card.column !== 'failed') card.actions.push('approve-plan');
       return card;
     });
+    return [...runCards, ...chatCards];
   }
 
   function counts() {
@@ -236,6 +243,7 @@ export function createAgentsController({
       sessions = next.sessions ?? [];
       plans = next.plans ?? {};
       guardAsks = next.guardAsks ?? [];
+      automationRuns = next.automationRuns ?? [];
       // A session that left must not keep a reply box or a confirmation open.
       for (const key of ['answering', 'confirming']) if (ui[key] && !sessions.some((session) => session.id === ui[key])) ui[key] = null;
       render();

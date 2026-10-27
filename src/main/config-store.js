@@ -20,6 +20,7 @@ export const DEFAULT_CONFIG = {
   ttsEnabled: false,
   typeVolumes: { start: 100, done: 100, question: 100, waiting: 100 },
   tokenBudgetDaily: 100000,
+  automationDayCapUsd: 5, // the automações' own daily cap, in US$
   shortcuts: { ...DEFAULT_SHORTCUTS },
   autoUpdate: true,
   bridgeAutoSetupDone: false,
@@ -45,6 +46,7 @@ export function loadConfig(file) {
     // Hand-edited lists must not break the workspace (#105).
     config.workspaceProjects = stringList(config.workspaceProjects);
     config.workspaceDismissed = stringList(config.workspaceDismissed);
+    if (!(config.automationDayCapUsd >= 0.5 && config.automationDayCapUsd <= 100)) config.automationDayCapUsd = DEFAULT_CONFIG.automationDayCapUsd;
     if (!['comfortable', 'compact'].includes(config.density)) config.density = 'comfortable';
     // A voice that was dropped (Faber, #161) must not stick in the settings.
     if (!VOICES[config.voice]) config.voice = DEFAULT_VOICE;

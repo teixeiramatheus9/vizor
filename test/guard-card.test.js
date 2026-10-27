@@ -15,6 +15,20 @@ const ask = (overrides = {}) => ({
 });
 
 describe('renderGuardCard', () => {
+  it('an automação ask names it, escapes the name and has no session grant', () => {
+    const html = renderGuardCard(ask({ automationId: 'a1', automationName: 'PRs <b>da</b> manhã' }));
+    expect(html).toContain('a automação PRs &lt;b&gt;da&lt;/b&gt; manhã quer…');
+    expect(html).not.toContain('Posso seguir?');
+    expect(html).not.toContain('liberar-sessao');
+    expect(html).toContain('data-guard-choice="liberar"');
+    expect(html).toContain('data-guard-choice="barrar"');
+    expect(renderGuardCard(ask({ automationId: 'a1' }))).toContain('uma automação quer…');
+  });
+
+  it('speaks an automação ask by its name', () => {
+    expect(guardSpeech(ask({ automationId: 'a1', automationName: 'Lint' }))).toBe('A automação Lint quer rodar kubectl --context prod apply. Posso seguir?');
+  });
+
   it('shows the project, the call, the rule and the three choices', () => {
     const html = renderGuardCard(ask());
     expect(html).toContain('Posso seguir?');

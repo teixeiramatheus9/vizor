@@ -252,4 +252,34 @@ describe('agents controller', () => {
     click(listeners, { '[data-kb-filter]': { dataset: { kbFilter: 'needsMe' } } });
     expect(el.innerHTML).toContain('nenhum agente rodando');
   });
+
+  it('draws a running automação as a card with the "automação" badge, in Trabalhando', () => {
+    const { el, controller } = setup({ projects: () => ({ '/p/a': { name: 'a' } }) });
+    controller.setVisible(true);
+    controller.setState({
+      sessions: [],
+      automationRuns: [{ id: 'automation:a1', automationId: 'a1', column: 'working', title: 'PRs <b>', projectRoot: '/p/a', avatarKey: '/p/a', since: NOW - MIN, late: true, waiting: false, badge: 'automação' }],
+    });
+    expect(el.innerHTML).toContain('kb-automation');
+    expect(el.innerHTML).toContain('>automação<');
+    expect(el.innerHTML).toContain('atrasada');
+    expect(el.innerHTML).toContain('PRs &lt;b&gt;');
+    expect(el.innerHTML).not.toContain('nenhum agente rodando');
+    // it leaves the board when it ends
+    controller.setState({ sessions: [], automationRuns: [] });
+    expect(el.innerHTML).toContain('nenhum agente rodando');
+  });
+
+  it('puts the automação\'s own guard question on its card', () => {
+    const { el, controller } = setup();
+    controller.setVisible(true);
+    const run = { id: 'automation:a1', automationId: 'a1', column: 'waiting', title: 'PRs', projectRoot: null, avatarKey: null, since: NOW, waiting: true, badge: 'automação' };
+    const ask = { id: 'g1', sessionId: 'zzz', cwd: '/p/a', tool: 'Bash', summary: 'gh pr comment 1', ruleSource: 'r', irreversible: false, automationId: 'a1', automationName: 'PRs' };
+    controller.setState({ sessions: [], automationRuns: [run], guardAsks: [ask, { ...ask, id: 'g2', automationId: 'other', summary: 'rm' }] });
+    expect(el.innerHTML).toContain('a automação PRs quer…');
+    expect(el.innerHTML).toContain('gh pr comment 1');
+    expect(el.innerHTML).not.toContain('liberar-sessao');
+    expect(el.innerHTML).not.toContain('>rm<');
+  });
 });
+

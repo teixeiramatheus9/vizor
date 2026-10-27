@@ -47,6 +47,15 @@ describe('guard asks', () => {
     expect(asks.add(request({ sessionId: 's2' }), reply()).id).toBeDefined();
   });
 
+  it('an automação ask carries the automação name when the host knows it', () => {
+    const asks = createGuardAsks({ now: () => 1000, newId: () => 'n1', automationNameOf: (id) => (id === 'auto-1' ? 'PRs da manhã' : null) });
+    asks.add(request({ automationId: 'auto-1' }), () => {});
+    expect(asks.pending()[0]).toMatchObject({ automationId: 'auto-1', automationName: 'PRs da manhã' });
+    const none = createGuardAsks({ now: () => 1000, newId: () => 'n2' });
+    none.add(request({ automationId: 'gone' }), () => {});
+    expect(none.pending()[0].automationName).toBeUndefined();
+  });
+
   it('an irreversible ask is never granted for the session', () => {
     const { asks, reply } = setup();
     const { id } = asks.add(request({ irreversible: true, ruleId: 'main', target: 'main' }), reply());

@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('vizor', {
   automationsRemove: (id, { removeSkill = false, removeWorktree = false } = {}) => ipcRenderer.invoke('automations:remove', { id, removeSkill, removeWorktree }),
   automationsRun: (id) => ipcRenderer.invoke('automations:run', id),
   automationsPause: (id, on) => ipcRenderer.invoke('automations:pause', { id, on }),
+  automationsSetDayCap: (usd) => ipcRenderer.invoke('automations:set-day-cap', usd),
   automationsConfirm: (id) => ipcRenderer.invoke('automations:confirm', id),
   automationsCancel: (id) => ipcRenderer.invoke('automations:cancel', id),
   automationsHistory: (id) => ipcRenderer.invoke('automations:history', id),

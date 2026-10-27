@@ -12,6 +12,7 @@ const EDITABLE = ['name', 'prompt', 'projectRoot', 'when', 'level', 'model', 'ca
 const BLOCKING = new Set(['over-cap', 'timeout']);
 const DAY_MS = 24 * 3600000;
 
+export const DAY_CAP_RANGE = { min: 0.5, max: 100 };
 export const READ_ERROR = 'não deu pra ler as automações; nada foi gravado pra não perder o que existe';
 const GUARD_NOT_READY = 'A trava ainda não está instalada no Claude Code; a automação não rodou pra não ficar sem freio. Tente de novo em instantes.';
 const GUARD_OFF = 'A trava está desligada: assim, só o nível "Ler e relatar" pode ser usado. Ligue a trava pra editar numa worktree ou no projeto.';
@@ -32,7 +33,7 @@ const capOf = (a) => (Number.isFinite(a?.capUsd) && a.capUsd > 0 ? a.capUsd : 1)
 export function createAutomationService({
   store, runner, budget, history, schedule, permissions, worktree, skills, writeGuardRules,
   inflight, mkdir, notify = () => {}, commandsOf = async () => ({}), removeWorktree = async () => {},
-  guardEnabled = () => true, guardReady = () => true, baseEnv = () => ({}), log = () => {},
+  saveDayCap = async () => {}, guardEnabled = () => true, guardReady = () => true, baseEnv = () => ({}), log = () => {},
   now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout,
 }) {
   let items = [];
@@ -429,6 +430,25 @@ export function createAutomationService({
       return { ok: true };
     },
 
+    // The tab's "subir teto": the day cap, validated and kept in the config.
+    async setDayCap(value) {
+      const usd = typeof value === 'number' ? Math.round(value * 100) / 100 : NaN;
+      if (!Number.isFinite(usd) || usd < DAY_CAP_RANGE.min || usd > DAY_CAP_RANGE.max) return fail('O teto do dia deve ficar entre US$ 0,50 e US$ 100.');
+      try {
+        await saveDayCap(usd);
+      } catch (error) {
+        log(`automations: day cap save failed (${error})`);
+        return fail('Não deu pra gravar o teto do dia.');
+      }
+      budget.setCap(usd);
+      // Runs held by the old cap get their turn now.
+      budgetPausedDay = null;
+      drain();
+      arm();
+      emit();
+      return { ok: true, cap: usd };
+    },
+
     async confirm(id) {
       const result = await store.patch(id, { blockedUntilConfirm: false }).catch(() => fail('Não deu pra gravar a confirmação.'));
       if (!result.ok) return result;
@@ -493,6 +513,7 @@ export function createAutomationService({
     },
 
     count: () => items.length,
+    nameOf: (id) => find(id)?.name ?? null,
     state() {
       const at = now();
       const list = items.map((a) => {
@@ -514,6 +535,8 @@ export function createAutomationService({
         budget: { spent, cap: budget.capUsd, paused: Boolean(budgetPausedDay && budgetPausedDay === dayKey(at)) || spent >= budget.capUsd },
         nextAt: nexts.length ? Math.min(...nexts) : null,
         readError,
+        // The tab disables the levels that edit while the guard is off.
+        guardEnabled: guardEnabled(),
       };
     },
   };

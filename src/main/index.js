@@ -488,6 +488,7 @@ const guardAsks = createGuardAsks({
   onReleased: (request, choice) => recordGuardOutcome({ ...request, summary: guardSummary(request) }, GUARD_OUTCOMES[choice]),
   // The announced ask left without settling its twin: announce the twin.
   onPromote: (ask) => announceGuardAsk(ask),
+  automationNameOf: (id) => automations.nameOf(id),
 });
 
 // Guard state read by guardStatus(), which sendState() calls: declared here,
@@ -533,6 +534,7 @@ async function automationProjectConfig(root) {
 
 const automationBudget = createDailyBudget({
   file: path.join(automationsDir, 'gasto-do-dia.json'),
+  capUsd: managerConfig.automationDayCapUsd,
   readFile: (file) => fs.readFileSync(file, 'utf8'),
   writeFile: (file, text) => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -614,6 +616,11 @@ const automations = createAutomationService({
     const result = await automationGit(['worktree', 'remove', dir], { cwd: a.projectRoot });
     if (result.code !== 0) throw new Error(`git worktree remove exited ${result.code}`);
   },
+  saveDayCap: async (usd) => {
+    const next = { ...managerConfig, automationDayCapUsd: usd };
+    saveConfig(configFile, next);
+    managerConfig = next;
+  },
   guardEnabled: () => managerConfig.guardEnabled !== false,
   guardReady: guardHookInSettings,
   baseEnv: () => process.env,
@@ -672,6 +679,11 @@ ipcMain.handle('automations:pause', async (event, payload) => {
   const { id, on } = payload;
   await automationsReady;
   return automations.pause(id, on);
+});
+ipcMain.handle('automations:set-day-cap', async (event, usd) => {
+  if (!fromWorkspace(event)) return { ok: false, error: 'Pedido inválido.' };
+  await automationsReady;
+  return automations.setDayCap(usd);
 });
 ipcMain.handle('automations:confirm', async (event, id) => {
   if (!fromWorkspace(event) || !automationId(id)) return { ok: false, error: 'Automação inválida.' };
@@ -2710,7 +2722,7 @@ ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}
 
 const INSPECTOR_MODES = ['arquivo', 'cards'];
 const INSPECTOR_WIDTHS = ['compact', 'wide', 'collapsed'];
-const TOP_TABS = ['workspace', 'agents', 'github'];
+const TOP_TABS = ['workspace', 'agents', 'github', 'automations'];
 
 ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
   const saved = loadPersistedState().workspaceInspector ?? {};

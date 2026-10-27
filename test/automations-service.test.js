@@ -33,7 +33,7 @@ function fakeRunner() {
   return runner;
 }
 
-function setup({ automations = [], guardEnabled = true, guardReady = true, inflight = [], budgetFile = null, rulesFail = false, storeOverride = null } = {}) {
+function setup({ automations = [], guardEnabled = true, guardReady = true, inflight = [], budgetFile = null, rulesFail = false, storeOverride = null, saveDayCap } = {}) {
   const store = storeOverride ?? memStore(automations);
   const runner = fakeRunner();
   let budgetText = budgetFile;
@@ -60,6 +60,7 @@ function setup({ automations = [], guardEnabled = true, guardReady = true, infli
     inflight: inflightIo, mkdir, notify,
     commandsOf: async () => ({ testCmd: 'npm test', lintCmd: null }),
     removeWorktree: vi.fn(async () => {}),
+    ...(saveDayCap ? { saveDayCap } : {}),
     guardEnabled: () => guardEnabled,
     guardReady: () => guardReady,
     baseEnv: () => ({ HOME: '/home/u', PATH: '/bin' }),
@@ -105,6 +106,9 @@ describe('automation service', () => {
     const st = t.service.state();
     expect(st.list[0]).toMatchObject({ running: null, last: expect.objectContaining({ status: 'ok' }), next: T0 + 30 * MIN });
     expect(st.budget).toMatchObject({ spent: 0.25, cap: 5, paused: false });
+    expect(st.guardEnabled).toBe(true);
+    expect(t.service.nameOf(id)).toBe('PRs da manhã');
+    expect(t.service.nameOf('nope')).toBeNull();
     expect(vi.getTimerCount()).toBe(1);
   });
 
@@ -250,6 +254,33 @@ describe('automation service', () => {
     await vi.advanceTimersByTimeAsync(15 * MIN);
     expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A', 'B']);
     expect(t.service.state().budget.paused).toBe(false);
+  });
+
+  it('raising the day cap persists it, validates the range and lets the held runs go', async () => {
+    const day = `${new Date(T0).getFullYear()}-10-27`;
+    const saved = [];
+    const t2 = setup({ budgetFile: JSON.stringify({ day, spent: 4.5 }), saveDayCap: async (usd) => { saved.push(usd); } });
+    await t2.service.start();
+    await t2.service.save(base({ name: 'A', projectRoot: '/work/a' }));
+    await vi.advanceTimersByTimeAsync(15 * MIN);
+    expect(t2.runner.run).not.toHaveBeenCalled();
+    expect(t2.service.state().budget.paused).toBe(true);
+    for (const bad of [0.4, 100.5, NaN, '9', null, undefined]) {
+      expect((await t2.service.setDayCap(bad)).ok).toBe(false);
+    }
+    expect(saved).toEqual([]);
+    expect(await t2.service.setDayCap(8)).toEqual({ ok: true, cap: 8 });
+    expect(saved).toEqual([8]);
+    await flush();
+    expect(t2.runner.run).toHaveBeenCalledOnce();
+    expect(t2.service.state().budget).toMatchObject({ cap: 8, paused: false });
+  });
+
+  it('keeps the old cap when saving the new one fails', async () => {
+    const t = setup({ saveDayCap: async () => { throw new Error('disk'); } });
+    await t.service.start();
+    expect((await t.service.setDayCap(9)).ok).toBe(false);
+    expect(t.service.state().budget.cap).toBe(5);
   });
 
   it('quit cancels every run, stops the scheduler, and a crash leaves "cancelled" for the next start', async () => {

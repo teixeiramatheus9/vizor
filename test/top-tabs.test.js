@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { TOP_TABS, normalizeTopTab, topTabTitle, renderTopTabs } from '../src/renderer/shell/top-tabs.js';
 
 describe('top tabs', () => {
-  it('has Workspace, Agentes and GitHub, in that order', () => {
-    expect(TOP_TABS.map((tab) => tab.id)).toEqual(['workspace', 'agents', 'github']);
+  it('has Workspace, Agentes, GitHub and Automações, in that order', () => {
+    expect(TOP_TABS.map((tab) => tab.id)).toEqual(['workspace', 'agents', 'github', 'automations']);
   });
 
   it('puts the waiting count in the Agentes title only when someone is waiting', () => {
@@ -22,10 +22,13 @@ describe('top tabs', () => {
 
   it('renders one button per tab and marks the active one', () => {
     const html = renderTopTabs('agents', { waiting: 1 });
-    expect(html.match(/data-top-tab=/g)).toHaveLength(3);
+    expect(html.match(/data-top-tab=/g)).toHaveLength(4);
     expect(html).toContain('data-top-tab="agents" aria-selected="true"');
     expect(html).toContain('data-top-tab="github" aria-selected="false"');
     expect(html).toContain('Agentes · 1 esperando');
     expect(html).toContain('Ctrl+1');
+    expect(html).toContain('data-top-tab="automations" aria-selected="false"');
+    expect(html).toContain('Ctrl+4');
+    expect(html).toContain('Automações');
   });
 });

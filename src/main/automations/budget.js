@@ -2,7 +2,8 @@
 // restart does not hand out a fresh cap. IO injected; a corrupt file reads as 0.
 const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-export function createDailyBudget({ file, readFile, writeFile, now = () => new Date(), capUsd = 5 }) {
+export function createDailyBudget({ file, readFile, writeFile, now = () => new Date(), capUsd: initialCap = 5 }) {
+  let capUsd = initialCap;
   let day = null;
   let total = 0;
   const load = () => {
@@ -32,6 +33,7 @@ export function createDailyBudget({ file, readFile, writeFile, now = () => new D
     },
     // Whether a run capped at capOfRun still fits in today's cap.
     allows(capOfRun) { roll(); return total + capOfRun <= capUsd + 1e-9; },
-    capUsd,
+    get capUsd() { return capUsd; },
+    setCap(usd) { if (Number.isFinite(usd) && usd > 0) capUsd = usd; },
   };
 }

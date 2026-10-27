@@ -36,6 +36,8 @@ import { renderStatusBar } from './shell/status-bar.js';
 import { keyAction, renderShortcuts } from './shell/shortcuts.js';
 import { createAgentsController } from './agents/agents-controller.js';
 import { createGithubController } from './github/github-controller.js';
+import { createAutomationsController } from './automations/automations-controller.js';
+import { nextLabel } from './automations/automations-view.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -345,6 +347,7 @@ function accentOf(uri) {
         renderSidebarOnly();
         agents.refresh();
         github.refresh();
+        automations.refresh();
       }
     } catch {
       // no canvas readback: the monogram colour stays
@@ -384,8 +387,9 @@ function drawTopTabs() {
 // no timer. A click on the agents part opens the Agentes tab.
 const statusBarEl = document.getElementById('status-bar');
 let statusTokens = { used: 0, cap: 0 };
+let nextAutomationAt = null; // from the state push; the status line's "próxima automação"
 function drawStatusBar() {
-  const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), nextAutomation: null });
+  const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), nextAutomation: nextAutomationAt != null ? { at: nextLabel(nextAutomationAt, Date.now()) } : null });
   if (statusBarEl.innerHTML !== html) statusBarEl.innerHTML = html;
 }
 statusBarEl.addEventListener('click', (event) => {
@@ -429,9 +433,34 @@ const github = createGithubController({
   openWorkspace: () => setTopTab('workspace'),
   notify: (text) => toast(text),
 });
+// The Automações tab reads and keeps its 1 s running clock only while on screen.
+const automations = createAutomationsController({
+  el: document.getElementById('view-automations'),
+  regions: { top: document.getElementById('au-top'), list: document.getElementById('au-list'), side: document.getElementById('au-side') },
+  api: window.vizor,
+  projects: agentProjects,
+  // "abrir na revisão": the Workspace tab on the automação's worktree.
+  openReview: (worktree) => {
+    setTopTab('workspace');
+    selectedWorktree = worktree;
+    selectedId = null;
+    selectInspectorSession(null);
+    render();
+    reportSelection();
+  },
+  notify: (text) => toast(text),
+});
+window.vizor.onAutomationsChanged((next) => {
+  automations.setState(next);
+  nextAutomationAt = next?.nextAt ?? null;
+  drawStatusBar();
+});
+// The command bar and the first visit know the automações from the start.
+automations.load();
 const syncGithubVisibility = () => github.setVisible(topTab === 'github' && !document.hidden);
 const syncAgentsVisibility = () => {
   agents.setVisible(topTab === 'agents' && !document.hidden);
+  automations.setVisible(topTab === 'automations' && !document.hidden);
   syncGithubVisibility();
 };
 document.addEventListener('visibilitychange', syncAgentsVisibility);
@@ -753,7 +782,7 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars, tokens }) => {
+window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars, tokens, automationRuns, nextAutomationAt: nextAt }) => {
   if (avatars) avatarUris = avatars;
   plans = planState ?? {};
   renderGuardAsks(guardAsks);
@@ -762,7 +791,8 @@ window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTe
   if (palette) document.body.dataset.palette = palette;
   document.body.dataset.density = density === 'compact' ? 'compact' : 'comfortable';
   lastTree = tree;
-  agents.setState({ sessions: agentSessions, plans, guardAsks });
+  agents.setState({ sessions: agentSessions, plans, guardAsks, automationRuns });
+  nextAutomationAt = nextAt ?? null;
   if (tokens) statusTokens = tokens;
   drawStatusBar();
   terminals = list ?? [];
@@ -1229,6 +1259,7 @@ function refreshCommandList() {
     plans,
     focusedId: planSessionId(),
     maestroOn: maestro.on,
+    automations: automations.list(),
   });
   commandShown = filterCommands(items, commandInput.value);
   commandSelected = Math.max(0, commandShown.findIndex((item) => !item.disabled));
@@ -1272,9 +1303,12 @@ async function runCommandItem(item) {
   const { action } = item;
   // Everything but "ir pra <tela>" acts on the Workspace (drawer, chat, plan):
   // show it first so the user sees the result.
-  setTopTab(action.type === 'goto-tab' ? action.tab : 'workspace');
+  const onAutomations = action.type === 'new-automation' || action.type === 'run-automation';
+  setTopTab(action.type === 'goto-tab' ? action.tab : onAutomations ? 'automations' : 'workspace');
   closeCommandBar();
   if (action.type === 'goto-tab') return;
+  if (action.type === 'new-automation') return automations.startNew();
+  if (action.type === 'run-automation') return automations.runNow(action.id);
   if (action.type === 'focus') {
     showDrawer();
     if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
