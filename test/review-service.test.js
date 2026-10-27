@@ -91,6 +91,16 @@ describe('review service', () => {
     expect(calls.some((c) => c.key === 'cat-file --batch')).toBe(true);
   });
 
+  it('orders a file with a changed export line first on a cold open, before any analysis', async () => {
+    const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
+    const patch = (name, line) => `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n@@ -1,1 +1,1 @@\n-old\n+${line}\n`;
+    const { service } = setup({
+      git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': patch('a.js', 'const x = 1;') + patch('b.js', 'export function f() {}') },
+      files: { '/w/a.js': 'y', '/w/b.js': 'z' },
+    });
+    expect((await service.summary(WT)).order).toEqual(['b.js', 'a.js']);
+  });
+
   it.each([[300, ['b.js', 'a.js']], [1500, ['a.js', 'b.js']]])('settles the provisional order only when the analysis lands within 1 s (at %i ms)', async (lateness, expected) => {
     const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
     let clock = 0;

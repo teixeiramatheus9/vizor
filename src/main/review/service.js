@@ -20,6 +20,7 @@ const MAX_VIEW_LINES = 3000;
 const BASE_TEXT_CACHE = 500;
 const CHUNK = 8;
 const SETTLE_MS = 1000;
+const EXPORT_LINE = /^\s*(export\b|module\.exports\b)/;
 const SOURCE = /\.(m|c)?[jt]sx?$/;
 const STATUS = { A: 'added', C: 'added', D: 'deleted', R: 'renamed' };
 
@@ -292,6 +293,14 @@ export function createReviewService({
     }
   }
 
+  // A cheap guess at "this file changes a contract", from the patch already in
+  // hand (no parsing): package.json, a schema path, or an added/removed export line.
+  function likelyContract(wt, sha, file, stamp) {
+    if (path.posix.basename(file.path) === 'package.json' || isSchemaPath(file.path)) return true;
+    const patch = stateOf(wt).files.get(`p\0${suffix(sha, file.path, stamp)}`)?.file;
+    return Boolean(patch?.hunks.some((h) => h.lines.some((l) => (l.kind === '+' || l.kind === '-') && EXPORT_LINE.test(l.text))));
+  }
+
   // The analysis of a file only when it is already worked out for this graph:
   // the summary never waits for it.
   function cachedAnalysis(wt, sha, file, graph, stamp) {
@@ -370,11 +379,13 @@ export function createReviewService({
     // later than that the dev may already be reading, so the provisional order is
     // frozen (badges and verdict still update). Freezing the cold order outright
     // would lose contract-first on every first open.
+    // Files not analysed yet count as contract when they look like it.
+    const contractPaths = [...new Set([...contract.map((c) => c.path), ...files.filter((f, i) => !analysed[i] && likelyContract(wt, base.sha, f, stamps.get(f.path))).map((f) => f.path)])];
     const set = files.map((f) => f.path).sort().join('\0');
     if (s.order?.set !== set) {
-      s.order = { set, provisional: pending, at: now(), paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+      s.order = { set, provisional: pending, at: now(), paths: readingOrder(files, { graph, contractPaths }).map((f) => f.path) };
     } else if (s.order.provisional) {
-      if (now() - s.order.at <= SETTLE_MS) s.order = { set, provisional: pending, at: s.order.at, paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+      if (now() - s.order.at <= SETTLE_MS) s.order = { set, provisional: pending, at: s.order.at, paths: readingOrder(files, { graph, contractPaths }).map((f) => f.path) };
       else s.order.provisional = false;
     }
     const order = s.order.paths;

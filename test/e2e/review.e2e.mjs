@@ -128,10 +128,8 @@ try {
   await ws.click('[data-review-tab="changes"]');
   await ws.waitForSelector('#changes-files .review-file');
   const order = await ws.$$eval('#changes-files .review-file', (rows) => rows.map((row) => row.dataset.path));
-  // Contract-first is settled only when the analysis lands within 1 s of the first
-  // answer (unit-tested): under this loaded cold start it can miss, so the order is
-  // not pinned here, only the files and their contract badges.
-  assert.deepEqual(new Set(order), new Set(['package.json', 'src/lib.ts', 'src/app.ts']));
+  assert.deepEqual(new Set(order.slice(0, 2)), new Set(['package.json', 'src/lib.ts']));
+  assert.equal(order[2], 'src/app.ts');
   const badged = await ws.$$eval('#changes-files .review-file', (rows) => rows.filter((row) => row.querySelector('.contract-badge')).map((row) => row.dataset.path));
   assert.deepEqual(new Set(badged), new Set(['package.json', 'src/lib.ts']));
   await ws.click('#changes-files .review-file[data-path="src/lib.ts"]');
