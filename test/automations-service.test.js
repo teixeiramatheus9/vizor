@@ -33,14 +33,15 @@ function fakeRunner() {
   return runner;
 }
 
-function setup({ automations = [], guardEnabled = true, inflight = [], budgetFile = null, rulesFail = false, storeOverride = null } = {}) {
+function setup({ automations = [], guardEnabled = true, guardReady = true, inflight = [], budgetFile = null, rulesFail = false, storeOverride = null } = {}) {
   const store = storeOverride ?? memStore(automations);
   const runner = fakeRunner();
   let budgetText = budgetFile;
   const budget = createDailyBudget({ file: 'b', readFile: () => { if (budgetText == null) throw new Error('none'); return budgetText; }, writeFile: (_f, t) => { budgetText = t; }, now: () => new Date() });
   const entries = [];
+  const inflightAtAppend = [];
   const history = {
-    append: vi.fn(async (id, entry) => { const saved = { ...entry, at: new Date().toISOString(), report: 'r.md' }; entries.push({ id, ...saved }); return saved; }),
+    append: vi.fn(async (id, entry) => { inflightAtAppend.push(structuredClone(pending)); const saved = { ...entry, at: new Date().toISOString(), report: 'r.md' }; entries.push({ id, ...saved }); return saved; }),
     list: vi.fn(async (id, { limit = 20 } = {}) => entries.filter((e) => e.id === id).reverse().slice(0, limit)),
     read: vi.fn(async () => null),
   };
@@ -60,11 +61,12 @@ function setup({ automations = [], guardEnabled = true, inflight = [], budgetFil
     commandsOf: async () => ({ testCmd: 'npm test', lintCmd: null }),
     removeWorktree: vi.fn(async () => {}),
     guardEnabled: () => guardEnabled,
+    guardReady: () => guardReady,
     baseEnv: () => ({ HOME: '/home/u', PATH: '/bin' }),
     log: () => {},
     now: Date.now, setTimer: setTimeout, clearTimer: clearTimeout,
   });
-  return { service, store, runner, budget, history, entries, skills, rulesDocs, writeGuardRules, order, inflight: inflightIo, pending: () => pending, worktree, mkdir, notify };
+  return { inflightAtAppend, service, store, runner, budget, history, entries, skills, rulesDocs, writeGuardRules, order, inflight: inflightIo, pending: () => pending, worktree, mkdir, notify };
 }
 
 const base = (over = {}) => ({ name: 'PRs da manhã', prompt: 'Resuma as PRs.', projectRoot: '/work/app', when: { kind: 'every', minutes: 15 }, ...over });
@@ -242,7 +244,10 @@ describe('automation service', () => {
     expect(t.notify).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(1);
     // Midnight: a fresh day, the queue drains.
+    // Midnight: a fresh day; each held slot is left to its next regular one (15 min on).
     await vi.advanceTimersByTimeAsync(new Date(2026, 9, 28, 0, 1).getTime() - Date.now());
+    expect(t.runner.run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(15 * MIN);
     expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A', 'B']);
     expect(t.service.state().budget.paused).toBe(false);
   });
@@ -387,6 +392,96 @@ describe('automation service', () => {
     expect(t.service.state().list).toEqual([]);
     expect(t.service.state().nextAt).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('automation service: review fixes', () => {
+  it('reserves the caps of runs in flight against the day', async () => {
+    const t = setup({ budgetFile: JSON.stringify({ day: '2026-10-27', spent: 3.5 }) });
+    await t.service.start();
+    await t.service.save(base({ name: 'A', projectRoot: '/work/a' }));
+    await t.service.save(base({ name: 'B', projectRoot: '/work/b' }));
+    await vi.advanceTimersByTimeAsync(15 * MIN);
+    // 3.5 + 1 fits; 3.5 + 1 + 1 does not, even before the first one spends.
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A']);
+    // Waiting on a run in flight is not the day's pause.
+    expect(t.notify).not.toHaveBeenCalled();
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0.2 });
+    await flush();
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A', 'B']);
+  });
+
+  it('refuses edit-level runs while the guard hook is not confirmed installed', async () => {
+    const t = setup({ guardReady: false });
+    await t.service.start();
+    const p = (await t.service.save(base({ level: 'project' }))).automation.id;
+    const r = (await t.service.save(base({ name: 'Leitura', projectRoot: '/work/b' }))).automation.id;
+    await t.service.runNow(p);
+    await t.service.runNow(r);
+    await flush();
+    expect(t.runner.runs.map((x) => x.automation.id)).toEqual([r]);
+    expect(t.entries.find((e) => e.id === p)).toMatchObject({ status: 'failed', reason: expect.stringMatching(/trava/) });
+  });
+
+  it('load() reads everything before start() schedules anything', async () => {
+    const t = setup({ automations: [{ ...base(), id: 'e1', createdAt: T0 - 10 * 60 * MIN, lastRun: T0 - 5 * 60 * MIN }] });
+    await t.service.load();
+    expect(t.service.count()).toBe(1);
+    await flush();
+    expect(t.runner.run).not.toHaveBeenCalled();
+    await t.service.start();
+    await flush();
+    expect(t.runner.run).toHaveBeenCalledOnce();
+  });
+
+  it('wake() keeps a single timer', async () => {
+    const t = setup();
+    await t.service.start();
+    await t.service.save(base());
+    expect(vi.getTimerCount()).toBe(1);
+    t.service.wake();
+    t.service.wake();
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('at the day change a held daily slot is left to its next slot, a held weekly one runs late once', async () => {
+    const t = setup({ budgetFile: JSON.stringify({ day: '2026-10-27', spent: 4.5 }) });
+    vi.setSystemTime(new Date(2026, 9, 27, 7, 0).getTime());
+    await t.service.start();
+    await t.service.save(base({ name: 'Diária', projectRoot: '/work/a', when: { kind: 'daily', at: '08:00' } }));
+    await t.service.save(base({ name: 'Semanal', projectRoot: '/work/b', when: { kind: 'days', days: [2], at: '08:00' } }));
+    await vi.advanceTimersByTimeAsync(60 * MIN + 1);
+    expect(t.runner.run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(new Date(2026, 9, 28, 0, 5).getTime() - Date.now());
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['Semanal']);
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    expect(t.entries[0]).toMatchObject({ name: 'Semanal', late: true });
+    await vi.advanceTimersByTimeAsync(new Date(2026, 9, 28, 8, 1).getTime() - Date.now());
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['Semanal', 'Diária']);
+  });
+
+  it('drops the inflight record before writing history', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    expect(t.inflightAtAppend).toEqual([[]]);
+  });
+
+  it('resume() undoes a shutdown whose quit was cancelled', async () => {
+    const t = setup();
+    await t.service.start();
+    await t.service.save(base());
+    await t.service.shutdown();
+    expect(vi.getTimerCount()).toBe(0);
+    t.service.resume();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(15 * MIN);
+    expect(t.runner.run).toHaveBeenCalledOnce();
   });
 });
 

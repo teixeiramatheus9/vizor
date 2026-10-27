@@ -10,8 +10,10 @@ const LATE_TOLERANCE_MS = 5 * 60000;
 const EDIT_LEVELS = new Set(['worktree', 'project']);
 const EDITABLE = ['name', 'prompt', 'projectRoot', 'when', 'level', 'model', 'capUsd', 'timeoutMin', 'missed', 'skillScope'];
 const BLOCKING = new Set(['over-cap', 'timeout']);
+const DAY_MS = 24 * 3600000;
 
 export const READ_ERROR = 'não deu pra ler as automações; nada foi gravado pra não perder o que existe';
+const GUARD_NOT_READY = 'A trava ainda não está instalada no Claude Code; a automação não rodou pra não ficar sem freio. Tente de novo em instantes.';
 const GUARD_OFF = 'A trava está desligada: assim, só o nível "Ler e relatar" pode ser usado. Ligue a trava pra editar numa worktree ou no projeto.';
 
 const NOTICE = {
@@ -30,18 +32,19 @@ const capOf = (a) => (Number.isFinite(a?.capUsd) && a.capUsd > 0 ? a.capUsd : 1)
 export function createAutomationService({
   store, runner, budget, history, schedule, permissions, worktree, skills, writeGuardRules,
   inflight, mkdir, notify = () => {}, commandsOf = async () => ({}), removeWorktree = async () => {},
-  guardEnabled = () => true, baseEnv = () => ({}), log = () => {},
+  guardEnabled = () => true, guardReady = () => true, baseEnv = () => ({}), log = () => {},
   now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout,
 }) {
   let items = [];
   let readError = null;
+  let loaded = false;
   let started = false;
   let stopped = false;
   let timer = null;
   let budgetPausedDay = null; // the day the queue hit the daily cap
   const floor = new Map(); // id → instant up to which slots were already handled
   const last = new Map(); // id → newest history entry
-  const queue = []; // [{ id, late }]
+  const queue = []; // [{ id, late, slot, manual, held }]
   const running = new Map(); // id → { id, name, root, startedAt, late, capUsd, denials, cancelRequested }
   const rules = {}; // id → guardRules(...), the regras.json body
   const listeners = new Set();
@@ -75,13 +78,36 @@ export function createAutomationService({
     return a.missed === 'run' && missed != null ? 'late' : 'skip';
   }
 
+  const lateSlot = (a, at) => schedule.missedRun(a.when, { lastRun: Math.max(a.lastRun ?? a.createdAt, floor.get(a.id) ?? -Infinity), createdAt: a.createdAt, now: at });
+
+  // A new day after the daily cap held the queue: a held slot whose next
+  // regular slot comes within a day of it is left to that slot (no 00:00 run
+  // and another at 08:00); the others run once, late. A manual run stays.
+  function releaseHeld(at) {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const q = queue[i];
+      if (!q.held) continue;
+      q.held = false;
+      if (q.manual) { q.late = true; continue; }
+      const a = find(q.id);
+      const regular = a ? schedule.nextRun(a.when, { from: at, lastRun: at }) : null;
+      if (!a || a.missed === 'skip' || (regular != null && regular <= q.slot + DAY_MS)) {
+        queue.splice(i, 1);
+        floor.set(q.id, at);
+      } else {
+        q.late = true;
+      }
+    }
+  }
+
   function collectDue() {
     const at = now();
     for (const a of items) {
       if (!schedulable(a)) continue;
       const action = dueAction(a, at);
       if (action === 'skip') floor.set(a.id, at);
-      else if (action) queue.push({ id: a.id, late: action === 'late' });
+      else if (action === 'late') queue.push({ id: a.id, late: true, slot: lateSlot(a, at) ?? at });
+      else if (action) queue.push({ id: a.id, late: false, slot: nextOf(a) });
     }
   }
 
@@ -113,13 +139,22 @@ export function createAutomationService({
 
   function drain() {
     if (stopped) return;
-    if (budgetPausedDay && budgetPausedDay !== dayKey(now())) budgetPausedDay = null;
+    if (budgetPausedDay && budgetPausedDay !== dayKey(now())) {
+      budgetPausedDay = null;
+      releaseHeld(now());
+    }
     while (running.size < MAX_RUNNING) {
       const busy = new Set([...running.values()].map((r) => r.root));
       const index = queue.findIndex((q) => { const a = find(q.id); return a && !busy.has(a.projectRoot); });
       if (index < 0) break;
       const a = find(queue[index].id);
+      // The caps of the runs in flight are spoken for: two runs starting
+      // together must not take the day past its cap.
+      const reserved = [...running.values()].reduce((sum, r) => sum + r.capUsd, 0);
+      // Only waiting for a run in flight to settle what it really spent.
+      if (budget.allows(capOf(a)) && !budget.allows(capOf(a) + reserved)) break;
       if (!budget.allows(capOf(a))) {
+        for (const q of queue) q.held = true;
         if (!budgetPausedDay) {
           budgetPausedDay = dayKey(now());
           notify({ status: 'day-cap', name: null, text: DAY_CAP_NOTICE });
@@ -157,6 +192,8 @@ export function createAutomationService({
 
   async function perform(a, r) {
     if (EDIT_LEVELS.has(a.level) && !guardEnabled()) return { status: 'failed', reason: GUARD_OFF };
+    // The CLI flags alone are not enough for a level that edits: the hook must be in place.
+    if (EDIT_LEVELS.has(a.level) && !guardReady()) return { status: 'failed', reason: GUARD_NOT_READY };
     const patched = await store.patch(a.id, { lastRun: r.startedAt }).catch((error) => ({ ok: false, error: String(error) }));
     if (!patched.ok) log(`automations: could not save lastRun for ${a.id} (${patched.error})`);
     r.recorded = true;
@@ -232,13 +269,16 @@ export function createAutomationService({
       // An empty result lets the report show the reason instead.
       result: outcome.result || undefined,
     };
+    // Off the inflight file first: a quit between the two loses the entry
+    // rather than recording (and charging) the run twice.
+    r.recorded = false;
+    await saveInflight();
     try {
       last.set(a.id, await history.append(a.id, entry));
     } catch (error) {
       log(`automations: history append failed for ${a.id} (${error})`);
     }
     running.delete(a.id);
-    await saveInflight();
     if (NOTICE[status]) notify({ status, name: a.name, id: a.id, text: NOTICE[status](a.name) });
     await refresh().catch((error) => log(`automations: list failed (${error})`));
     drain();
@@ -249,8 +289,11 @@ export function createAutomationService({
   return {
     on(event, fn) { if (event === 'changed') listeners.add(fn); return () => listeners.delete(fn); },
 
-    async start() {
-      if (started) return;
+    // Reads the automações (and settles leftovers) without scheduling, so the
+    // caller can install the guard hook before anything runs.
+    async load() {
+      if (loaded) return;
+      loaded = true;
       readError = (await store.readError?.()) ? READ_ERROR : null;
       await refresh();
       // Runs a quit or crash cut short: recorded as cancelled, their cap counted.
@@ -268,6 +311,11 @@ export function createAutomationService({
         if (entry) last.set(a.id, entry);
       }
       await writeRules().catch((error) => log(`automations: guard rules write failed (${error})`));
+    },
+
+    async start() {
+      if (started) return;
+      await this.load();
       started = true;
       collectDue();
       drain();
@@ -362,7 +410,7 @@ export function createAutomationService({
       if (a.blockedUntilConfirm) return fail('Esta automação passou do teto ou do tempo: confirme antes de rodar de novo.');
       if (running.has(id)) return fail('Ela já está rodando.');
       if (isQueued(id)) return fail('Ela já está na fila.');
-      queue.push({ id, late: false });
+      queue.push({ id, late: false, slot: now(), manual: true });
       drain();
       arm();
       emit();
@@ -430,7 +478,19 @@ export function createAutomationService({
       runner.killAllNow();
     },
     // After a resume from suspend: recheck the clock now.
-    wake() { if (started && !stopped) tick(); },
+    wake() {
+      if (!started || stopped) return;
+      if (timer !== null) clearTimer(timer);
+      timer = null;
+      tick();
+    },
+    // The quit did not go through: schedule again.
+    resume() {
+      if (!stopped) return;
+      stopped = false;
+      arm();
+      emit();
+    },
 
     count: () => items.length,
     state() {

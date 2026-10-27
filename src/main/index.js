@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildHookCommand, ensureGuard, ensureHooks, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
+import { buildHookCommand, ensureGuard, ensureHooks, isGuardCommand, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand, installGuardScript } from './guard-runtime.js';
 import { createGuardAsks, isGuardChoice } from './guard-asks.js';
 import { createRulesStore, pruneSeenSessions } from './rules-store.js';
@@ -614,9 +614,16 @@ const automations = createAutomationService({
     if (result.code !== 0) throw new Error(`git worktree remove exited ${result.code}`);
   },
   guardEnabled: () => managerConfig.guardEnabled !== false,
+  guardReady: guardHookInSettings,
   baseEnv: () => process.env,
   log,
 });
+// Read from settings.json, not from guardInstalled: a failed write leaves that flag set.
+function guardHookInSettings() {
+  if (!guardInstalled) return false;
+  const groups = readClaudeSettings()?.hooks?.PreToolUse;
+  return Array.isArray(groups) && groups.some((group) => Array.isArray(group?.hooks) && group.hooks.some((hook) => isGuardCommand(hook?.command)));
+}
 let markAutomationsReady;
 const automationsReady = new Promise((resolve) => {
   markAutomationsReady = resolve;
@@ -648,8 +655,9 @@ ipcMain.handle('automations:save', async (event, automation) => {
   await automationsReady;
   return automations.save(automation);
 });
-ipcMain.handle('automations:remove', async (event, { id, removeSkill: dropSkill, removeWorktree: dropWorktree } = {}) => {
-  if (!fromWorkspace(event) || !automationId(id)) return { ok: false, error: 'Automação inválida.' };
+ipcMain.handle('automations:remove', async (event, payload) => {
+  if (!fromWorkspace(event) || !plainObject(payload) || !automationId(payload.id)) return { ok: false, error: 'Automação inválida.' };
+  const { id, removeSkill: dropSkill, removeWorktree: dropWorktree } = payload;
   await automationsReady;
   return automations.remove(id, { removeSkill: dropSkill === true, removeWorktree: dropWorktree === true });
 });
@@ -658,8 +666,9 @@ ipcMain.handle('automations:run', async (event, id) => {
   await automationsReady;
   return automations.runNow(id);
 });
-ipcMain.handle('automations:pause', async (event, { id, on } = {}) => {
-  if (!fromWorkspace(event) || !automationId(id) || typeof on !== 'boolean') return { ok: false, error: 'Automação inválida.' };
+ipcMain.handle('automations:pause', async (event, payload) => {
+  if (!fromWorkspace(event) || !plainObject(payload) || !automationId(payload.id) || typeof payload.on !== 'boolean') return { ok: false, error: 'Automação inválida.' };
+  const { id, on } = payload;
   await automationsReady;
   return automations.pause(id, on);
 });
@@ -678,8 +687,9 @@ ipcMain.handle('automations:history', async (event, id) => {
   return automationHistory.list(id, { limit: 50 });
 });
 // Report text only: the renderer shows it through renderSafeMarkdown.
-ipcMain.handle('automations:report', async (event, { id, file } = {}) => {
-  if (!fromWorkspace(event) || !automationId(id) || typeof file !== 'string') return null;
+ipcMain.handle('automations:report', async (event, payload) => {
+  if (!fromWorkspace(event) || !plainObject(payload) || !automationId(payload.id) || typeof payload.file !== 'string') return null;
+  const { id, file } = payload;
   return automationHistory.read(id, file);
 });
 // The gerente rewrites the request as a skill body, once: lean runClaude
@@ -2573,6 +2583,8 @@ const quitFreeze = createQuitFreeze({
     log('quit did not go through: workspace tab saves resume');
     tabsFrozen = false;
     scheduleTabsSave();
+    // The automações were stopped for the quit: schedule them again.
+    automations.resume();
   },
   hold: () => {
     clearTimeout(tabsSaveTimer);
@@ -5327,17 +5339,19 @@ app.whenReady().then(() => {
   renewMacosGrantAfterUpdate();
   ensureHooksInstalled();
   bootSyncRules();
-  // The guard hook waits for the automações: one of them is enough to need it,
-  // and syncing before they load would remove it and add it back on every boot.
+  // The guard hook is synced once the automações are read (one of them is
+  // enough to need it) and before any of them is scheduled to run.
   automations
-    .start()
-    .catch((error) => log(`automations start failed: ${error?.stack ?? error}`))
-    .finally(() => {
-      markAutomationsReady();
+    .load()
+    .catch((error) => log(`automations load failed: ${error?.stack ?? error}`))
+    .then(() => {
       automationCountSynced = automations.count();
       syncGuardHook();
       sendState();
-    });
+      return automations.start();
+    })
+    .catch((error) => log(`automations start failed: ${error?.stack ?? error}`))
+    .finally(() => markAutomationsReady());
   // The scheduler's timer does not run while the machine sleeps: recheck on wake.
   powerMonitor.on('resume', () => automations.wake());
   autoSetupBridgeOnWayland();
