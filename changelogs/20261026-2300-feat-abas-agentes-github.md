@@ -7,3 +7,4 @@
 - Mudanças, Agentes e GitHub mostram um esqueleto enquanto os dados chegam, e as listas vazias dizem o próximo passo.
 - Nova densidade compacta do workspace, em Configurações > aparência > workspace: fonte menor e linhas mais justas.
 - A lista de Mudanças abre mais rápido na primeira vez: o Vizor pede ao git, ao mesmo tempo, a base da revisão e os hunks já commitados, e responde o resumo antes da análise de contratos.
+- A bolha não fica mais amarela com o aviso de "esperando" que o Claude Code manda um minuto depois de um chat terminar: amarelo agora é só pergunta, pedido de permissão ou a trava.
