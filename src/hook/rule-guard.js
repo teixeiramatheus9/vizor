@@ -242,18 +242,15 @@ function checkoutOf(gitDir) {
   return match[1] === '' ? '/' : match[1];
 }
 
-// target: the branch named (null = the current one); targets: every branch a
-// multi-refspec push names; unknown: the branch cannot be read from the line
-// ($var, --all, gh pr merge) — a guard that is unsure asks.
-export function parseGitAction(segment) {
-  const tokens = withoutRedirections(words(segment)).map((token) => token.text);
-  if (tokens[0] === 'gh' && tokens[1] === 'pr' && tokens[2] === 'merge')
-    return { action: 'pr-merge', target: null, targets: [], force: false, unknown: true, dir: '' };
-  if (tokens[0] !== 'git') return null;
+// A git line's global options (tokens[0] is git): where it runs (as the
+// command names it, '' = the shell's directory, null = unknown), its -c
+// settings, and where the subcommand starts.
+function gitGlobals(tokens) {
   let index = 1;
   let cDir = ''; // git -C: relative to the shell's directory
   let workTree;
   let gitDir;
+  const configs = [];
   // Global options before the subcommand; the value-taking ones come as
   // "--opt value" or "--opt=value", and must not be read as the subcommand.
   while (index < tokens.length && tokens[index].startsWith('-')) {
@@ -269,10 +266,22 @@ export function parseGitAction(segment) {
     if (name === '-C') cDir = joinDir(cDir, value);
     else if (name === '--work-tree') workTree = value;
     else if (name === '--git-dir') gitDir = value;
+    else if (name === '-c' || name === '--config-env') configs.push(value ?? '');
   }
   // Where it runs: the work tree, else the checkout around the git dir.
   const place = workTree !== undefined ? workTree : gitDir !== undefined ? checkoutOf(gitDir) : '';
-  const dir = joinDir(cDir, place);
+  return { index, dir: joinDir(cDir, place), configs };
+}
+
+// target: the branch named (null = the current one); targets: every branch a
+// multi-refspec push names; unknown: the branch cannot be read from the line
+// ($var, --all, gh pr merge) — a guard that is unsure asks.
+export function parseGitAction(segment) {
+  const tokens = withoutRedirections(words(segment)).map((token) => token.text);
+  if (tokens[0] === 'gh' && tokens[1] === 'pr' && tokens[2] === 'merge')
+    return { action: 'pr-merge', target: null, targets: [], force: false, unknown: true, dir: '' };
+  if (tokens[0] !== 'git') return null;
+  const { index, dir } = gitGlobals(tokens);
   const sub = tokens[index];
   const args = tokens.slice(index + 1);
   const positional = args.filter((arg) => !arg.startsWith('-'));
@@ -439,6 +448,537 @@ export function evaluate({ rules, call, git }) {
   return ask;
 }
 
+// --- Automações (VIZOR_AUTOMATION) ------------------------------------------
+// An automação's `claude -p` carries VIZOR_AUTOMATION=<id>, and the Vizor
+// writes what each id may do to <configDir>/automacoes/regras.json:
+//   { "version": 1, "automations": { "<id>": { "id", "level",
+//     "denyAlways": [...], "denyGhWrite": bool, "denyEdits": bool,
+//     "allowEditsUnder": "/abs/worktree" | null } } }
+// These only deny, and hold before the user's own rules. The CLI flags are
+// the first barrier; this is the one that must hold, so a line the guard
+// cannot read is denied rather than waved through.
+
+const LEVEL_LABEL = { read: 'ler', worktree: 'worktree', project: 'projeto' };
+const MAX_NESTING = 8;
+const OPAQUE = Symbol('opaque');
+const SHELL_NAMES = new Set([...SHELLS, 'ksh', 'mksh', 'ash', 'fish']);
+// Shell options that take a value (bash -o pipefail -c …).
+const SHELL_VALUE_OPTIONS = new Set(['-o', '+o', '-O', '+O', '--rcfile', '--init-file']);
+// The never-list Task 4 writes; each is read for what it means, not as text.
+const KNOWN_NEVER = new Set([
+  'git push', 'git merge', '--force', 'gh pr merge',
+  'git branch -D', 'git branch -d', 'git reset --hard', 'git clean -f', 'git push --force-with-lease',
+]);
+
+// /usr/bin/git and git are the same program.
+const programOf = (word) => path.basename(String(word ?? ''));
+
+// <(…) and >(…) run too.
+function processSubstitutions(command) {
+  const found = [];
+  let quote = null;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote) quote = null;
+      else if (char === '\\' && quote === '"') index++;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === '\\') index++;
+    else if ((char === '<' || char === '>') && command[index + 1] === '(') {
+      let depth = 0;
+      let close = -1;
+      for (let inner = index + 1; inner < command.length; inner++) {
+        if (command[inner] === '(') depth++;
+        else if (command[inner] === ')' && --depth === 0) {
+          close = inner;
+          break;
+        }
+      }
+      if (close === -1) break;
+      found.push(command.slice(index + 2, close));
+      index = close;
+    }
+  }
+  return found;
+}
+
+// The value of an option given as "-o v", "-ov" (short) or "--opt=v".
+function optionValues(args, names) {
+  const values = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    for (const name of names) {
+      if (arg === name) values.push(args[index + 1] ?? '');
+      else if (name.startsWith('--') && arg.startsWith(`${name}=`)) values.push(arg.slice(name.length + 1));
+      else if (!name.startsWith('--') && arg.startsWith(name) && arg.length > name.length) values.push(arg.slice(name.length));
+    }
+  }
+  return values;
+}
+
+// Arguments that are not options nor the values of `valueOptions`.
+function positionals(args, valueOptions = new Set()) {
+  const found = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (valueOptions.has(arg)) index++;
+    else if (!arg.startsWith('-')) found.push(arg);
+  }
+  return found;
+}
+
+// Command strings a segment hands to something else to run, or OPAQUE when
+// it runs text the guard cannot see (a shell fed from stdin).
+function innerCommands(all, rest) {
+  const inner = [];
+  all.forEach((word, index) => {
+    if (programOf(word) !== 'env') return;
+    for (let next = index + 1; next < all.length && all[next].startsWith('-'); next++) {
+      inner.push(...optionValues([all[next], all[next + 1] ?? ''], ['-S', '--split-string']).slice(0, 1));
+    }
+  });
+  const program = programOf(rest[0]);
+  const args = rest.slice(1);
+  if (SHELL_NAMES.has(program)) {
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
+      if (SHELL_VALUE_OPTIONS.has(arg)) {
+        index++;
+        continue;
+      }
+      if (/^-[A-Za-z]*c[A-Za-z]*$/.test(arg)) return args[index + 1] === undefined ? OPAQUE : [...inner, args[index + 1]];
+      if (arg === '--' || !/^[-+]/.test(arg)) return inner; // a script file: not read (known gap)
+    }
+    return OPAQUE; // `echo 'git push' | sh`
+  }
+  if (program === 'eval') inner.push(args.join(' '));
+  if (program === 'su' || program === 'runuser' || program === 'script') inner.push(...optionValues(args, ['-c', '--command']));
+  if (program === 'watch') inner.push(positionals(args, new Set(['-n', '--interval', '-d'])).join(' '));
+  if (program === 'find') {
+    args.forEach((arg, index) => {
+      if (!['-exec', '-execdir', '-ok', '-okdir'].includes(arg)) return;
+      const end = args.findIndex((word, at) => at > index && (word === ';' || word === '+'));
+      inner.push(args.slice(index + 1, end === -1 ? undefined : end).join(' '));
+    });
+  }
+  if (program === 'git') {
+    const { index } = gitGlobals(rest);
+    const sub = rest[index];
+    const subArgs = rest.slice(index + 1);
+    if (sub === 'submodule' && subArgs.includes('foreach'))
+      inner.push(positionals(subArgs.slice(subArgs.indexOf('foreach') + 1)).join(' '));
+    if (sub === 'rebase') inner.push(...optionValues(subArgs, ['-x', '--exec']));
+    if (sub === 'bisect' && subArgs[0] === 'run') inner.push(subArgs.slice(1).join(' '));
+  }
+  return inner;
+}
+
+// Every command the line may run, read deeper than splitCommand (shells with
+// -c in a cluster, env -S, su/script -c, watch, find -exec, git's command
+// runners, <(…)). opaque: why part of it could not be read.
+function automationSegments(command) {
+  const out = { segments: [], opaque: null };
+  const expand = (text, depth) => {
+    if (typeof text !== 'string') return;
+    if (depth > MAX_NESTING) {
+      out.opaque ??= 'um comando aninhado demais pra conferir';
+      return;
+    }
+    for (const inner of [...substitutions(text), ...processSubstitutions(text)]) expand(inner, depth + 1);
+    for (const raw of splitTopLevel(text)) {
+      const part = raw.replace(/^[({\s]+/, '').replace(/[)}\s]+$/, '').trim();
+      const all = words(part);
+      const rest = unwrap(all);
+      const inner = innerCommands(
+        all.map((token) => token.text),
+        rest.map((token) => token.text),
+      );
+      if (inner === OPAQUE) out.opaque ??= 'mandar texto pra um shell rodar (não dá pra conferir)';
+      else for (const command of inner) expand(command, depth + 1);
+      if (rest.length) out.segments.push(part.slice(rest[0].start).trim());
+    }
+  };
+  expand(command, 0);
+  return out;
+}
+
+const PUSH_SUBS = new Set(['push', 'send-pack', 'http-push']);
+const MERGE_SUBS = new Set(['merge', 'pull']);
+const CONFIG_READS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '--list', '-l']);
+
+function configWrites(args) {
+  if (args.some((arg) => CONFIG_READS.has(arg))) return false;
+  const named = args.filter((arg) => !arg.startsWith('-'));
+  if (named[0] === 'get' || named[0] === 'list') return false;
+  // `git config <key>` reads; a value or an editing option writes.
+  return named.length !== 1 || args.some((arg) => /^--(?:unset|add|replace-all|edit|rename-section|remove-section)|^-e$/.test(arg));
+}
+
+// What a git line does that no automação may (tokens[0] is git), or null.
+function gitNever(tokens) {
+  const { index, configs } = gitGlobals(tokens);
+  // -c alias.x=push and -c core.hooksPath=… run what the line does not show.
+  if (configs.length) return 'git -c (mudar a configuração do git na linha)';
+  const sub = tokens[index];
+  const args = tokens.slice(index + 1);
+  const clusters = args.filter((arg) => /^-[A-Za-z]+$/.test(arg));
+  if (PUSH_SUBS.has(sub)) return 'git push (enviar pro remoto)';
+  if (MERGE_SUBS.has(sub)) return `git ${sub} (merge)`;
+  if (sub === 'reset' && args.includes('--hard')) return 'git reset --hard';
+  if (sub === 'branch' && (args.includes('--delete') || clusters.some((arg) => /[dD]/.test(arg)))) return 'apagar branch (git branch -d/-D)';
+  if (sub === 'clean' && (args.includes('--force') || clusters.some((arg) => arg.includes('f')))) return 'git clean -f';
+  if (sub === 'config' && configWrites(args)) return 'git config (mudar a configuração do git)';
+  return null;
+}
+
+const GH_VALUE_OPTIONS = new Set(['-R', '--repo', '--hostname']);
+
+// gh's command group and action (gh -R o/r issue create → issue, create).
+function ghCommand(tokens) {
+  const named = [];
+  for (let index = 1; index < tokens.length && named.length < 2; index++) {
+    const arg = tokens[index];
+    if (GH_VALUE_OPTIONS.has(arg)) index++;
+    else if (!arg.startsWith('-')) named.push(arg);
+  }
+  return { group: named[0], action: named[1], rest: tokens.slice(tokens.indexOf(named[0]) + 1) };
+}
+
+const GH_API_SKIP = new Set(['-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
+
+function ghApi(args) {
+  let method = null;
+  let input = false;
+  let endpoint = null;
+  const fields = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    let match;
+    if (arg === '-X' || arg === '--method') method = args[++index] ?? '';
+    else if ((match = /^(?:-X|--method=)(.+)$/.exec(arg))) method = match[1];
+    else if (['-f', '-F', '--field', '--raw-field'].includes(arg)) fields.push(args[++index] ?? '');
+    else if ((match = /^(?:-[fF]|--field=|--raw-field=)(.+)$/.exec(arg))) fields.push(match[1]);
+    else if (arg === '--input') (input = true), index++;
+    else if (arg.startsWith('--input=')) input = true;
+    else if (GH_API_SKIP.has(arg)) index++;
+    else if (!arg.startsWith('-') && endpoint === null) endpoint = arg.replace(/^\//, '');
+  }
+  const graphql = endpoint === 'graphql';
+  // A field read from a file (-F query=@q.graphql) or a body from --input.
+  const unread = input || fields.some((field) => /^[^=]*=@/.test(field));
+  const verb = method ? method.toUpperCase() : fields.length || input ? 'POST' : 'GET';
+  const text = fields.join('\n');
+  return { endpoint: endpoint ?? '', graphql, text, unread, write: graphql ? unread || /\bmutation\b/i.test(text) : verb !== 'GET' };
+}
+
+const API_NEVER = /(?:^|\/)pulls\/[^/]+\/merge\b|(?:^|\/)merges\b|(?:^|\/)merge-upstream\b|(?:^|\/)git\/refs\b|(?:^|\/)contents\//;
+const MUTATION_NEVER = /mergePullRequest|enablePullRequestAutoMerge|mergeBranch|updateRefs?\b|createRef|deleteRef|createCommitOnBranch/i;
+
+function ghNever(tokens) {
+  const { group, action, rest } = ghCommand(tokens);
+  if (group === 'pr' && action === 'merge') return 'gh pr merge';
+  // An alias can hide a merge behind any name.
+  if (group === 'alias' && ['set', 'import', 'delete'].includes(action)) return 'gh alias';
+  if (group !== 'api') return null;
+  const api = ghApi(rest);
+  if (api.graphql && (api.unread || MUTATION_NEVER.test(api.text))) return 'merge ou push pela API do GitHub (gh api graphql)';
+  if (!api.graphql && api.write && API_NEVER.test(api.endpoint)) return 'merge ou push pela API do GitHub (gh api)';
+  return null;
+}
+
+const GH_WRITES = {
+  issue: ['create', 'comment', 'close', 'edit', 'reopen', 'delete', 'lock', 'unlock', 'transfer', 'pin', 'unpin', 'develop'],
+  pr: ['create', 'comment', 'review', 'close', 'edit', 'ready', 'reopen', 'merge', 'lock', 'unlock', 'update-branch'],
+  release: ['create', 'edit', 'delete', 'upload', 'delete-asset'],
+  repo: ['create', 'edit', 'delete', 'rename', 'archive', 'unarchive', 'fork', 'sync'],
+  label: ['create', 'edit', 'delete', 'clone'],
+  gist: ['create', 'edit', 'delete', 'rename'],
+  workflow: ['run', 'enable', 'disable'],
+  run: ['rerun', 'cancel', 'delete'],
+  secret: ['set', 'delete'],
+  variable: ['set', 'delete'],
+  cache: ['delete'],
+  extension: ['install', 'upgrade', 'remove'],
+};
+
+function ghWrite(tokens) {
+  const { group, action, rest } = ghCommand(tokens);
+  if (group === 'api') return ghApi(rest).write ? 'gh api que escreve' : null;
+  return Object.hasOwn(GH_WRITES, group) && GH_WRITES[group].includes(action) ? `gh ${group} ${action}` : null;
+}
+
+const isForce = (word) => word === '--force' || /^--force(?:=|-with-lease|-if-includes)/.test(word);
+
+// A denyAlways entry this guard has no meaning for: its words in a row.
+function extraNever(tokens, entry) {
+  const wanted = words(entry).map((token) => token.text);
+  if (wanted.length === 0) return false;
+  if (wanted[0].startsWith('-')) return tokens.some((word) => word === wanted[0] || word.startsWith(`${wanted[0]}=`));
+  return tokens.some(
+    (word, index) => programOf(word) === wanted[0] && wanted.every((next, offset) => offset === 0 || tokens[index + offset] === next),
+  );
+}
+
+// The path a write lands on, symlinks followed, for a file that may not
+// exist yet: the nearest existing ancestor is resolved and the rest joined.
+function realTarget(file, links = 0) {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    // not there (yet), or a dangling link
+  }
+  if (links > 40) return null;
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) return realTarget(path.resolve(path.dirname(file), fs.readlinkSync(file)), links + 1);
+  } catch {
+    // nothing at all there
+  }
+  const parent = path.dirname(file);
+  if (parent === file) return file;
+  const real = realTarget(parent, links);
+  return real === null ? null : path.join(real, path.basename(file));
+}
+
+// Inside by path segments: /a/b-evil is not inside /a/b.
+function within(root, file) {
+  const relative = path.relative(root, file);
+  return relative === '' || (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative));
+}
+
+// Where a hook, a permission or a git hook could be rewritten.
+function isProtected(file, home) {
+  const parts = file.split(path.sep);
+  if (parts.includes('.claude') || parts.includes('.git')) return true;
+  const roots = [path.join(home, '.config', 'vizor'), process.env.CLAUDE_CONFIG_DIR].filter(Boolean);
+  return roots.some((root) => within(root, file) || within(realTarget(root) ?? root, file));
+}
+
+const PROTECTED_WHAT = 'configuração do Claude Code, do Vizor ou do git';
+
+// A path as a shell word names it, absolute; null when it cannot be known
+// ($VAR, ~user, a relative path after a cd the guard could not follow).
+function shellPath(current, word, home) {
+  if (typeof word !== 'string' || word === '' || word === '-') return null;
+  const text = word.replace(/^\$\{?HOME\}?(?=\/|$)/, '~');
+  if (/[$`]/.test(text)) return null;
+  if (text === '~' || text.startsWith('~/')) return path.join(home, text.slice(1));
+  if (text.startsWith('~')) return null;
+  if (path.isAbsolute(text)) return path.resolve(text);
+  return current === null ? null : path.resolve(current, text);
+}
+
+// Files a segment's redirections write to (> f, >> f, &> f, >| f, >&f).
+function redirectTargets(segment) {
+  const targets = [];
+  let quote = null;
+  for (let index = 0; index < segment.length; index++) {
+    const char = segment[index];
+    if (quote) {
+      if (char === quote) quote = null;
+      else if (char === '\\' && quote === '"') index++;
+      continue;
+    }
+    if (char === '"' || char === "'") quote = char;
+    else if (char === '\\') index++;
+    if (char !== '>' || segment[index + 1] === '(') continue;
+    let start = index + 1;
+    if (segment[start] === '>' || segment[start] === '|') start++;
+    if (segment[start] === '&') {
+      if (/[\d-]/.test(segment[start + 1] ?? '')) continue; // >&2: a descriptor
+      start++;
+    }
+    while (segment[start] === ' ' || segment[start] === '\t') start++;
+    let end = start;
+    let inner = null;
+    for (; end < segment.length; end++) {
+      const next = segment[end];
+      if (inner) {
+        if (next === inner) inner = null;
+        else if (next === '\\' && inner === '"') end++;
+      } else if (next === '"' || next === "'") inner = next;
+      else if (next === '\\') end++;
+      else if (/[\s<>|;&()]/.test(next)) break;
+    }
+    const target = words(segment.slice(start, end))[0]?.text;
+    if (target) targets.push(target);
+    index = end - 1;
+  }
+  return targets;
+}
+
+const WRITE_ALL = new Set(['rm', 'rmdir', 'unlink', 'touch', 'mkdir', 'chmod', 'chown', 'chgrp', 'truncate', 'shred', 'mv', 'tee', 'mkfifo', 'mknod']);
+const WRITE_LAST = new Set(['cp', 'install', 'ln', 'rsync', 'scp']);
+
+// The paths a command writes to, when it is one the guard knows writes.
+function writeTargets(tokens) {
+  const program = programOf(tokens[0]);
+  const args = tokens.slice(1);
+  if (WRITE_ALL.has(program)) return positionals(args);
+  if (WRITE_LAST.has(program)) {
+    const into = optionValues(args, ['-t', '--target-directory']);
+    return into.length ? into : positionals(args).slice(-1);
+  }
+  if (program === 'sed' && args.some((arg) => /^-[A-Za-z]*i/.test(arg) || arg.startsWith('--in-place'))) {
+    const scripted = args.some((arg) => /^(?:-e|-f|--expression|--file)/.test(arg));
+    const named = positionals(args, new Set(['-e', '-f', '--expression', '--file', '-l']));
+    return scripted ? named : named.slice(1);
+  }
+  if (program === 'perl' && args.some((arg) => /^-[A-Za-z]*i/.test(arg))) return positionals(args, new Set(['-e', '-E']));
+  if (program === 'dd') return args.filter((arg) => arg.startsWith('of=')).map((arg) => arg.slice(3));
+  if (program === 'curl') return optionValues(args, ['-o', '--output', '--output-dir']);
+  if (program === 'wget') {
+    const into = optionValues(args, ['-O', '--output-document', '-P', '--directory-prefix']);
+    return into.length ? into : ['.'];
+  }
+  if (program === 'tar' && args.some((arg) => /^-?[A-Za-z]*x/.test(arg) || arg === '--extract')) {
+    const into = optionValues(args, ['-C', '--directory']);
+    return into.length ? into : ['.'];
+  }
+  if (program === 'unzip') {
+    const into = optionValues(args, ['-d']);
+    return into.length ? into : ['.'];
+  }
+  return [];
+}
+
+const GIT_READS = new Set([
+  'log', 'diff', 'status', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'blame', 'grep', 'describe', 'shortlog',
+  'cat-file', 'rev-list', 'for-each-ref', 'show-ref', 'merge-base', 'name-rev', 'var', 'help', 'version',
+  'count-objects', 'check-ignore', 'whatchanged', 'reflog', 'range-diff', 'cherry',
+]);
+// Read with no names given (git branch, git tag, git remote -v, git stash list).
+const GIT_LISTS = new Set(['branch', 'tag', 'remote', 'stash', 'worktree', 'config', 'submodule']);
+
+function gitWrites(sub, args) {
+  if (sub === undefined || GIT_READS.has(sub)) return false;
+  if (GIT_LISTS.has(sub)) {
+    const named = positionals(args);
+    return !(named.length === 0 || named[0] === 'list' || (sub === 'config' && !configWrites(args)));
+  }
+  return true;
+}
+
+const DEVICE = /^\/dev\/(?:null|stdout|stderr|stdin|tty|fd\/\d+)$/;
+
+function bashWrites(rules, segments, cwd, home) {
+  // Without a root or a no-edits level, only the protected paths are checked.
+  const strict = rules.denyEdits || Boolean(rules.allowEditsUnder);
+  const root = rules.allowEditsUnder ? (realTarget(rules.allowEditsUnder) ?? rules.allowEditsUnder) : null;
+  let current = cwd ? path.resolve(cwd) : null;
+  for (const segment of segments) {
+    const tokens = unwrap(withoutRedirections(words(segment))).map((token) => token.text);
+    if (tokens[0] === 'cd' || tokens[0] === 'pushd') {
+      current = shellPath(current, tokens.slice(1).find((token) => !token.startsWith('-') || token === '-') ?? '~', home);
+      continue;
+    }
+    const targets = [...redirectTargets(segment), ...writeTargets(tokens)].map((word) => ({ word, at: current }));
+    if (programOf(tokens[0]) === 'git') {
+      const { index, dir } = gitGlobals(tokens);
+      const args = tokens.slice(index + 1);
+      if (gitWrites(tokens[index], args)) {
+        const at = dir === null ? null : shellPath(current, dir || '.', home);
+        targets.push({ word: '.', at, label: dir || 'o repositório' });
+        // git clone x /dir, git worktree add /dir …
+        for (const named of positionals(args)) if (path.isAbsolute(named)) targets.push({ word: named, at });
+      }
+    }
+    for (const { word, at, label = word } of targets) {
+      if (DEVICE.test(word)) continue;
+      const absolute = shellPath(at, word, home);
+      const real = absolute === null ? null : realTarget(absolute);
+      if (real === null) {
+        if (strict) return `escrever num caminho que não dá pra conferir (${label})`;
+        continue;
+      }
+      if (isProtected(real, home)) return `mexer em ${label} (${PROTECTED_WHAT}) nunca é permitido`;
+      if (rules.denyEdits) return `escrever arquivos (${label}) não é permitido neste nível`;
+      if (root && !within(root, real)) return `escrever fora da worktree da automação (${label})`;
+    }
+  }
+  return null;
+}
+
+function bashReason(rules, command, cwd, home) {
+  const { segments, opaque } = automationSegments(command);
+  if (opaque) return opaque;
+  const extras = rules.denyAlways.filter((entry) => !KNOWN_NEVER.has(entry));
+  for (const segment of segments) {
+    const tokens = withoutRedirections(words(segment)).map((token) => token.text);
+    if (tokens.some(isForce)) return '--force nunca é permitido';
+    // Anywhere in the line, not only first: flock, ssh, parallel… run them too.
+    for (let index = 0; index < tokens.length; index++) {
+      const program = programOf(tokens[index]);
+      const rest = tokens.slice(index);
+      const never = program === 'git' ? gitNever(rest) : program === 'gh' ? ghNever(rest) : null;
+      if (never) return `${never} nunca é permitido`;
+      const write = program === 'gh' && rules.denyGhWrite ? ghWrite(rest) : null;
+      if (write) return `${write} (o gh que escreve) não é permitido neste nível`;
+    }
+    const extra = extras.find((entry) => extraNever(tokens, entry));
+    if (extra) return `${extra} nunca é permitido`;
+  }
+  return bashWrites(rules, segments, cwd, home);
+}
+
+function editReason(rules, call, cwd, home) {
+  if (rules.denyEdits) return `editar arquivos (${call.tool}) não é permitido neste nível`;
+  const file = editPath(call.input);
+  let absolute = null;
+  if (typeof file === 'string' && file) {
+    if (file === '~' || file.startsWith('~/')) absolute = path.join(home, file.slice(1));
+    else if (path.isAbsolute(file)) absolute = path.resolve(file);
+    else if (cwd) absolute = path.resolve(cwd, file);
+  }
+  const real = absolute === null ? null : realTarget(absolute);
+  if (real === null) return `editar um caminho que não dá pra conferir (${file})`;
+  if (isProtected(real, home)) return `editar ${file} (${PROTECTED_WHAT}) nunca é permitido`;
+  const root = rules.allowEditsUnder ? (realTarget(rules.allowEditsUnder) ?? rules.allowEditsUnder) : null;
+  if (root && !within(root, real)) return `editar fora da worktree da automação (${file})`;
+  return null;
+}
+
+// The deny reason for an automação's call, or null. Never throws: a call the
+// guard fails to read is denied.
+export function automationVerdict({ rules, call, cwd = null, home = os.homedir() }) {
+  if (!rules) return null;
+  let what;
+  try {
+    if (call.tool === 'Bash') what = bashReason(rules, String(call.input?.command ?? ''), cwd, home);
+    else if (EDIT_TOOLS.has(call.tool)) what = editReason(rules, call, cwd, home);
+  } catch {
+    what = 'um passo que a trava não conseguiu conferir';
+  }
+  if (!what) return null;
+  return `Automação do Vizor (nível ${LEVEL_LABEL[rules.level] ?? rules.level}): ${what}. Não tente contornar.`;
+}
+
+// This automação's entry, normalized; null without one (then nothing
+// changes). A damaged entry fails closed: no edits, no gh writes.
+export function loadAutomationRules(readFile, file, id) {
+  if (typeof id !== 'string' || !id) return null;
+  try {
+    const parsed = JSON.parse(readFile(file));
+    const all = parsed?.automations;
+    if (!all || typeof all !== 'object' || Array.isArray(all) || !Object.hasOwn(all, id)) return null;
+    const entry = all[id];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const under = typeof entry.allowEditsUnder === 'string' && path.isAbsolute(entry.allowEditsUnder) ? path.resolve(entry.allowEditsUnder) : null;
+    const badRoot = entry.allowEditsUnder != null && under === null;
+    return {
+      id,
+      level: typeof entry.level === 'string' ? entry.level : '?',
+      denyAlways: Array.isArray(entry.denyAlways) ? entry.denyAlways.filter((item) => typeof item === 'string' && item.trim()) : [],
+      denyGhWrite: entry.denyGhWrite !== false,
+      denyEdits: entry.denyEdits !== false || badRoot,
+      allowEditsUnder: under,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // --- Decision ---------------------------------------------------------------
 
 export const ASK_WAIT_MS = 540000; // under the hook's 600 s timeout
@@ -498,9 +1038,26 @@ function resolveDir(cwd, dir) {
 
 // gitContext(absoluteDir) runs only for a git action a rule looks at, once
 // per directory; the facts themselves are read lazily (gitContextOf).
-export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {} }) {
-  const list = applicable(rules, repoRoot);
+// automation: this automação's rules (loadAutomationRules), held before the
+// user's; automationId goes with every question so the Vizor can tell.
+export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {}, automation = null, automationId = null }) {
   const call = toolCall(event);
+  const summary = () => (call.tool === 'Bash' ? String(call.input.command ?? '') : `${call.tool} ${editPath(call.input)}`.trim()).slice(0, 200);
+  const barred = automationVerdict({ rules: automation, call, cwd: event.cwd ?? null });
+  if (barred) {
+    notify({
+      type: 'guard-event',
+      sessionId: event.session_id ?? null,
+      cwd: event.cwd ?? null,
+      ruleSource: barred.replace(/ Não tente contornar\.$/, ''),
+      outcome: 'barrado',
+      summary: summary(),
+      automationId,
+    });
+    return deny(barred);
+  }
+  if (!rules) return null;
+  const list = applicable(rules, repoRoot);
   const contexts = new Map();
   const git = (dir) => {
     const absolute = resolveDir(event.cwd, dir);
@@ -512,14 +1069,13 @@ export async function decide({ event, rules, repoRoot, gitContext, ask, headless
   if (!hit) return null;
   const { rule } = hit;
   if (rule.kind === 'forbid') {
-    const command = call.tool === 'Bash' ? String(call.input.command ?? '') : `${call.tool} ${editPath(call.input)}`.trim();
     notify({
       type: 'guard-event',
       sessionId: event.session_id ?? null,
       cwd: event.cwd ?? null,
       ruleSource: rule.source,
       outcome: 'barrado',
-      summary: command.slice(0, 200),
+      summary: summary(),
     });
     const why = rule.explain ? `${rule.explain.replace(/[.!?]$/, '')}. ` : '';
     return deny(`Barrado pela regra do usuário: "${rule.source}". ${why}Não tente contornar.`);
@@ -535,6 +1091,7 @@ export async function decide({ event, rules, repoRoot, gitContext, ask, headless
     explain: rule.explain ?? '',
     irreversible: hit.irreversible,
     target: targetOf(call),
+    ...(automationId ? { automationId } : {}),
   });
   if (answer === 'liberar') return null;
   if (answer === 'barrar')
@@ -580,6 +1137,7 @@ export function contextFor({ event, rules, repoRoot, seenVersion }) {
 // Mirrors configDir/managerSocketPath in src/main/paths.js (standalone file).
 const configDir = path.join(os.homedir(), '.config', 'vizor');
 const rulesDir = path.join(configDir, 'regras');
+const automationsFile = path.join(configDir, 'automacoes', 'regras.json');
 const socketPath =
   process.env.VIZOR_SOCKET ??
   (process.platform === 'win32'
@@ -726,9 +1284,14 @@ async function main(raw) {
     return null;
   }
   if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
-  const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
-  if (!rules) return null;
-  const hasRepos = Object.keys(rules.repos).length > 0;
+  const readFile = (file) => fs.readFileSync(file, 'utf8');
+  // Only an automação's session reads its rules; without them, as before.
+  const automationId = process.env.VIZOR_AUTOMATION || null;
+  const automation =
+    automationId && event.hook_event_name === 'PreToolUse' ? loadAutomationRules(readFile, automationsFile, automationId) : null;
+  const rules = loadRules(readFile, rulesDir);
+  if (!rules && !automation) return null;
+  const hasRepos = rules ? Object.keys(rules.repos).length > 0 : false;
   const repoRoot = hasRepos ? repoRootOf(event.cwd) : null;
   if (event.hook_event_name === 'PreToolUse') {
     const waitMs = Number(process.env.VIZOR_GUARD_ASK_MS) || ASK_WAIT_MS;
@@ -743,8 +1306,11 @@ async function main(raw) {
       // claude -p and the Agent SDK (sdk-*) have nobody to ask; IDE
       // extensions do.
       headless: Boolean(entrypoint?.startsWith('sdk')),
+      automation,
+      automationId,
     });
   }
+  if (!rules) return null;
   const context = contextFor({ event, rules, repoRoot, seenVersion: readSeen(event.session_id) });
   if (context) writeSeen(event.session_id, context.version);
   return context?.output ?? null;

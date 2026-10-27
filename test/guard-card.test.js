@@ -32,6 +32,13 @@ describe('renderGuardCard', () => {
     expect(html).toContain('isso não tem volta — pergunto sempre');
   });
 
+  it('an automação ask has no session grant', () => {
+    const html = renderGuardCard(ask({ automationId: 'auto-1' }));
+    expect(html).not.toContain('liberar-sessao');
+    expect(html).toContain('data-guard-choice="liberar"');
+    expect(html).toContain('data-guard-choice="barrar"');
+  });
+
   it('escapes everything that came from the hook', () => {
     const html = renderGuardCard(ask({ summary: '<script>x</script>', ruleSource: '"><img>', id: '"x' }));
     expect(html).not.toContain('<script>');

@@ -18,7 +18,8 @@ export function renderGuardCard(ask) {
     ask.irreversible ? '<div class="guard-hint">isso não tem volta — pergunto sempre</div>' : '',
     '<div class="guard-actions">',
     button('liberar', 'Liberar'),
-    ask.irreversible ? '' : button('liberar-sessao', 'Liberar nesta sessão'),
+    // An automação's step is freed once at a time (spec: automações, item 6).
+    ask.irreversible || ask.automationId ? '' : button('liberar-sessao', 'Liberar nesta sessão'),
     button('barrar', 'Barrar'),
     '</div>',
     '</div>',
