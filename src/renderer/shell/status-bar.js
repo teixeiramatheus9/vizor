@@ -27,5 +27,5 @@ export function renderStatusBar({ tokens = {}, agents = {}, nextAutomation = nul
     `<button class="status-item status-agents${agents.waiting ? ' waiting' : ''}" data-top-tab="agents" title="Abrir Agentes">${escapeHtml(agentsLabel(agents))}</button>`,
   ];
   if (nextAutomation?.at) items.push(`<span class="status-item status-next">próxima automação: ${escapeHtml(nextAutomation.at)}</span>`);
-  return items.join('');
+  return items.join('<span class="status-sep" aria-hidden="true">·</span>');
 }

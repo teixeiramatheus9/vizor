@@ -3,6 +3,10 @@ import { EventEmitter } from 'node:events';
 import {
   acceptDownload,
   avatarOwnerOf,
+  repoRefOf,
+  resolveLogo,
+  parseOpenGraph,
+  openGraphArgs,
   createAvatarService,
   nextAvatarCheck,
   avatarCheckDue,
@@ -82,54 +86,109 @@ function memoryFs(files = {}) {
   };
 }
 
+const REF = { owner: 'acme', name: 'app' };
+const OG_URL = 'https://repository-images.githubusercontent.com/1/abc';
+const gql = (custom) => JSON.stringify({ data: { repository: { usesCustomOpenGraphImage: custom, openGraphImageUrl: custom ? OG_URL : 'https://opengraph.githubassets.com/x/acme/app' } } });
+
+describe('repoRefOf', () => {
+  it('reads owner and name of github.com remotes', () => {
+    expect(repoRefOf('https://github.com/acme/app.git')).toEqual(REF);
+    expect(repoRefOf('git@github.com:acme/app.git\n')).toEqual(REF);
+  });
+  it('is null for other hosts, odd names and no remote', () => {
+    expect(repoRefOf('https://gitlab.com/acme/app.git')).toBeNull();
+    expect(repoRefOf('https://github.com/acme/..')).toBeNull();
+    expect(repoRefOf('')).toBeNull();
+  });
+});
+
+describe('parseOpenGraph / openGraphArgs', () => {
+  it('returns the url only for a custom social preview', () => {
+    expect(parseOpenGraph(gql(true))).toBe(OG_URL);
+    expect(parseOpenGraph(gql(false))).toBeNull();
+  });
+  it('is null for junk, non-https and errors', () => {
+    expect(parseOpenGraph('nope')).toBeNull();
+    expect(parseOpenGraph(JSON.stringify({ errors: [{}] }))).toBeNull();
+    expect(parseOpenGraph(JSON.stringify({ data: { repository: { usesCustomOpenGraphImage: true, openGraphImageUrl: 'http://x/y' } } }))).toBeNull();
+  });
+  it('passes owner and name as plain strings', () => {
+    const args = openGraphArgs({ owner: 'acme', name: '123' });
+    expect(args.slice(0, 2)).toEqual(['api', 'graphql']);
+    expect(args).toContain('n=123');
+    expect(args).not.toContain('-F');
+  });
+});
+
+function service(over = {}) {
+  const requested = [];
+  const fsp = over.fsp ?? memoryFs();
+  const svc = createAvatarService({
+    dir: '/c',
+    fsp,
+    now: over.now,
+    queryOpenGraph: over.queryOpenGraph ?? (async () => OG_URL),
+    fetchImage: over.fetchImage ?? (async (url) => { requested.push(url); return { contentType: 'image/png', bytes: PNG }; }),
+  });
+  return { svc, fsp, requested };
+}
+
 describe('createAvatarService', () => {
   it('loads the cache and reports freshness', async () => {
-    const fsp = memoryFs({ '/c/acme.png': { bytes: PNG, mtimeMs: 900 } });
-    const service = createAvatarService({ dir: '/c', fetchImage: async () => { throw new Error('no'); }, fsp, now: () => 1000 });
-    const { uri, fresh } = await service.load('acme');
+    const fsp = memoryFs({ '/c/og-acme@app.img': { bytes: PNG, mtimeMs: 900 } });
+    const { svc } = service({ fsp, now: () => 1000 });
+    const { uri, fresh } = await svc.load(REF);
     expect(uri).toMatch(/^data:image\/png;base64,/);
     expect(fresh).toBe(true);
   });
-  it('refresh writes the cache and returns the uri', async () => {
-    const fsp = memoryFs();
-    let url;
-    const service = createAvatarService({ dir: '/c', fetchImage: async (u) => { url = u; return { contentType: 'image/png', bytes: PNG }; }, fsp });
-    expect(await service.refresh('acme')).toMatch(/^data:image\/png/);
-    expect(url).toBe('https://github.com/acme.png?size=64');
-    expect(fsp.files['/c/acme.png'].bytes).toEqual(PNG);
+  it('refresh downloads the custom preview, caches it and never asks for the owner avatar', async () => {
+    const { svc, fsp, requested } = service();
+    expect((await svc.refresh(REF)).uri).toMatch(/^data:image\/png/);
+    expect(requested).toEqual([OG_URL]);
+    expect(requested.join()).not.toMatch(/github\.com\/acme\.png/);
+    expect(fsp.files['/c/og-acme@app.img'].bytes).toEqual(PNG);
   });
-  it('shares one in-flight download per owner and never reuses a tmp name', async () => {
+  it('a repo without a custom image requests nothing and drops the old cache', async () => {
+    const fsp = memoryFs({ '/c/og-acme@app.img': { bytes: PNG, mtimeMs: 1 } });
+    fsp.unlink = async (p) => { delete fsp.files[p]; };
+    const { svc, requested } = service({ fsp, queryOpenGraph: async () => null });
+    expect(await svc.refresh(REF)).toEqual({ uri: null });
+    expect(requested).toEqual([]);
+    expect(fsp.files['/c/og-acme@app.img']).toBeUndefined();
+  });
+  it('shares one in-flight download per repo and never reuses a tmp name', async () => {
     const fsp = memoryFs();
     const writes = [];
     const realWrite = fsp.writeFile;
     fsp.writeFile = async (p, b) => { writes.push(p); await new Promise((r) => setTimeout(r, 5)); return realWrite(p, b); };
     let fetches = 0;
-    const service = createAvatarService({ dir: '/c', fetchImage: async () => { fetches += 1; return { contentType: 'image/png', bytes: PNG }; }, fsp });
-    const [a, b] = await Promise.all([service.refresh('acme'), service.refresh('acme')]);
+    const { svc } = service({ fsp, fetchImage: async () => { fetches += 1; return { contentType: 'image/png', bytes: PNG }; } });
+    const [a, b] = await Promise.all([svc.refresh(REF), svc.refresh(REF)]);
     expect(a).toBe(b);
-    expect(a).toMatch(/^data:image\/png/);
     expect(fetches).toBe(1);
-    // a later refresh is a new download with its own tmp file
-    await service.refresh('acme');
+    await svc.refresh(REF);
     expect(new Set(writes).size).toBe(writes.length);
   });
-  it('does not read a cached file over the size cap', async () => {
-    const fsp = memoryFs({ '/c/acme.png': { bytes: Buffer.concat([PNG, Buffer.alloc(512 * 1024)]), mtimeMs: 1 } });
-    const service = createAvatarService({ dir: '/c', fetchImage: async () => ({}), fsp, now: () => 2 });
-    expect((await service.load('acme')).uri).toBeNull();
+  it('accepts up to 1 MB but not more', async () => {
+    const ok = Buffer.concat([PNG, Buffer.alloc(700 * 1024)]);
+    expect((await service({ fetchImage: async () => ({ contentType: 'image/png', bytes: ok }) }).svc.refresh(REF)).uri).toMatch(/^data:/);
+    const big = Buffer.concat([PNG, Buffer.alloc(1024 * 1024)]);
+    expect(await service({ fetchImage: async () => ({ contentType: 'image/png', bytes: big }) }).svc.refresh(REF)).toEqual({ failed: true });
   });
-  it('keeps the old file when the download fails or is invalid', async () => {
-    const fsp = memoryFs({ '/c/acme.png': { bytes: PNG, mtimeMs: 1 } });
-    const failing = createAvatarService({ dir: '/c', fetchImage: async () => { throw new Error('offline'); }, fsp });
-    expect(await failing.refresh('acme')).toBeNull();
-    const bogus = createAvatarService({ dir: '/c', fetchImage: async () => ({ contentType: 'text/html', bytes: Buffer.from('x') }), fsp });
-    expect(await bogus.refresh('acme')).toBeNull();
-    expect(fsp.files['/c/acme.png'].bytes).toEqual(PNG);
+  it('keeps the old file when gh, the download or the bytes fail', async () => {
+    const fsp = memoryFs({ '/c/og-acme@app.img': { bytes: PNG, mtimeMs: 1 } });
+    for (const over of [
+      { queryOpenGraph: async () => { throw new Error('no gh'); } },
+      { fetchImage: async () => { throw new Error('offline'); } },
+      { fetchImage: async () => ({ contentType: 'text/html', bytes: Buffer.from('x') }) },
+    ]) expect(await service({ fsp, ...over }).svc.refresh(REF)).toEqual({ failed: true });
+    expect(fsp.files['/c/og-acme@app.img'].bytes).toEqual(PNG);
   });
-  it('refuses owners that are not plain logins', async () => {
-    const service = createAvatarService({ dir: '/c', fetchImage: async () => ({}), fsp: memoryFs() });
-    expect(await service.refresh('../x')).toBeNull();
-    expect((await service.load('../x')).uri).toBeNull();
+  it('refuses refs that are not plain names', async () => {
+    const { svc } = service();
+    expect(await svc.refresh({ owner: '../x', name: 'a' })).toEqual({ failed: true });
+    expect(await svc.refresh({ owner: 'a', name: '..' })).toEqual({ failed: true });
+    expect((await svc.load({ owner: '../x', name: 'a' })).uri).toBeNull();
   });
 });
 
@@ -174,5 +233,36 @@ describe('fetchImage', () => {
   it('rejects non-200 answers', async () => {
     const get = fakeGet({ 'https://github.com/c.png': { status: 404 } });
     await expect(fetchImage('https://github.com/c.png', { get })).rejects.toThrow(/404/);
+  });
+});
+
+describe('resolveLogo', () => {
+  const run = async ({ local = null, remote = 'https://github.com/acme/app.git', load = { uri: null, fresh: false }, refresh = { uri: 'og' } } = {}) => {
+    const calls = [];
+    const shown = [];
+    await resolveLogo({
+      findLocal: async () => local,
+      getRemote: async () => { calls.push('remote'); return remote; },
+      service: { load: async () => { calls.push('load'); return load; }, refresh: async () => { calls.push('refresh'); return refresh; } },
+      show: (uri) => shown.push(uri),
+    });
+    return { calls, shown };
+  };
+  it('a local logo wins and touches neither git remote nor network', async () => {
+    expect(await run({ local: 'local' })).toEqual({ calls: [], shown: ['local'] });
+  });
+  it('no local logo and no github remote: monogram, no gh', async () => {
+    expect(await run({ remote: 'https://gitlab.com/a/b' })).toEqual({ calls: ['remote'], shown: [null] });
+    expect(await run({ remote: '' })).toEqual({ calls: ['remote'], shown: [null] });
+  });
+  it('falls back to the custom social preview: cache first, then a refresh', async () => {
+    expect(await run({ load: { uri: 'old', fresh: false } })).toEqual({ calls: ['remote', 'load', 'refresh'], shown: ['old', 'og'] });
+  });
+  it('a fresh cache is not refreshed', async () => {
+    expect(await run({ load: { uri: 'old', fresh: true } })).toEqual({ calls: ['remote', 'load'], shown: ['old'] });
+  });
+  it('a repo with no custom image ends on the monogram; a failed refresh keeps the cache', async () => {
+    expect((await run({ load: { uri: 'old', fresh: false }, refresh: { uri: null } })).shown).toEqual(['old', null]);
+    expect((await run({ load: { uri: 'old', fresh: false }, refresh: { failed: true } })).shown).toEqual(['old']);
   });
 });

@@ -243,7 +243,7 @@ button:hover {
   font-weight: 600;
 }
 
-/* the project's picture: the GitHub owner's avatar, or a monogram */
+/* the project's picture: its own logo, the repo's social preview, or a monogram */
 .avatar {
   flex: none;
   width: 18px;
@@ -2567,6 +2567,10 @@ body[data-palette='giz'] #view-github {
   font-size: 0.9em;
   white-space: nowrap;
   overflow: hidden;
+}
+
+#status-bar .status-sep {
+  opacity: 0.6;
 }
 
 #status-bar .status-agents {
