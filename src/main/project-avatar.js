@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { githubRepoOf } from './voice/gh-digest.js';
 
 // The GitHub owner's avatar next to each project in the workspace sidebar.
 // Pure decisions and a small cache service live here; the network and the
@@ -12,13 +13,21 @@ const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 // GitHub logins: alphanumerics and single hyphens, up to 39 chars. The strict
 // shape also keeps the owner safe to put in a URL and in a cache file name.
 const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const GITHUB_REMOTE = /^(?:https?:\/\/(?:[^@/\s]+@)?|ssh:\/\/git@|git@)github\.com[:/]([^/\s]+)\/[^/\s]+$/;
+// githubRepoOf is unanchored on the host: this pins it to github.com itself.
+const GITHUB_HOST = /^(?:https?:\/\/(?:[^@/\s]+@)?|ssh:\/\/git@|git@)github\.com[:/]/;
 
 // Only github.com remotes have an owner avatar; anything else is null.
 export function avatarOwnerOf(remoteUrl) {
-  const match = String(remoteUrl ?? '').trim().match(GITHUB_REMOTE);
-  return match && OWNER.test(match[1]) ? match[1] : null;
+  const remote = String(remoteUrl ?? '').trim();
+  const owner = GITHUB_HOST.test(remote) ? githubRepoOf(remote)?.split('/')[0] : null;
+  return owner && OWNER.test(owner) ? owner : null;
 }
+
+// How often a project's avatar is looked at again while the app stays open:
+// the remote may have changed, a failed download is retried, a week-old file
+// is refreshed. Also the backoff, so a push never means a request.
+export const AVATAR_CHECK_EVERY_MS = 10 * 60 * 1000;
+export const nextAvatarCheck = (now) => now + AVATAR_CHECK_EVERY_MS;
 
 // A cached file is trusted for a week; a future mtime (clock skew) is not.
 export function isAvatarFresh(mtimeMs, now, maxAge = AVATAR_MAX_AGE_MS) {
@@ -52,12 +61,16 @@ export function toDataUri(bytes) {
 // { contentType, bytes } or rejects. A failed refresh keeps the old file.
 export function createAvatarService({ dir, fetchImage, fsp, now = Date.now }) {
   const fileOf = (owner) => path.join(dir, `${owner}.png`);
+  const inflight = new Map(); // owner -> Promise: projects of one owner share a download
+  let counter = 0;
   return {
     // What the disk already has: { uri, fresh }.
     async load(owner) {
       if (!OWNER.test(owner)) return { uri: null, fresh: false };
       try {
-        const [bytes, stat] = await Promise.all([fsp.readFile(fileOf(owner)), fsp.stat(fileOf(owner))]);
+        const stat = await fsp.stat(fileOf(owner));
+        if (!(stat.size <= AVATAR_MAX_BYTES)) return { uri: null, fresh: false };
+        const bytes = await fsp.readFile(fileOf(owner));
         const uri = toDataUri(bytes);
         return { uri, fresh: uri !== null && isAvatarFresh(stat.mtimeMs, now()) };
       } catch {
@@ -65,19 +78,24 @@ export function createAvatarService({ dir, fetchImage, fsp, now = Date.now }) {
       }
     },
     // Download, validate, cache. Resolves the new data URI, or null on any failure.
-    async refresh(owner) {
-      if (!OWNER.test(owner)) return null;
-      try {
-        const { contentType, bytes } = await fetchImage(`https://github.com/${owner}.png?size=64`);
-        if (!acceptDownload(contentType, bytes)) return null;
-        await fsp.mkdir(dir, { recursive: true });
-        const tmp = `${fileOf(owner)}.${process.pid}.tmp`;
-        await fsp.writeFile(tmp, bytes);
-        await fsp.rename(tmp, fileOf(owner));
-        return toDataUri(bytes);
-      } catch {
-        return null;
-      }
+    refresh(owner) {
+      if (!OWNER.test(owner)) return Promise.resolve(null);
+      if (!inflight.has(owner)) inflight.set(owner, download(owner).finally(() => inflight.delete(owner)));
+      return inflight.get(owner);
     },
   };
+
+  async function download(owner) {
+    try {
+      const { contentType, bytes } = await fetchImage(`https://github.com/${owner}.png?size=64`);
+      if (!acceptDownload(contentType, bytes)) return null;
+      await fsp.mkdir(dir, { recursive: true });
+      const tmp = `${fileOf(owner)}.${process.pid}.${++counter}.tmp`;
+      await fsp.writeFile(tmp, bytes);
+      await fsp.rename(tmp, fileOf(owner));
+      return toDataUri(bytes);
+    } catch {
+      return null;
+    }
+  }
 }

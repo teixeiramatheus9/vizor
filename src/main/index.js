@@ -47,7 +47,7 @@ import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
 import { testOutcomeOf } from './voice/narration.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
-import { avatarOwnerOf, createAvatarService } from './project-avatar.js';
+import { avatarOwnerOf, createAvatarService, nextAvatarCheck } from './project-avatar.js';
 import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
@@ -1898,7 +1898,10 @@ workspaceWindow = workspaceAvailable(process.platform)
       },
       // A (re)loaded page starts from the replay, and a dead one acks
       // nothing: either way, what was in flight will never be acked (#113).
-      onLoad: () => ptyHost?.resetFlow(),
+      onLoad: () => {
+        avatarsSent = null;
+        ptyHost?.resetFlow();
+      },
       onGone: () => {
         log('workspace renderer gone — terminals resumed, reloading on next open');
         ptyHost?.resetFlow();
@@ -1960,25 +1963,43 @@ async function refreshWorkspace() {
 // Project avatars (root -> data: URI | null). Resolved off the push path: the
 // state goes out at once (monogram), the avatar joins when it is read/downloaded.
 const avatarService = createAvatarService({ dir: path.join(configDir, 'avatars'), fetchImage: fetchAvatarImage, fsp: fs.promises });
-const projectAvatars = new Map();
+const projectAvatars = new Map(); // root -> { uri, busy, nextCheck }
+let avatarsSent = null; // JSON of what the page last got; null = send again
+// Looked at again every AVATAR_CHECK_EVERY_MS (never per push): the remote may
+// have changed, a failed download is retried, a week-old file is refreshed.
 function resolveProjectAvatar(root) {
-  if (projectAvatars.has(root)) return;
-  projectAvatars.set(root, null);
+  const entry = projectAvatars.get(root) ?? { uri: null, busy: false, nextCheck: 0 };
+  projectAvatars.set(root, entry);
+  if (entry.busy || Date.now() < entry.nextCheck) return;
+  entry.busy = true;
+  const show = (uri) => {
+    if (uri === entry.uri) return;
+    entry.uri = uri;
+    pushWorkspaceState();
+  };
   (async () => {
     const owner = avatarOwnerOf(await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => ''));
-    if (!owner) return;
+    if (!owner) return show(null);
     const cached = await avatarService.load(owner);
-    if (cached.uri) {
-      projectAvatars.set(root, cached.uri);
-      pushWorkspaceState();
-    }
+    show(cached.uri);
     if (cached.fresh) return;
     const uri = await avatarService.refresh(owner);
-    if (uri) {
-      projectAvatars.set(root, uri);
-      pushWorkspaceState();
-    }
-  })().catch((error) => log(`avatar: ${root}: ${error}`));
+    if (uri) show(uri);
+  })()
+    .catch((error) => log(`avatar: ${root}: ${error}`))
+    .finally(() => {
+      entry.busy = false;
+      entry.nextCheck = nextAvatarCheck(Date.now());
+    });
+}
+
+// The data: URIs go to the page only when they change (or after a reload).
+function avatarsPayload(projects) {
+  const avatars = Object.fromEntries(projects.map(({ root }) => [root, projectAvatars.get(root)?.uri ?? null]));
+  const signature = JSON.stringify(avatars);
+  if (signature === avatarsSent) return {};
+  avatarsSent = signature;
+  return { avatars };
 }
 
 function pushWorkspaceStateNow() {
@@ -2031,7 +2052,7 @@ function pushWorkspaceStateNow() {
     plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
-    avatars: Object.fromEntries(projects.map(({ root }) => [root, projectAvatars.get(root) ?? null])),
+    ...avatarsPayload(projects),
   });
   // A session in a known repo that matches no worktree: one was probably
   // just created. Re-list that repo once per cwd (staleRoots), and re-resolve

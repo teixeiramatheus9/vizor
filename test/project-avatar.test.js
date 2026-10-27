@@ -4,6 +4,8 @@ import {
   acceptDownload,
   avatarOwnerOf,
   createAvatarService,
+  nextAvatarCheck,
+  AVATAR_CHECK_EVERY_MS,
   isAvatarFresh,
   AVATAR_MAX_AGE_MS,
 } from '../src/main/project-avatar.js';
@@ -21,8 +23,16 @@ describe('avatarOwnerOf', () => {
     expect(avatarOwnerOf('https://gitlab.com/acme/app.git')).toBeNull();
     expect(avatarOwnerOf('https://evilgithub.com/acme/app.git')).toBeNull();
     expect(avatarOwnerOf('https://github.com/../app.git')).toBeNull();
+    expect(avatarOwnerOf('https://github.com/acme/app/')).toBe('acme');
     expect(avatarOwnerOf('')).toBeNull();
     expect(avatarOwnerOf(null)).toBeNull();
+  });
+});
+
+describe('nextAvatarCheck', () => {
+  it('looks again after the backoff', () => {
+    expect(nextAvatarCheck(1000)).toBe(1000 + AVATAR_CHECK_EVERY_MS);
+    expect(AVATAR_CHECK_EVERY_MS).toBe(10 * 60 * 1000);
   });
 });
 
@@ -51,7 +61,7 @@ function memoryFs(files = {}) {
   return {
     files,
     async readFile(p) { if (!(p in files)) throw new Error('ENOENT'); return files[p].bytes; },
-    async stat(p) { if (!(p in files)) throw new Error('ENOENT'); return { mtimeMs: files[p].mtimeMs }; },
+    async stat(p) { if (!(p in files)) throw new Error('ENOENT'); return { mtimeMs: files[p].mtimeMs, size: files[p].bytes.length }; },
     async mkdir() {},
     async writeFile(p, bytes) { files[p] = { bytes, mtimeMs: 1000 }; },
     async rename(a, b) { files[b] = files[a]; delete files[a]; },
@@ -73,6 +83,26 @@ describe('createAvatarService', () => {
     expect(await service.refresh('acme')).toMatch(/^data:image\/png/);
     expect(url).toBe('https://github.com/acme.png?size=64');
     expect(fsp.files['/c/acme.png'].bytes).toEqual(PNG);
+  });
+  it('shares one in-flight download per owner and never reuses a tmp name', async () => {
+    const fsp = memoryFs();
+    const writes = [];
+    const realWrite = fsp.writeFile;
+    fsp.writeFile = async (p, b) => { writes.push(p); await new Promise((r) => setTimeout(r, 5)); return realWrite(p, b); };
+    let fetches = 0;
+    const service = createAvatarService({ dir: '/c', fetchImage: async () => { fetches += 1; return { contentType: 'image/png', bytes: PNG }; }, fsp });
+    const [a, b] = await Promise.all([service.refresh('acme'), service.refresh('acme')]);
+    expect(a).toBe(b);
+    expect(a).toMatch(/^data:image\/png/);
+    expect(fetches).toBe(1);
+    // a later refresh is a new download with its own tmp file
+    await service.refresh('acme');
+    expect(new Set(writes).size).toBe(writes.length);
+  });
+  it('does not read a cached file over the size cap', async () => {
+    const fsp = memoryFs({ '/c/acme.png': { bytes: Buffer.concat([PNG, Buffer.alloc(512 * 1024)]), mtimeMs: 1 } });
+    const service = createAvatarService({ dir: '/c', fetchImage: async () => ({}), fsp, now: () => 2 });
+    expect((await service.load('acme')).uri).toBeNull();
   });
   it('keeps the old file when the download fails or is invalid', async () => {
     const fsp = memoryFs({ '/c/acme.png': { bytes: PNG, mtimeMs: 1 } });
