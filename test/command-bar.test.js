@@ -35,6 +35,13 @@ describe('the Ctrl+K command bar', () => {
     expect(items.some((item) => item.label === 'Ir para refactor')).toBe(true);
   });
 
+  it('PRs that could not be read show a disabled line in their group', () => {
+    const items = buildCommands({ issues: [], chats, prsError: true });
+    const row = items.find((item) => item.id === 'prs-error');
+    expect(row).toMatchObject({ group: 'PRs', label: 'não consegui ler as PRs', disabled: true });
+    expect(buildCommands({ issues: [], chats }).some((item) => item.id === 'prs-error')).toBe(false);
+  });
+
   it('while the issues load, a line says so', () => {
     const items = buildCommands({ chats, issuesLoading: true });
     expect(items.some((item) => item.disabled && /carregando as issues/.test(item.label))).toBe(true);

@@ -1222,7 +1222,8 @@ function refreshCommandList() {
   const items = buildCommands({
     issues: commandCatalog?.issues ?? [],
     prs: commandCatalog?.prs ?? [],
-    issuesError: Boolean(commandCatalog?.error),
+    issuesError: Boolean(commandCatalog?.issuesError ?? commandCatalog?.error),
+    prsError: Boolean(commandCatalog?.prsError),
     issuesLoading: !commandCatalog,
     chats: commandChats(),
     plans,

@@ -9,12 +9,14 @@ describe('the Ctrl+K catalog', () => {
       issues: [{ number: 12, title: 'do A' }],
       prs: [{ number: 3, title: 'pr do A' }],
       error: false,
+      issuesError: false,
+      prsError: false,
     });
   });
 
   it("I4: another project's lists never show; nothing read is an error", () => {
-    expect(catalogFrom({ results, resultsRoot: '/a', root: '/b' })).toEqual({ issues: [], prs: [], error: true });
-    expect(catalogFrom({ results: null, resultsRoot: null, root: '/a' })).toEqual({ issues: [], prs: [], error: true });
+    expect(catalogFrom({ results, resultsRoot: '/a', root: '/b' })).toEqual({ issues: [], prs: [], error: true, issuesError: true, prsError: true });
+    expect(catalogFrom({ results: null, resultsRoot: null, root: '/a' })).toEqual({ issues: [], prs: [], error: true, issuesError: true, prsError: true });
   });
 
   it('read again when old or read for another project', () => {
@@ -25,13 +27,19 @@ describe('the Ctrl+K catalog', () => {
 });
 
 describe('the Ctrl+K catalog with a failed query', () => {
-  it('still lists the issues when the PRs errored', () => {
+  it('still lists the issues when the PRs errored, and says the PRs failed', () => {
     const partial = { openIssues: results.openIssues, prs: { error: 'boom' } };
     expect(catalogFrom({ results: partial, resultsRoot: '/a', root: '/a' })).toEqual({
       issues: [{ number: 12, title: 'do A' }],
       prs: [],
       error: false,
+      issuesError: false,
+      prsError: true,
     });
+  });
+  it('says the issues failed when only they errored', () => {
+    const partial = { openIssues: { error: 'boom' }, prs: results.prs };
+    expect(catalogFrom({ results: partial, resultsRoot: '/a', root: '/a' })).toMatchObject({ issuesError: true, prsError: false, error: false });
   });
   it('is an error only when both lists were lost', () => {
     const lost = { openIssues: { error: 'x' }, prs: { error: 'y' } };
