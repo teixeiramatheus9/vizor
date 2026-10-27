@@ -78,6 +78,16 @@ try {
   await workspace.waitForSelector('#plan-card >> text=Plano · 1/3', { timeout: 30000 });
   assert.equal(await workspace.isVisible('[data-plan="approve"]'), false);
   if (shots) await workspace.screenshot({ path: path.join(shots, 'e2e-approved.png') });
+  // A bare digit typed into the terminal is the terminal's: the shortcuts handler
+  // must not claim it (no preventDefault) nor move the review tab.
+  await workspace.evaluate(() => {
+    window.__digitPrevented = null;
+    window.addEventListener('keydown', (event) => (window.__digitPrevented = event.defaultPrevented), true);
+  });
+  await workspace.focus('.xterm-helper-textarea');
+  await workspace.keyboard.press('2');
+  assert.equal(await workspace.evaluate(() => window.__digitPrevented), false);
+  assert.equal(await workspace.evaluate(() => document.body.dataset.reviewTab), 'summary');
   // Nothing landed in the real checkout.
   assert.equal(fs.existsSync(path.join(appRoot, '.vizor')), false);
   console.log('e2e: core flow OK (Ctrl+K → issue → plan 0/3 → approve → 1/3)');

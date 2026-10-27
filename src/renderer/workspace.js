@@ -369,6 +369,7 @@ function drawTopTabs() {
 // Workspace refits the terminal, which could not be measured while hidden.
 function setTopTab(next, { save = true } = {}) {
   next = normalizeTopTab(next);
+  if (save) userSwitchedTab = true;
   if (next === topTab) return;
   topTab = next;
   for (const tab of TOP_TABS) document.getElementById(`view-${tab.id}`).hidden = tab.id !== next;
@@ -653,7 +654,7 @@ window.vizor.onEditsChanged(({ sessionId }) => {
 
 window.vizor.getPrefs().then((saved) => {
   Object.assign(prefs, saved);
-  setTopTab(saved.topTab, { save: false });
+  if (!userSwitchedTab) setTopTab(saved.topTab, { save: false });
   if (prefs.width !== 'collapsed') lastOpenWidth = prefs.width;
   renderInspector();
 });
@@ -1192,9 +1193,12 @@ function toast(text) {
 
 async function runCommandItem(item) {
   if (!item || item.disabled) return;
-  closeCommandBar();
   const { action } = item;
-  if (action.type === 'goto-tab') return void setTopTab(action.tab);
+  // Everything but "ir pra <tela>" acts on the Workspace (drawer, chat, plan):
+  // show it first so the user sees the result.
+  setTopTab(action.type === 'goto-tab' ? action.tab : 'workspace');
+  closeCommandBar();
+  if (action.type === 'goto-tab') return;
   if (action.type === 'focus') {
     showDrawer();
     if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
@@ -1227,32 +1231,43 @@ window.addEventListener(
 // Ctrl+1..3 switch the top tab, caught before xterm like Ctrl+K. Bare 1..4
 // (review tabs) and "?" (help) only count outside the terminal and text fields.
 const helpEl = document.getElementById('shortcuts-help');
+let userSwitchedTab = false; // a Ctrl+digit or click beats the saved tab still loading
 const REVIEW_TAB_IDS = ['summary', 'changes', 'impact', 'live'];
 function toggleHelp(show = helpEl.hidden) {
   if (show) helpEl.innerHTML = renderShortcuts();
   helpEl.hidden = !show;
+  if (show) {
+    helpEl.tabIndex = -1;
+    helpEl.focus();
+  } else if (topTab === 'workspace' && !commandBarOpen() && !typingElsewhere()) views.get(activeTab)?.term.focus();
 }
 window.addEventListener(
   'keydown',
   (event) => {
-    if (event.key === 'Escape' && !helpEl.hidden) {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleHelp(false);
-      return;
-    }
     if (commandBarOpen()) return;
     const target = event.target instanceof Element ? event.target : null;
     const focusInTerminal = Boolean(target?.closest('#terminal-drawer'));
     const focusInField = focusInTerminal || Boolean(target?.closest('input, textarea, select, [contenteditable]'));
+    if (!helpEl.hidden) {
+      // Esc closes the help, except in the terminal where Esc is the shell's:
+      // there the help closes on the next key that is not a modifier.
+      if (event.key === 'Escape' && !focusInTerminal) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleHelp(false);
+        return;
+      }
+      if (focusInTerminal && !['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) toggleHelp(false);
+    }
     const action = keyAction(event, { focusInTerminal, focusInField, composing: event.isComposing });
     if (!action) return;
+    // Bare digits belong to the Workspace's review tabs; elsewhere they stay free.
+    if (action.inner && topTab !== 'workspace') return;
     event.preventDefault();
     event.stopPropagation();
     if (action.top) setTopTab(TOP_TABS[action.top - 1].id);
-    else if (action.inner) {
-      if (topTab === 'workspace') review.setTab(REVIEW_TAB_IDS[action.inner - 1]);
-    } else if (action.help) toggleHelp();
+    else if (action.inner) review.setTab(REVIEW_TAB_IDS[action.inner - 1]);
+    else if (action.help) toggleHelp();
   },
   true,
 );
