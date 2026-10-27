@@ -160,5 +160,11 @@ export function runEnv(a, baseEnv = {}) {
     env[`GIT_CONFIG_KEY_${index}`] = key;
     env[`GIT_CONFIG_VALUE_${index}`] = value;
   });
+  // The worktree level runs untrusted-ish edits: no desktop keyring (DBUS) and
+  // an empty gh config dir, so gh has no auth there. 'read' and 'project' keep it.
+  if (a.level === 'worktree') {
+    env.DBUS_SESSION_BUS_ADDRESS = 'disabled:';
+    env.GH_CONFIG_DIR = `${baseEnv.HOME ?? ''}/.config/vizor/automacoes/${a.id}/gh-empty`;
+  }
   return env;
 }

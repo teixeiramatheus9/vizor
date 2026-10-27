@@ -187,6 +187,18 @@ describe('runEnv', () => {
     }
   });
 
+  it('worktree level has no gh auth or DBUS; read and project keep both', () => {
+    const given = { HOME: '/h', GH_CONFIG_DIR: '/h/.config/gh', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/x' };
+    const wt = runEnv({ ...base, level: 'worktree' }, given);
+    expect(wt.DBUS_SESSION_BUS_ADDRESS).toBe('disabled:');
+    expect(wt.GH_CONFIG_DIR).toBe('/h/.config/vizor/automacoes/a1/gh-empty');
+    for (const level of ['read', 'project']) {
+      const env = runEnv({ ...base, level }, given);
+      expect(env.GH_CONFIG_DIR).toBe('/h/.config/gh');
+      expect(env.DBUS_SESSION_BUS_ADDRESS).toBe('unix:path=/x');
+    }
+  });
+
   it('does not change the env it was given', () => {
     const given = { GH_TOKEN: 't' };
     runEnv(base, given);
