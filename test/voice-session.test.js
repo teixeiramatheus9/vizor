@@ -513,7 +513,7 @@ describe('voice session — the gerente reads, the músicos act', () => {
     expect(opened[1].cwd).toBe('/r');
     expect(opened[1].prompt).toContain('issue #142');
     expect(opened[1].prompt).toContain('gh issue view 142');
-    expect(opened[1].prompt).toContain('espere meu ok antes de mexer');
+    expect(opened[1].prompt).toContain('espere eu aprovar o contrato antes de mexer');
     expect(calls).toContainEqual(['link', 142, 'snew']);
     expect(texts().at(-1)).toBe('Puxei a 142: o músico vai ler a issue e propor um plano.');
   });

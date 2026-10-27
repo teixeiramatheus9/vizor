@@ -31,16 +31,22 @@ describe('following a músico plan', () => {
     expect(tracker.planOf('s1')).toBeNull();
   });
 
-  it('an edit to code after the plan means it was approved; a ticked step too', async () => {
-    const { tracker, files } = setup({ files: { '/repo/.vizor/plano.md': PLAN } });
+  it('only the dev approves: neither an edit to code nor a ticked step does', async () => {
+    const { tracker } = setup({ files: { '/repo/.vizor/plano.md': PLAN } });
     await tracker.onEvent(write('/repo/.vizor/plano.md'));
-    expect(await tracker.onEvent(write('/repo/src/a.js', { tool_name: 'Edit' }))).toBe(true);
-    expect(tracker.planOf('s1').approved).toBe(true);
+    expect(await tracker.onEvent(write('/repo/src/a.js', { tool_name: 'Edit' }))).toBe(false);
+    expect(tracker.planOf('s1').approved).toBe(false);
 
     const other = setup({ files: { '/repo/.vizor/plano.md': '- [x] ler\n- [ ] fazer\n' } });
     await other.tracker.onEvent(write('/repo/.vizor/plano.md'));
-    expect(other.tracker.planOf('s1').approved).toBe(true);
-    expect(files).toBeTruthy();
+    expect(other.tracker.planOf('s1').approved).toBe(false);
+  });
+
+  it('the plan file a chat wrote is at hand, for the task it belongs to', async () => {
+    const { tracker } = setup({ files: { '/repo/.vizor/plano-169.md': PLAN } });
+    await tracker.onEvent(write('/repo/.vizor/plano-169.md'));
+    expect(tracker.fileOf('s1')).toBe('plano-169.md');
+    expect(tracker.fileOf('s2')).toBeNull();
   });
 
   it('an edit to code with no plan yet changes nothing', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { excludeWithPlan, planFileName, planFileOf, isPlanEdit, parseChecklist, planProgress } from '../src/main/work/plan.js';
+import { excludeWithPlan, planFileName, planIssueOf, planFileOf, isPlanEdit, parseChecklist, planProgress } from '../src/main/work/plan.js';
 
 describe('the músico plan file', () => {
   it('reads a markdown checklist, done and pending, ignoring the rest', () => {
@@ -55,5 +55,13 @@ describe('the músico plan file', () => {
     expect(excludeWithPlan('')).toBe('.vizor/\n');
     expect(excludeWithPlan('node_modules')).toBe('node_modules\n.vizor/\n');
     expect(excludeWithPlan('a\n.vizor/\n')).toBeNull();
+  });
+
+  it('a task plan file names its issue; plano.md and anything else name none', () => {
+    expect(planIssueOf('plano-169.md')).toBe(169);
+    expect(planIssueOf('plano.md')).toBeNull();
+    expect(planIssueOf('plano-0.md')).toBeNull();
+    expect(planIssueOf(null)).toBeNull();
+    expect(planIssueOf('x/plano-1.md')).toBeNull();
   });
 });

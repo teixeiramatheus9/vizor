@@ -2,7 +2,7 @@
 // ~/.config/vizor/tarefas/<sha1(worktree)>-<issue>.json. The transitions are
 // pure (state in, new state out); the store does the IO, injected.
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 export const EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 const MODES = ['step', 'trust'];
@@ -22,8 +22,16 @@ export const newTaskState = () => ({
   reviewed: [], // normalized step texts the dev checked: reordering the plan keeps them
   checkpoints: {}, // step → ref already taken
   openAnyway: false, // the dev opens the PR with unreviewed steps
+  // What the task service binds: where the task lives and which chats work on it.
+  worktree: null,
+  issue: null,
+  sessions: [],
+  quick: false, // the dev called it a quick task: no gates
+  lastRun: null, // { status, tail, at, ms } of the contract's last run
+  changedLocked: [], // locked test files whose hash no longer matches
   updatedAt: 0,
 });
+const TAIL_MAX = 8192;
 
 // A step is told apart by its text, not its position: the músico may insert one.
 export const stepKey = (text) => String(text ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -77,6 +85,19 @@ function coerce(data) {
     reviewed: Array.isArray(data.reviewed) ? data.reviewed.filter((x) => typeof x === 'string') : [],
     checkpoints: isObject(data.checkpoints) ? Object.fromEntries(Object.entries(data.checkpoints).filter(([, r]) => typeof r === 'string')) : {},
     openAnyway: data.openAnyway === true,
+    worktree: typeof data.worktree === 'string' && isAbsolute(data.worktree) ? data.worktree : null,
+    issue: Number.isInteger(data.issue) && data.issue > 0 ? data.issue : null,
+    sessions: Array.isArray(data.sessions) ? data.sessions.filter((x) => typeof x === 'string') : [],
+    quick: data.quick === true,
+    lastRun: isObject(data.lastRun) && typeof data.lastRun.status === 'string'
+      ? {
+        status: data.lastRun.status,
+        tail: typeof data.lastRun.tail === 'string' ? data.lastRun.tail.slice(-TAIL_MAX) : '',
+        at: Number.isFinite(data.lastRun.at) ? data.lastRun.at : 0,
+        ms: Number.isFinite(data.lastRun.ms) ? data.lastRun.ms : 0,
+      }
+      : null,
+    changedLocked: Array.isArray(data.changedLocked) ? data.changedLocked.filter((x) => typeof x === 'string') : [],
     updatedAt: Number.isFinite(data.updatedAt) ? data.updatedAt : 0,
   };
 }

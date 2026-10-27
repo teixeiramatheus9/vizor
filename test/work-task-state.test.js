@@ -212,6 +212,20 @@ describe('the task store', () => {
     expect(loaded.updatedAt).toBe(7);
   });
 
+  it('keeps what the service binds: the worktree, the issue, the sessions, the last run and the changed locks', async () => {
+    const file = `/cfg/tarefas/${KEY}.json`;
+    const saved = {
+      ...newTaskState(), worktree: '/repo', issue: 7, sessions: ['s1', 2], quick: true,
+      lastRun: { status: 'fail', tail: 'x'.repeat(9000), at: 3, ms: 4 }, changedLocked: ['t/a.test.js', null],
+    };
+    const loaded = await make(fakeFs({ [file]: JSON.stringify(saved) })).load(KEY);
+    expect(loaded).toMatchObject({ worktree: '/repo', issue: 7, sessions: ['s1'], quick: true, changedLocked: ['t/a.test.js'] });
+    expect(loaded.lastRun).toMatchObject({ status: 'fail', at: 3, ms: 4 });
+    expect(loaded.lastRun.tail).toHaveLength(8192);
+    const wrong = { ...newTaskState(), worktree: 'relative', issue: -1, sessions: 'x', quick: 1, lastRun: { status: 3 }, changedLocked: {} };
+    expect(await make(fakeFs({ [file]: JSON.stringify(wrong) })).load(KEY)).toEqual(newTaskState());
+  });
+
   it('a wrong shape counts as corrupt too', async () => {
     const file = `/cfg/tarefas/${KEY}.json`;
     const fs = fakeFs({ [file]: '[1,2]' });

@@ -6,12 +6,9 @@ import path from 'node:path';
 import { parseChecklist, planFileOf } from './plan.js';
 import { APPROVE_PROMPT, OPEN_PR_PROMPT } from './prompts.js';
 
-const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-
 export function createPlanTracker({ readFile, knownCwd }) {
   const plans = new Map(); // sessionId → { steps, approved }
   const texts = new Map(); // sessionId → the file as read (its Vizor-plano line feeds the graph)
-  const approvedByHand = new Set();
   const reading = new Map(); // sessionId → the latest read's token
   const bound = new Map(); // sessionId → the plan file name it wrote
 
@@ -35,10 +32,10 @@ export function createPlanTracker({ readFile, knownCwd }) {
       texts.delete(sessionId);
       return Boolean(before);
     }
-    // A plan rewritten from scratch waits for the ok again.
-    if (before && !steps.some((step) => step.done) && !sameSteps(before.steps, steps)) approvedByHand.delete(sessionId);
+    // Only the dev approves: a ticked step or an edit to code is no ok. A plan
+    // rewritten from scratch waits for the ok again.
     const kept = before && (sameSteps(before.steps, steps) || steps.some((step) => step.done));
-    const approved = approvedByHand.has(sessionId) || Boolean(kept && before.approved) || steps.some((step) => step.done);
+    const approved = Boolean(kept && before.approved);
     plans.set(sessionId, { steps, approved });
     texts.set(sessionId, text);
     return true;
@@ -50,25 +47,17 @@ export function createPlanTracker({ readFile, knownCwd }) {
     if (event.hook_event_name === 'Stop') return bound.has(sessionId) ? reread(sessionId, event.cwd) : false;
     if (event.hook_event_name !== 'PostToolUse') return false;
     const planFile = planFileOf(event);
-    if (planFile) {
-      bound.set(sessionId, planFile);
-      return reread(sessionId, event.cwd);
-    }
-    // Code touched after the plan: it was given the ok.
-    const plan = plans.get(sessionId);
-    if (plan && !plan.approved && EDIT_TOOLS.has(event.tool_name)) {
-      plans.set(sessionId, { ...plan, approved: true });
-      return true;
-    }
-    return false;
+    if (!planFile) return false;
+    bound.set(sessionId, planFile);
+    return reread(sessionId, event.cwd);
   }
 
   return {
     onEvent,
     planOf: (sessionId) => plans.get(sessionId) ?? null,
     textOf: (sessionId) => texts.get(sessionId) ?? null,
+    fileOf: (sessionId) => bound.get(sessionId) ?? null,
     approve(sessionId) {
-      approvedByHand.add(sessionId);
       const plan = plans.get(sessionId);
       if (plan) plans.set(sessionId, { ...plan, approved: true });
     },
@@ -76,7 +65,6 @@ export function createPlanTracker({ readFile, knownCwd }) {
     forget(sessionId) {
       plans.delete(sessionId);
       texts.delete(sessionId);
-      approvedByHand.delete(sessionId);
       reading.delete(sessionId);
       bound.delete(sessionId);
     },

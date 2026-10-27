@@ -44,6 +44,8 @@ export function planProgress(steps) {
 // .vizor/plano-169.md (plano.md, with no task, still counts).
 const PLAN_NAME = /^plano(-\d{1,6})?\.md$/;
 export const planFileName = (number) => `.vizor/plano-${number}.md`;
+// The task a plan file name belongs to: plano-169.md → 169; plano.md has none.
+export const planIssueOf = (name) => Number(/^plano-(\d{1,6})\.md$/.exec(String(name ?? ''))?.[1]) || null;
 
 // The plan file an edit wrote, as a bare name checked against PLAN_NAME, or
 // null. Only <cwd>/.vizor/<name> counts.
