@@ -47,6 +47,8 @@ import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
 import { testOutcomeOf } from './voice/narration.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
+import { avatarOwnerOf, createAvatarService } from './project-avatar.js';
+import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
@@ -1955,12 +1957,37 @@ async function refreshWorkspace() {
   pushWorkspaceStateNow();
 }
 
+// Project avatars (root -> data: URI | null). Resolved off the push path: the
+// state goes out at once (monogram), the avatar joins when it is read/downloaded.
+const avatarService = createAvatarService({ dir: path.join(configDir, 'avatars'), fetchImage: fetchAvatarImage, fsp: fs.promises });
+const projectAvatars = new Map();
+function resolveProjectAvatar(root) {
+  if (projectAvatars.has(root)) return;
+  projectAvatars.set(root, null);
+  (async () => {
+    const owner = avatarOwnerOf(await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => ''));
+    if (!owner) return;
+    const cached = await avatarService.load(owner);
+    if (cached.uri) {
+      projectAvatars.set(root, cached.uri);
+      pushWorkspaceState();
+    }
+    if (cached.fresh) return;
+    const uri = await avatarService.refresh(owner);
+    if (uri) {
+      projectAvatars.set(root, uri);
+      pushWorkspaceState();
+    }
+  })().catch((error) => log(`avatar: ${root}: ${error}`));
+}
+
 function pushWorkspaceStateNow() {
   if (!workspaceWindow?.isReady()) return;
   const projects = workspaceProjects().map((root) => ({
     root,
     worktrees: worktreeCache.get(root) ?? [],
   }));
+  for (const { root } of projects) resolveProjectAvatar(root);
   const tree = buildWorkspaceTree({
     projects,
     sessions: linkedSessions(listWithDisplayNames()),
@@ -2004,6 +2031,7 @@ function pushWorkspaceStateNow() {
     plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
+    avatars: Object.fromEntries(projects.map(({ root }) => [root, projectAvatars.get(root) ?? null])),
   });
   // A session in a known repo that matches no worktree: one was probably
   // just created. Re-list that repo once per cwd (staleRoots), and re-resolve

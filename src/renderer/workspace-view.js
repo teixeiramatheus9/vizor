@@ -2,6 +2,8 @@
 // run them and the renderer only swaps innerHTML. Everything interpolated goes
 // through escapeHtml — session names and paths come from the user's disk.
 
+import { monogramColor, monogramOf } from './project-accent.js';
+
 export function escapeHtml(text) {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
@@ -145,7 +147,16 @@ function renderWorktree(worktree, selectedId, selectedWorktree, folds, musicians
   }</div>${sessions}</li>`;
 }
 
-function renderProject(project, selectedId, selectedWorktree, folds, musicians) {
+// avatar: { uri, accent } (main's picture + the renderer's colour pick), or
+// nothing: then the project is its monogram on a colour derived from its name.
+function renderAvatar(project, avatar) {
+  if (avatar?.uri) return `<img class="avatar" src="${escapeHtml(avatar.uri)}" alt="" width="18" height="18" />`;
+  return `<span class="avatar mono" style="background:${monogramColor(project.name)}" aria-hidden="true">${escapeHtml(
+    monogramOf(project.name),
+  )}</span>`;
+}
+
+function renderProject(project, selectedId, selectedWorktree, folds, musicians, avatar) {
   const open = isOpen(folds, `p:${project.root}`, true);
   const all = project.worktrees.flatMap((worktree) => worktree.sessions);
   const worktrees = open
@@ -153,9 +164,10 @@ function renderProject(project, selectedId, selectedWorktree, folds, musicians) 
         .map((worktree) => renderWorktree(worktree, selectedId, selectedWorktree, folds, musicians))
         .join('')}</ul>`
     : '';
-  return `<section class="project${open ? '' : ' folded'}"><header class="project-head" title="${escapeHtml(
+  const accent = avatar?.accent ?? monogramColor(project.name);
+  return `<section class="project${open ? '' : ' folded'}" style="--project-accent:${escapeHtml(accent)}"><header class="project-head" title="${escapeHtml(
     project.root,
-  )}">${foldToggle(`p:${project.root}`, open, 'o projeto')}${ICONS.folder}<span class="project-name">${escapeHtml(
+  )}">${foldToggle(`p:${project.root}`, open, 'o projeto')}${renderAvatar(project, avatar)}<span class="project-name">${escapeHtml(
     project.name,
   )}</span>${open || !all.length ? '' : foldSummary(all)}<button class="remove" data-remove-project="${escapeHtml(
     project.root,
@@ -181,9 +193,10 @@ function renderUnplaced(sessions, selectedId, folds, musicians) {
   )}${ICONS.outside}<span class="project-name">Fora de projetos</span>${open ? '' : foldSummary(sessions)}</header>${list}</section>`;
 }
 
-export function renderSidebar(tree, selectedId, selectedWorktree = null, folds = {}, musicians = {}) {
+// avatars: project root → { uri, accent }
+export function renderSidebar(tree, selectedId, selectedWorktree = null, folds = {}, musicians = {}, avatars = {}) {
   const projects = tree.projects.length
-    ? tree.projects.map((project) => renderProject(project, selectedId, selectedWorktree, folds, musicians)).join('')
+    ? tree.projects.map((project) => renderProject(project, selectedId, selectedWorktree, folds, musicians, avatars[project.root])).join('')
     : renderEmpty();
   return projects + renderUnplaced(tree.unplacedSessions, selectedId, folds, musicians);
 }

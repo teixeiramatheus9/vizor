@@ -180,6 +180,41 @@ button:hover {
   font-weight: 600;
 }
 
+/* the project's picture: the GitHub owner's avatar, or a monogram */
+.avatar {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.avatar.mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+}
+
+/* a thin rail in the project's colour under its avatar: worktrees and sessions
+   read as that project's, at a glance and without shouting */
+.project .worktrees {
+  margin-left: 18px;
+  border-left: 2px solid color-mix(in srgb, var(--project-accent, transparent) 50%, transparent);
+}
+
+.project .worktree-head {
+  padding-left: 8px;
+}
+
+.project .session {
+  padding-left: 16px;
+}
+
 .project-name,
 .session-name,
 .file-name,

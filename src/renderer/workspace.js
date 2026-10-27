@@ -27,6 +27,7 @@ import {
   stillWanted,
 } from './inspector-state.js';
 import { renderPlan } from './plan-view.js';
+import { averageColor, nudgeColor } from './project-accent.js';
 import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
 import { createReviewController } from './review/review-controller.js';
@@ -314,8 +315,43 @@ function musicianMarks() {
   return Object.fromEntries(maestro.orchestra.map((musician) => [musician.sessionId, { color: musician.color, name: musician.name }]));
 }
 
+// Project avatars: main sends the data: URI per project root; the accent is
+// the avatar's average colour, read once through a tiny offscreen canvas.
+let avatarUris = {};
+const accents = new Map(); // data URI -> hex | null
+
+function accentOf(uri) {
+  if (accents.has(uri)) return accents.get(uri);
+  accents.set(uri, null);
+  const image = new Image();
+  image.onload = () => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 16;
+      canvas.height = 16;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      context.drawImage(image, 0, 0, 16, 16);
+      const average = averageColor(context.getImageData(0, 0, 16, 16).data);
+      if (average) {
+        accents.set(uri, nudgeColor(...average));
+        renderSidebarOnly();
+      }
+    } catch {
+      // no canvas readback: the monogram colour stays
+    }
+  };
+  image.src = uri;
+  return null;
+}
+
+function avatarMarks() {
+  return Object.fromEntries(
+    Object.entries(avatarUris).map(([root, uri]) => [root, { uri, accent: uri ? accentOf(uri) : null }]),
+  );
+}
+
 function renderSidebarOnly() {
-  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds, musicianMarks());
+  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds, musicianMarks(), avatarMarks());
 }
 
 function render() {
@@ -628,7 +664,8 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState }) => {
+window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState, avatars }) => {
+  if (avatars) avatarUris = avatars;
   plans = planState ?? {};
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;

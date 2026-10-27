@@ -536,3 +536,17 @@ describe('a tab opened for a task', () => {
   });
 });
 
+
+describe('renderSidebar project avatars', () => {
+  const base = () => tree([session('s1')], {});
+  it('shows the avatar image and its accent when main sent one', () => {
+    const html = renderSidebar(base(), null, null, {}, {}, { '/r': { uri: 'data:image/png;base64,AAAA', accent: '#3366cc' } });
+    expect(html).toContain('<img class="avatar" src="data:image/png;base64,AAAA"');
+    expect(html).toContain('--project-accent:#3366cc');
+  });
+  it('falls back to a monogram on a name-derived colour', () => {
+    const html = renderSidebar(base(), null);
+    expect(html).toMatch(/<span class="avatar mono" style="background:#[0-9a-f]{6}"/);
+    expect(html).toMatch(/--project-accent:#[0-9a-f]{6}/);
+  });
+});
