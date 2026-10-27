@@ -5,10 +5,13 @@ export const STATUS = {
   WORKING: 'working',
   DONE: 'done',
   WAITING: 'waiting',
+  FAILED: 'failed',
 };
 
 const HANDLED_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification'];
 const DEFAULT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const TOMBSTONE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const DIED_MID_TURN = 'a sessão fechou no meio do turno';
 
 // Claude Code identifies its sessions by uuid, so anything else — the
 // simulate-event.sh fixtures, above all — can never appear in its registry and
@@ -72,6 +75,9 @@ export class SessionRegistry extends EventEmitter {
       if (isNew) session.alias = this.folderAliasFor(event.cwd) ?? null;
     }
     if (event.transcript_path) session.transcriptPath = event.transcript_path;
+    // An event proves the chat is alive: a tombstone for it is stale.
+    delete session.failedAt;
+    delete session.failReason;
     session.updatedAt = this.now();
 
     if (eventName === 'UserPromptSubmit') {
@@ -175,11 +181,36 @@ export class SessionRegistry extends EventEmitter {
         continue;
       }
       if (!isClaudeSessionId(sessionId)) continue;
+      if (session.status === STATUS.FAILED) continue;
       if (!session.seenAlive && !registryWorks) continue;
-      this.sessions.delete(sessionId);
+      // Dying with the turn open is a failure worth showing; after the Stop
+      // (or while waiting on the user) it is just a closed chat.
+      if (session.status === STATUS.WORKING) {
+        session.status = STATUS.FAILED;
+        session.failedAt = this.now();
+        session.failReason = DIED_MID_TURN;
+        session.unread = false;
+      } else {
+        this.sessions.delete(sessionId);
+      }
       changed = true;
     }
     if (changed) this.emit('change');
+  }
+
+  // The user looked at the chat (card click, terminal in front, quick reply).
+  markSeen(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.seenAt = this.now();
+    this.emit('change');
+  }
+
+  // Clears a tombstone; a live session is never dismissed this way.
+  dismiss(sessionId) {
+    if (this.sessions.get(sessionId)?.status !== STATUS.FAILED) return;
+    this.sessions.delete(sessionId);
+    this.emit('change');
   }
 
   // Chats the hooks never reported — opened before the manager was up, or
@@ -220,7 +251,10 @@ export class SessionRegistry extends EventEmitter {
     const cutoff = this.now() - this.maxAgeMs;
     let changed = false;
     for (const [sessionId, session] of this.sessions) {
-      if (session.updatedAt < cutoff) {
+      const expired = session.status === STATUS.FAILED
+        ? this.now() - session.failedAt > TOMBSTONE_MAX_AGE_MS
+        : session.updatedAt < cutoff;
+      if (expired) {
         this.sessions.delete(sessionId);
         changed = true;
       }
