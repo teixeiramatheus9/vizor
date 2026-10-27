@@ -53,10 +53,17 @@ export function createAgentsController({
     });
   }
 
-  function waitingCount() {
+  function counts() {
     const at = now();
-    return sessions.filter((session) => sessionCard(session, { guardAsk: guardOf(session.id), now: at }).column === 'waiting').length;
+    const result = { working: 0, waiting: 0 };
+    for (const session of sessions) {
+      const column = sessionCard(session, { guardAsk: guardOf(session.id), now: at }).column;
+      if (column === 'working' || column === 'waiting') result[column]++;
+    }
+    return result;
   }
+
+  const waitingCount = () => counts().waiting;
 
   function schedule() {
     if (timer !== null) clearTimer(timer);
@@ -256,6 +263,7 @@ export function createAgentsController({
     // The avatars' accents arrive asynchronously: draw again with them.
     refresh: render,
     waitingCount,
+    counts,
     hasTimer: () => timer !== null,
     OTHER_PROJECTS,
   };

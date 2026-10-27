@@ -2553,3 +2553,32 @@ body[data-palette='giz'] #view-github {
     animation: none !important;
   }
 }
+
+/* status bar: one quiet line under every tab */
+#status-bar {
+  display: flex;
+  gap: var(--sp-4);
+  align-items: center;
+  padding: 2px 12px;
+  border-top: 1px solid var(--ws-border);
+  background: var(--ws-bg);
+  color: var(--text-3);
+  font-size: 0.9em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#status-bar .status-agents {
+  border: none;
+  padding: 0;
+  color: inherit;
+}
+
+#status-bar .status-agents:hover,
+#status-bar .status-agents.waiting {
+  color: var(--text);
+}
+
+#status-bar .status-tokens.over {
+  color: var(--warn, var(--text));
+}

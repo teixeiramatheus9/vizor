@@ -32,6 +32,7 @@ import { buildCommands, filterCommands, renderCommandList } from './command-bar.
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
 import { createReviewController } from './review/review-controller.js';
 import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
+import { renderStatusBar } from './shell/status-bar.js';
 import { keyAction, renderShortcuts } from './shell/shortcuts.js';
 import { createAgentsController } from './agents/agents-controller.js';
 import { createGithubController } from './github/github-controller.js';
@@ -378,6 +379,18 @@ function drawTopTabs() {
   const html = renderTopTabs(topTab, { waiting: agents.waitingCount() });
   if (topTabsEl.innerHTML !== html) topTabsEl.innerHTML = html;
 }
+
+// The bottom line follows the state push (which also carries each token spend):
+// no timer. A click on the agents part opens the Agentes tab.
+const statusBarEl = document.getElementById('status-bar');
+let statusTokens = { used: 0, cap: 0 };
+function drawStatusBar() {
+  const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), nextAutomation: null });
+  if (statusBarEl.innerHTML !== html) statusBarEl.innerHTML = html;
+}
+statusBarEl.addEventListener('click', (event) => {
+  if (event.target.closest('[data-top-tab]')) setTopTab('agents');
+});
 
 // Switching only shows and hides views: no pty is touched. Coming back to the
 // Workspace refits the terminal, which could not be measured while hidden.
@@ -740,7 +753,7 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars }) => {
+window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars, tokens }) => {
   if (avatars) avatarUris = avatars;
   plans = planState ?? {};
   renderGuardAsks(guardAsks);
@@ -750,6 +763,8 @@ window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTe
   document.body.dataset.density = density === 'compact' ? 'compact' : 'comfortable';
   lastTree = tree;
   agents.setState({ sessions: agentSessions, plans, guardAsks });
+  if (tokens) statusTokens = tokens;
+  drawStatusBar();
   terminals = list ?? [];
   // First state of this page: open on the tab that was in front (#155).
   if (!adoptedActive) {

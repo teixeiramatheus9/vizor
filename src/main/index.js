@@ -178,6 +178,7 @@ import {
 import { linuxFocusHint, win32FocusHint, hintAnnouncement } from './focus-hints.js';
 import { resolveWindowDriver } from './window-driver.js';
 import { shouldAnnounce as notifyPolicy } from './notify-policy.js';
+import { createNotifyBatch, summarizeBatch } from './notify-batch.js';
 import { installBridge, uninstallBridge, bridgeStatus, autoSetupBridge } from './bridge-manager.js';
 import { sendUserMessage } from './cc-peer.js';
 
@@ -300,6 +301,29 @@ async function allowAnnouncement(session, kind, text) {
     log(`announcement suppressed (${decision.reason}) for ${session.id?.slice(0, 8)}`);
   }
   return decision.announce;
+}
+
+// Bursts of non-urgent notices leave as ONE balloon (one chime, one spoken
+// line); a lone one goes out exactly as it came. What needs the user passes at once.
+const noticeBatch = createNotifyBatch({
+  flush(events) {
+    const last = events[events.length - 1];
+    if (events.length === 1) {
+      sendToRenderer('tooltip', last.tooltip);
+    } else {
+      const { kind, text, speech } = summarizeBatch(events);
+      sendToRenderer('tooltip', { projectName: `${events.length} chats`, text, kind, sessionId: last.sessionId, speech });
+    }
+    lastNoticeSessionId = last.sessionId ?? lastNoticeSessionId;
+    showTooltip();
+  },
+});
+
+// Runs the per-event policy, then hands the balloon to the batch.
+async function bark(session, kind, text, tooltip) {
+  const reminder = kind === 'waiting' && lastAnnouncements.get(session.id)?.text === text;
+  if (!(await allowAnnouncement(session, kind, text))) return;
+  noticeBatch.push({ kind, sessionId: session.id, tooltip, reminder });
 }
 
 // 'none' | 'asleep' | 'active' — the hint pipeline says different things for
@@ -527,6 +551,8 @@ ipcMain.handle('guard:answer', (_event, { id, choice } = {}) => {
   return Boolean(request);
 });
 const tokenBudget = new TokenBudget({ file: usageFile });
+// The workspace status line follows the meter: a push per spend, no timer.
+tokenBudget.on('spent', () => pushWorkspaceState());
 const isEconomyMode = () => tokenBudget.isExceeded(managerConfig.tokenBudgetDaily);
 let mainWindow = null;
 let overlayWindow = null;
@@ -1831,15 +1857,12 @@ async function generateVoiceForStop(session) {
     tokenBudget.add(voice.tokensUsed);
   }
   registry.setManagerMessage(session.id, voice);
-  if (await allowAnnouncement(session, 'done', voice.message)) {
-    sendToRenderer('tooltip', {
-      projectName: displayNameOf(session),
-      text: voice.message,
-      kind: 'done',
-      sessionId: session.id,
-    });
-    showTooltip();
-  }
+  await bark(session, 'done', voice.message, {
+    projectName: displayNameOf(session),
+    text: voice.message,
+    kind: 'done',
+    sessionId: session.id,
+  });
 }
 
 // The Notification hook often fires BEFORE Claude Code flushes the ask entry
@@ -1868,16 +1891,13 @@ async function enrichNotification(session) {
   if (!text) return;
   if (firstQuestion) registry.setManagerMessage(session.id, { message: text });
   const kind = firstQuestion ? 'question' : 'waiting';
-  if (await allowAnnouncement(session, kind, text)) {
-    sendToRenderer('tooltip', {
-      projectName: displayNameOf(session),
-      text,
-      kind,
-      optionsCount: firstQuestion?.options?.length ?? 0,
-      sessionId: session.id,
-    });
-    showTooltip();
-  }
+  await bark(session, kind, text, {
+    projectName: displayNameOf(session),
+    text,
+    kind,
+    optionsCount: firstQuestion?.options?.length ?? 0,
+    sessionId: session.id,
+  });
 }
 
 // --- workspace window (Linux only in v1) -----------------------------------
@@ -2062,6 +2082,7 @@ function pushWorkspaceStateNow() {
       backstage: maestroOn() ? Object.fromEntries(maestroOrchestra.map((musician) => [musician.sessionId, backstageOf(musician.sessionId)])) : {},
     },
     plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
+    tokens: { used: tokenBudget.usedToday(), cap: managerConfig.tokenBudgetDaily },
     theme: managerConfig.theme,
     palette: managerConfig.palette,
     density: managerConfig.density,

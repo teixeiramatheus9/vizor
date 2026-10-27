@@ -115,6 +115,8 @@ export function createReviewController({ api, doc = document, notify = () => {},
   const forceOpen = new Set();
   const progress = {}; // path → { approved, total }, from the files opened
   let filter = '';
+  let restoreAnchor = null; // { path, hunkId } from the saved prefs, consumed by the first draw of that file
+  let scrollTimer = null;
   let nodeFilter = null; // { label, files, range } from a click in Impacto
   let slice = null; // the last { status, slice?, reason? }
   let selectedNode = null;
@@ -140,7 +142,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     const changed = next !== tab;
     tab = next;
     showTab();
-    if (save) persist({ tab });
+    if (save) persist({ tab, innerTab: tab });
     if (changed) refreshVisible();
   }
 
@@ -222,6 +224,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     for (const key of Object.keys(progress)) delete progress[key];
     filter = '';
     filterInput.value = '';
+    restoreAnchor = null;
     nodeFilter = null;
     slice = null;
     selectedNode = null;
@@ -237,8 +240,9 @@ export function createReviewController({ api, doc = document, notify = () => {},
     const setsBefore = drawerSets;
     const saved = worktree ? await api.reviewPrefs(worktree).catch(() => ({})) : {};
     if (mine !== prefsSerial) return;
-    if (!pinnedTab && TAB_IDS.has(saved?.tab)) {
-      tab = saved.tab;
+    const savedTab = saved?.innerTab ?? saved?.tab;
+    if (!pinnedTab && TAB_IDS.has(savedTab)) {
+      tab = savedTab;
       showTab();
     }
     if (Number.isFinite(saved?.drawerHeight)) drawer.height = saved.drawerHeight;
@@ -249,7 +253,15 @@ export function createReviewController({ api, doc = document, notify = () => {},
     else if (explicit && worktree && saved?.drawerOpen !== drawer.open) persist({ drawerOpen: drawer.open });
     applyDrawer({ notify: drawer.open !== wasOpen });
     const opened = saved?.openFiles?.[0];
-    if (opened && !selectedPath) selectedPath = opened;
+    if (opened && !selectedPath) {
+      selectedPath = opened;
+      // Back where the reader was: the file, then the hunk nearest the top (best effort).
+      if (saved?.scrollAnchor?.path === opened && saved.scrollAnchor.hunkId) restoreAnchor = saved.scrollAnchor;
+    }
+    if (typeof saved?.filter === 'string' && saved.filter && !filter) {
+      filter = saved.filter;
+      filterInput.value = filter;
+    }
     refreshVisible();
   }
 
@@ -344,6 +356,10 @@ export function createReviewController({ api, doc = document, notify = () => {},
       );
     }
     diffEl.scrollTop = top;
+    if (restoreAnchor && fileView.path === restoreAnchor.path) {
+      diffEl.querySelector(`section.hunk[data-hunk-id="${CSS.escape(restoreAnchor.hunkId)}"]`)?.scrollIntoView({ block: 'start' });
+      restoreAnchor = null; // a hunk that no longer exists leaves the file at the top
+    }
     if (fileView.path !== openedPath) {
       openedPath = fileView.path;
       for (const child of diffEl.children ?? []) child.classList?.add('opening');
@@ -358,6 +374,21 @@ export function createReviewController({ api, doc = document, notify = () => {},
     }
   }
 
+  // The hunk nearest the top of the diff, remembered per worktree. Saved a
+  // beat after the scroll stops; an empty diff (a worktree switch) saves nothing.
+  function rememberScroll() {
+    if (scrollTimer !== null) clearTimeout(scrollTimer);
+    const wt = worktree;
+    scrollTimer = setTimeout(() => {
+      scrollTimer = null;
+      if (!wt || wt !== worktree || !selectedPath || fileView?.path !== selectedPath) return;
+      const top = diffEl.getBoundingClientRect().top;
+      const near = [...diffEl.querySelectorAll('section.hunk[data-hunk-id]')].find((el) => el.getBoundingClientRect().bottom > top);
+      if (near) api.reviewPrefs(wt, { scrollAnchor: { path: selectedPath, hunkId: near.dataset.hunkId } }).catch(() => {});
+    }, 300);
+  }
+  diffEl.addEventListener('scroll', rememberScroll);
+
   function openFile(path, { context = true } = {}) {
     const changed = path !== selectedPath;
     selectedPath = path;
@@ -369,7 +400,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
       diffEl.scrollTop = 0;
     }
     if (context) setComposerContext({ kind: 'file', path });
-    persist({ openFiles: [path] });
+    persist({ openFiles: [path], scrollAnchor: null });
     loadFile();
   }
 
@@ -543,6 +574,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
 
   filterInput.addEventListener('input', () => {
     filter = filterInput.value;
+    persist({ filter: filter.slice(0, 200) });
     drawList();
   });
 

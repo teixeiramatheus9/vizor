@@ -1,10 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 
 // Tracks how many tokens the manager's AI calls spent TODAY (local time),
-// persisted so restarts don't reset the meter.
-export class TokenBudget {
+// persisted so restarts don't reset the meter. Emits 'spent' (the new total)
+// after each record, so a view can follow the meter without polling.
+export class TokenBudget extends EventEmitter {
   constructor({ file, now = () => new Date() }) {
+    super();
     this.file = file;
     this.now = now;
     try {
@@ -45,6 +48,7 @@ export class TokenBudget {
     if (!Number.isFinite(amount) || amount <= 0) return;
     this.used += Math.round(amount);
     this.save();
+    this.emit('spent', this.used);
   }
 
   usedToday() {

@@ -1166,7 +1166,8 @@ window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId, sp
       const phrases = TTS_PHRASES[voiceLang] ?? TTS_PHRASES.pt;
       const phrase = phrases[kind] ?? phrases.waiting;
       // A guard card in voice mode is spoken by main (speech is null then).
-      if (kind !== 'guard' || speech) speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
+      // A grouped notice (several chats at once) brings its own spoken line.
+      if (kind !== 'guard' || speech) speakSample(speech ?? phrase(projectName, optionsCount));
     }
   }
   const alert = kind === 'question' || kind === 'waiting' || kind === 'guard';
