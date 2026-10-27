@@ -939,10 +939,42 @@ function editReason(rules, call, cwd, home) {
   return null;
 }
 
+// An automação whose rules could not be read (no file, corrupt, no entry for
+// its id) may only read until the Vizor writes them: fail closed.
+export const MISSING_AUTOMATION_RULES = Object.freeze({ missing: true });
+const MISSING_MESSAGE = 'Automação do Vizor: não achei as regras desta automação; só leitura até o Vizor gravar as regras.';
+const READ_ONLY_PROGRAMS = new Set(['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'pwd', 'echo', 'cd']);
+const READ_ONLY_GIT = new Set(['status', 'log', 'diff', 'show']);
+
+function readOnly(command) {
+  const { segments, opaque } = automationSegments(command);
+  // A substitution or a nested shell is something else running: not a read.
+  if (opaque || substitutions(command).length || processSubstitutions(command).length) return false;
+  return segments.every((segment) => {
+    if (redirectTargets(segment).some((target) => !DEVICE.test(target))) return false;
+    const tokens = withoutRedirections(words(segment)).map((token) => token.text);
+    if (tokens.some(isForce)) return false;
+    if (tokens[0] !== 'git') return READ_ONLY_PROGRAMS.has(tokens[0]);
+    const { index, configs } = gitGlobals(tokens);
+    return configs.length === 0 && READ_ONLY_GIT.has(tokens[index]) && !tokens.some((token) => token.startsWith('--output'));
+  });
+}
+
+function missingVerdict(call) {
+  try {
+    if (EDIT_TOOLS.has(call.tool)) return MISSING_MESSAGE;
+    if (call.tool === 'Bash' && !readOnly(String(call.input?.command ?? ''))) return MISSING_MESSAGE;
+    return null;
+  } catch {
+    return MISSING_MESSAGE;
+  }
+}
+
 // The deny reason for an automação's call, or null. Never throws: a call the
 // guard fails to read is denied.
 export function automationVerdict({ rules, call, cwd = null, home = os.homedir() }) {
   if (!rules) return null;
+  if (rules.missing) return missingVerdict(call);
   let what;
   try {
     if (call.tool === 'Bash') what = bashReason(rules, String(call.input?.command ?? ''), cwd, home);
@@ -954,8 +986,9 @@ export function automationVerdict({ rules, call, cwd = null, home = os.homedir()
   return `Automação do Vizor (nível ${LEVEL_LABEL[rules.level] ?? rules.level}): ${what}. Não tente contornar.`;
 }
 
-// This automação's entry, normalized; null without one (then nothing
-// changes). A damaged entry fails closed: no edits, no gh writes.
+// This automação's entry, normalized; null without one (the caller then
+// holds the session to MISSING_AUTOMATION_RULES). A damaged entry fails
+// closed: no edits, no gh writes.
 export function loadAutomationRules(readFile, file, id) {
   if (typeof id !== 'string' || !id) return null;
   try {
@@ -1285,10 +1318,13 @@ async function main(raw) {
   }
   if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
   const readFile = (file) => fs.readFileSync(file, 'utf8');
-  // Only an automação's session reads its rules; without them, as before.
+  // Only an automação's session reads its rules; one that cannot find them
+  // may only read. Without the env, as before.
   const automationId = process.env.VIZOR_AUTOMATION || null;
   const automation =
-    automationId && event.hook_event_name === 'PreToolUse' ? loadAutomationRules(readFile, automationsFile, automationId) : null;
+    automationId && event.hook_event_name === 'PreToolUse'
+      ? (loadAutomationRules(readFile, automationsFile, automationId) ?? MISSING_AUTOMATION_RULES)
+      : null;
   const rules = loadRules(readFile, rulesDir);
   if (!rules && !automation) return null;
   const hasRepos = rules ? Object.keys(rules.repos).length > 0 : false;

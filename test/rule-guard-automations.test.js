@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { automationVerdict, decide, loadAutomationRules } from '../src/hook/rule-guard.js';
+import { MISSING_AUTOMATION_RULES, automationVerdict, decide, loadAutomationRules } from '../src/hook/rule-guard.js';
 
 const GUARD = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'hook', 'rule-guard.js');
 const NEVER = [
@@ -280,6 +280,21 @@ describe('automação: Bash writes outside the worktree (level 2, best effort)',
   });
 });
 
+describe('automação without its rules: read only (fail closed)', () => {
+  const MESSAGE = 'Automação do Vizor: não achei as regras desta automação; só leitura até o Vizor gravar as regras.';
+  const check = (call) => automationVerdict({ rules: MISSING_AUTOMATION_RULES, call, cwd: root });
+  const reads = ['git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', 'git -C sub status', 'ls -la', 'cat a.txt', 'grep -rn x .', 'rg x', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'echo hi', 'cat a.txt | grep a | wc -l', 'cd sub && ls', 'git status 2>/dev/null'];
+  for (const command of reads) it(`lets read: ${command}`, () => expect(check(bash(command))).toBeNull());
+  const writes = ['echo hi > a', 'git diff --output=x', 'git commit -m x', 'git push', 'gh pr view 1', 'gh issue create -t x', 'npm test', 'touch a', 'rm a.txt', 'bash -c "ls"', 'ls $(touch a)', 'cat a.txt | tee b', 'git -c x=y status', 'sed -n 1p a.txt'];
+  for (const command of writes) it(`denies: ${command}`, () => expect(check(bash(command))).toBe(MESSAGE));
+  it('denies every edit tool', () => {
+    for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) expect(check(edit(path.join(root, 'a.txt'), tool))).toBe(MESSAGE);
+  });
+  it('other tools (Read, Grep) pass', () => {
+    expect(check({ tool: 'Read', input: { file_path: path.join(root, 'a.txt') } })).toBeNull();
+  });
+});
+
 describe('loadAutomationRules', () => {
   const file = '/c/automacoes/regras.json';
   const read = (content) => (name) => {
@@ -399,13 +414,28 @@ describe('rule-guard script with VIZOR_AUTOMATION', () => {
     expect(await guard('git push')).toEqual({ code: 0, stdout: '' });
   });
 
-  it('a corrupt or missing file keeps exit 0 and today\'s behaviour', async () => {
-    expect(await guard('git push', { VIZOR_AUTOMATION: 'auto-1' })).toEqual({ code: 0, stdout: '' });
-    writeAutomations('{not json');
-    expect(await guard('git push', { VIZOR_AUTOMATION: 'auto-1' })).toEqual({ code: 0, stdout: '' });
+  const reasonOf = (result) => JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason;
+  const MISSING = /^Automação do Vizor: não achei as regras desta automação; só leitura/;
+  for (const [name, setup] of [
+    ['a missing file', () => {}],
+    ['a corrupt file', () => writeAutomations('{not json')],
+    ['an unknown id', () => writeAutomations(JSON.stringify({ version: 1, automations: { other: rulesFor('project') } }))],
+  ]) {
+    it(`${name} fails closed: reads pass, writes are denied, exit 0`, async () => {
+      setup();
+      expect(await guard('git status', { VIZOR_AUTOMATION: 'auto-1' })).toEqual({ code: 0, stdout: '' });
+      for (const command of ['git push', 'echo x > a', 'npm test']) {
+        const result = await guard(command, { VIZOR_AUTOMATION: 'auto-1' });
+        expect(result.code).toBe(0);
+        expect(reasonOf(result)).toMatch(MISSING);
+      }
+    });
+  }
+
+  it('without its rules the dev rules still apply to what reads pass', async () => {
     writeDevRules();
-    const dev = await guard('psql -c "drop table x"', { VIZOR_AUTOMATION: 'auto-1' });
-    expect(dev.code).toBe(0);
-    expect(JSON.parse(dev.stdout).hookSpecificOutput.permissionDecisionReason).toContain('Barrado pela regra do usuário');
+    const result = await guard('echo "drop table x"', { VIZOR_AUTOMATION: 'auto-1' });
+    expect(result.code).toBe(0);
+    expect(reasonOf(result)).toContain('Barrado pela regra do usuário');
   });
 });
