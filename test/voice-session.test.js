@@ -15,6 +15,7 @@ function setup(overrides = {}) {
     openOrFocus: async (target) => (calls.push(['open', target]), { sessionId: target.sessionId }),
     openNew: async (request) => (calls.push(['new', request]), { sessionId: 'snew' }),
     linkTask: (number, sessionId) => calls.push(['link', number, sessionId]),
+    startTask: (number, sessionId, cwd) => calls.push(['start', number, sessionId, cwd]),
     sessionInfo: () => ({ title: 'Login com senha', lastMessage: 'Paramos na criptografia de senha. Faltava escolher o algoritmo.', cwd: '/r' }),
     deliverPrompt: async (sessionId, text) => (calls.push(['deliver', sessionId, text]), 'sent'),
     askManager: async () => 'Tem 2 chats rodando.',
@@ -515,6 +516,7 @@ describe('voice session — the gerente reads, the músicos act', () => {
     expect(opened[1].prompt).toContain('gh issue view 142');
     expect(opened[1].prompt).toContain('espere eu aprovar o contrato antes de mexer');
     expect(calls).toContainEqual(['link', 142, 'snew']);
+    expect(calls).toContainEqual(['start', 142, 'snew', '/r']);
     expect(texts().at(-1)).toBe('Puxei a 142: o músico vai ler a issue e propor um plano.');
   });
 
@@ -524,6 +526,8 @@ describe('voice session — the gerente reads, the músicos act', () => {
     await tick();
     expect(calls).toContainEqual(['open', { sessionId: 's22', cwd: '/r' }]);
     expect(calls.some(([name]) => name === 'new')).toBe(false);
+    // Picking it is starting it: an ended task begins again.
+    expect(calls).toContainEqual(['start', 22, 's22', '/r']);
   });
 
   it('"Quer que eu peça revisão da PR 166?" → a reviewer músico that reports and changes nothing', async () => {
@@ -630,6 +634,13 @@ describe('voice session — the plan by voice', async () => {
     await session.onUtterance('aprova o plano');
     await tick();
     expect(texts().at(-1)).toBe('Não consegui falar com esse chat.');
+  });
+
+  it('the old ok on a task with a contract is refused with the reason', async () => {
+    const { session, texts } = setup({ focusedSession: () => 's169', planAction: async () => ({ error: 'esta tarefa tem contrato: aprove o contrato no card' }) });
+    await session.onUtterance('aprova o plano');
+    await tick();
+    expect(texts().at(-1)).toBe('Não aprovei o plano: esta tarefa tem contrato: aprove o contrato no card.');
   });
 
   it('a PR the task is not ready for is refused with the reason', async () => {

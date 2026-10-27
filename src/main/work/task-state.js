@@ -29,6 +29,8 @@ export const newTaskState = () => ({
   quick: false, // the dev called it a quick task: no gates
   lastRun: null, // { status, tail, at, ms } of the contract's last run
   changedLocked: [], // locked test files whose hash no longer matches
+  waitUntick: [], // steps put back by a restore: no checkpoint until they are unticked
+  ended: false, // the dev ended it: a tombstone until the issue is started again
   updatedAt: 0,
 });
 const TAIL_MAX = 8192;
@@ -98,6 +100,8 @@ function coerce(data) {
       }
       : null,
     changedLocked: Array.isArray(data.changedLocked) ? data.changedLocked.filter((x) => typeof x === 'string') : [],
+    waitUntick: Array.isArray(data.waitUntick) ? data.waitUntick.filter((x) => Number.isInteger(x) && x > 0) : [],
+    ended: data.ended === true,
     updatedAt: Number.isFinite(data.updatedAt) ? data.updatedAt : 0,
   };
 }

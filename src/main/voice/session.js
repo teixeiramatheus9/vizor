@@ -60,7 +60,7 @@ const LINES = {
     planSent: { approve: 'Mandei seguir com o plano.', pr: 'Pedi pra rodar os testes e abrir a PR.' },
     whichPlanChat: 'De qual chat? Diga o número da task.',
     planFailed: 'Não consegui falar com esse chat.',
-    planRefused: (reason) => `Ainda não dá pra abrir a PR: ${reason}.`,
+    planRefused: { approve: (reason) => `Não aprovei o plano: ${reason}.`, pr: (reason) => `Ainda não dá pra abrir a PR: ${reason}.` },
     planNone: 'Esse chat não tem plano.',
     planBusy: 'Já estou esperando ele ficar livre.',
     understood: (label) => `Entendi: ${label}.`,
@@ -148,7 +148,7 @@ const LINES = {
     planSent: { approve: 'Told it to go ahead with the plan.', pr: 'Asked it to run the tests and open the PR.' },
     whichPlanChat: 'Which chat? Say the task number.',
     planFailed: "Couldn't reach that chat.",
-    planRefused: (reason) => `The PR can't be opened yet: ${reason}.`,
+    planRefused: { approve: (reason) => `I didn't approve the plan: ${reason}.`, pr: (reason) => `The PR can't be opened yet: ${reason}.` },
     planNone: "That chat has no plan.",
     planBusy: "I'm already waiting for it to be free.",
     understood: (label) => `Got it: ${label}.`,
@@ -237,6 +237,7 @@ export function createVoiceSession(deps) {
     const info = deps.sessionInfo(sessionId) ?? {};
     const where = info.lastMessage ? ` ${firstSentence(info.lastMessage)}` : '';
     say(lines().opened(number, info.title, where));
+    return sessionId;
   }
 
   async function resumeTask(number) {
@@ -302,7 +303,7 @@ export function createVoiceSession(deps) {
     return held(ORDER.plan(musicianOfSession(sessionId), action), async () => {
       const result = await deps.planAction(sessionId, action);
       const said = { sent: lines().planSent[action], 'no-plan': lines().planNone, busy: lines().planBusy };
-      say(result?.error ? lines().planRefused(result.error) : said[result] ?? lines().planFailed);
+      say(result?.error ? lines().planRefused[action](result.error) : said[result] ?? lines().planFailed);
     });
   }
 
@@ -359,10 +360,17 @@ export function createVoiceSession(deps) {
 
   async function pickIssue(number) {
     const found = await deps.resolveTask(number);
-    if (found.sessionId) return openFound(number, found);
-    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: startIssuePrompt(number), task: number });
+    // Picking an issue is starting it: a task the dev ended begins again.
+    if (found.sessionId) {
+      const sessionId = await openFound(number, found);
+      deps.startTask?.(number, sessionId, found.cwd);
+      return;
+    }
+    const cwd = found.cwd ?? deps.projectRoot();
+    const opened = await deps.openNew({ cwd, prompt: startIssuePrompt(number), task: number });
     if (!opened?.sessionId) return say(lines().newChatFailed);
     deps.linkTask(number, opened.sessionId);
+    deps.startTask?.(number, opened.sessionId, cwd);
     bind(opened.sessionId, number);
     return say(lines().picked(number));
   }
@@ -436,6 +444,7 @@ export function createVoiceSession(deps) {
       return;
     }
     deps.linkTask(pending.number, opened.sessionId);
+    deps.startTask?.(pending.number, opened.sessionId, pending.cwd);
     bind(opened.sessionId, pending.number);
     say(lines().newChat(pending.number));
   }

@@ -63,6 +63,8 @@ describe('what the Vizor asks a músico', () => {
     expect(restored).toMatch(/antes do passo 3/);
     expect(restored).toContain('src/novo.js');
     expect(restoredPrompt(3, [])).not.toMatch(/ficaram/);
+    for (const prompt of [DEV_DONE_PROMPT, undoStepPrompt(1, 'x'), restoredPrompt(1, [])]) expect(prompt).toMatch(NO_GUI);
+    expect(startIssuePrompt(1)).toContain('Não abra o app');
   });
 
   it('approving tells it to go on ticking the file; the PR asks for the tests first', () => {

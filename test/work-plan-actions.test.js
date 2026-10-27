@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createPlanActions } from '../src/main/work/plans.js';
 
-function setup({ plan = { steps: [{ text: 'a', done: false }], approved: false }, result = 'sent', refusePr = () => null } = {}) {
+function setup({ plan = { steps: [{ text: 'a', done: false }], approved: false }, result = 'sent', refusePr = () => null, refuseApprove = () => null } = {}) {
   const approved = [];
   const sent = [];
   let release;
@@ -10,6 +10,7 @@ function setup({ plan = { steps: [{ text: 'a', done: false }], approved: false }
     planOf: () => plan,
     approve: (sessionId) => approved.push(sessionId),
     refusePr,
+    refuseApprove,
     deliver: async (sessionId, text) => {
       sent.push([sessionId, text]);
       if (result === 'slow') return gate.then(() => 'sent');
@@ -59,5 +60,12 @@ describe('the plan card actions', () => {
     expect(sent).toEqual([]);
     expect(await actions.run('s2', 'pr')).toBe('sent');
     expect(await actions.run('s1', 'approve')).toBe('sent');
+  });
+
+  it('the old ok is refused, with the reason, on a task with a contract', async () => {
+    const { actions, sent, approved } = setup({ refuseApprove: () => 'esta tarefa tem contrato: aprove o contrato no card' });
+    expect(await actions.run('s1', 'approve')).toEqual({ error: 'esta tarefa tem contrato: aprove o contrato no card' });
+    expect(sent).toEqual([]);
+    expect(approved).toEqual([]);
   });
 });

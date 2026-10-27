@@ -60,7 +60,7 @@ export function createTaskService({
     if (!loading.has(key)) {
       loading.set(key, (async () => {
         const state = await store.load(key);
-        const task = { key, worktree, issue, state: { ...state, worktree, issue }, plan: null, saved: state.updatedAt > 0, running: 0, waitUntick: new Set(), chain: Promise.resolve() };
+        const task = { key, worktree, issue, state: { ...state, worktree, issue }, plan: null, saved: state.updatedAt > 0, running: 0, generation: 0, chain: Promise.resolve() };
         for (const sessionId of task.state.sessions) bySession.set(sessionId, key);
         tasks.set(key, task);
         loading.delete(key);
@@ -75,11 +75,12 @@ export function createTaskService({
   const abs = (task, file) => path.join(task.worktree, file);
 
   function phaseOf(task) {
-    if (task.state.quick || !task.plan) return 'quick';
+    if (task.state.ended || task.state.quick || !task.plan) return 'quick';
     return T.nextPhase(task.state, task.plan);
   }
 
   async function persist(task) {
+    if (tasks.get(task.key) !== task) return; // dropped meanwhile: nothing to keep
     const worth = task.saved || task.plan || task.state.contract || task.state.tests;
     if (!worth) return;
     task.state = { ...task.state, updatedAt: now() };
@@ -92,6 +93,7 @@ export function createTaskService({
     const sessions = {};
     const folders = {};
     for (const task of tasks.values()) {
+      if (task.state.ended) continue;
       const phase = phaseOf(task);
       if (GATED.has(phase)) {
         const allowEdits = phase === 'tests' ? (task.plan.contractFiles ?? []).map((file) => abs(task, file)) : [];
@@ -141,17 +143,18 @@ export function createTaskService({
     const steps = task.plan?.steps ?? [];
     let ticked = false;
     let next = task.state.checkpoints;
+    let waiting = task.state.waitUntick;
     for (const [index, step] of steps.entries()) {
       const n = index + 1;
       if (!step.done) {
-        task.waitUntick.delete(n);
+        waiting = waiting.filter((item) => item !== n);
         if (next[n]) {
           const { [n]: _gone, ...rest } = next;
           next = rest;
         }
         continue;
       }
-      if (next[n] || task.waitUntick.has(n)) continue;
+      if (next[n] || waiting.includes(n)) continue;
       ticked = true;
       try {
         const { ref } = await checkpoints.take(task.worktree, task.issue, n);
@@ -160,7 +163,7 @@ export function createTaskService({
         log(`tasks: checkpoint ${task.issue}/${n} failed (${error?.message ?? error})`);
       }
     }
-    task.state = { ...task.state, checkpoints: next };
+    task.state = { ...task.state, checkpoints: next, waitUntick: waiting };
     return ticked;
   }
 
@@ -180,6 +183,7 @@ export function createTaskService({
   async function runContract(task) {
     const command = task.state.tests?.command;
     if (!command) return null;
+    const generation = task.generation;
     task.running++;
     changed();
     let result;
@@ -190,7 +194,8 @@ export function createTaskService({
     }
     if (result.status === 'cancelled') return result; // a newer run owns the result
     await serial(task, async () => {
-      if (!tasks.has(task.key)) return;
+      // Ended, reopened or dropped while it ran: the result belongs to no task.
+      if (tasks.get(task.key) !== task || task.generation !== generation || task.state.ended) return;
       task.state = { ...task.state, lastRun: { status: result.status, tail: String(result.tail ?? result.reason ?? '').slice(-TAIL_MAX), at: now(), ms: result.ms ?? 0 } };
       await persist(task);
     });
@@ -209,6 +214,7 @@ export function createTaskService({
     if (!validBinding(sessionId, worktree, issue)) return null;
     const task = await ensure(worktree, issue);
     const run = await serial(task, async () => {
+      if (task.state.ended) return false; // ended by the dev: only starting the issue again revives it
       attach(task, sessionId);
       task.plan = plan ?? null;
       // A quick plan is followed once the dev approved it (its baseline exists).
@@ -283,7 +289,28 @@ export function createTaskService({
     tasks.delete(task.key);
     for (const sessionId of task.state.sessions) if (bySession.get(sessionId) === task.key) bySession.delete(sessionId);
     await store.remove(task.key).catch((error) => log(`tasks: could not remove ${task.key} (${error?.message ?? error})`));
-    await checkpoints.drop(task.worktree, task.issue).catch((error) => log(`tasks: could not drop the checkpoints of #${task.issue} (${error?.message ?? error})`));
+    await dropRefs(task);
+  }
+
+  const dropRefs = (task) => Promise.resolve()
+    .then(() => checkpoints.drop(task.worktree, task.issue))
+    .catch((error) => log(`tasks: could not drop the checkpoints of #${task.issue} (${error?.message ?? error})`));
+
+  const freshState = (task, extra = {}) => ({ ...T.newTaskState(), worktree: task.worktree, issue: task.issue, ...extra });
+
+  // Started again by the dev (Ctrl+K, voice, "Puxar"): an ended task begins anew.
+  async function reopen(worktree, issue) {
+    if (typeof worktree !== 'string' || !path.isAbsolute(worktree) || !Number.isInteger(issue) || issue <= 0) return false;
+    const task = await ensure(worktree, issue);
+    const revived = await serial(task, async () => {
+      if (!task.state.ended) return false;
+      task.generation++;
+      task.state = freshState(task);
+      await persist(task);
+      return true;
+    });
+    if (revived) await settle();
+    return revived;
   }
 
   async function expireDue({ checkClosed }) {
@@ -302,8 +329,12 @@ export function createTaskService({
     const delay = Math.min(MAX_DELAY, Math.max(0, Math.min(...due) - now()) + 1000);
     expiryTimer = setTimer(async () => {
       expiryTimer = null;
-      await expireDue({ checkClosed: true });
-      await settle();
+      try {
+        await expireDue({ checkClosed: true });
+        await settle();
+      } catch (error) {
+        log(`tasks: expiry failed (${error?.stack ?? error})`);
+      }
     }, delay);
   }
 
@@ -316,13 +347,17 @@ export function createTaskService({
       }
       await ensure(worktree, issue);
     }
-    await expireDue({ checkClosed: true });
+    await expireDue({ checkClosed: false });
     for (const task of tasks.values()) {
+      if (task.state.ended) continue;
       task.plan = await readParsed(task.worktree, task.issue);
       await serial(task, async () => {
         if (await checkLocks(task)) await persist(task);
       });
     }
+    await settle();
+    // gh is slow or offline at times: the rules are on disk before it is asked.
+    await expireDue({ checkClosed: true });
     await settle();
   }
 
@@ -500,17 +535,25 @@ export function createTaskService({
     }
     // The later checkpoints are of files that are gone; their steps take new ones once redone.
     const kept = Object.fromEntries(Object.entries(task.state.checkpoints).filter(([step]) => Number(step) < n));
-    task.state = { ...task.state, checkpoints: kept };
-    (task.plan?.steps ?? []).forEach((step, index) => {
-      if (index + 1 >= n && step.done) task.waitUntick.add(index + 1);
-    });
+    const waiting = (task.plan?.steps ?? []).map((step, index) => (index + 1 >= n && step.done ? index + 1 : null)).filter(Boolean);
+    task.state = { ...task.state, checkpoints: kept, waitUntick: [...new Set([...task.state.waitUntick, ...waiting])] };
     return { restored: result.restored, left: result.left, prompt: restoredPrompt(n, result.left) };
   });
 
+  // A tombstone stays: the chat writing its plan again must not re-gate it.
   async function endTask(sessionId) {
     const task = taskOf(sessionId);
     if (!task) return failed(NO_TASK);
-    await serial(task, () => drop(task));
+    await serial(task, async () => {
+      for (const id of task.state.sessions) if (bySession.get(id) === task.key) bySession.delete(id);
+      bySession.delete(sessionId);
+      task.generation++;
+      task.plan = null;
+      task.state = freshState(task, { ended: true });
+      task.saved = true;
+      await persist(task);
+      await dropRefs(task);
+    });
     await settle();
     return { ok: true };
   }
@@ -521,8 +564,16 @@ export function createTaskService({
     return { prompt: APPROVE_PROMPT };
   });
 
+  const APPROVE_REFUSED = 'esta tarefa tem contrato: aprove o contrato no card';
+  // Why the old "Aprovar plano" does not apply, or null: it is the quick tasks' ok only.
+  function approveRefusal(sessionId) {
+    const task = taskOf(sessionId);
+    return task && phaseOf(task) !== 'quick' ? APPROVE_REFUSED : null;
+  }
+
   // The old plan's "Aprovar plano" (a quick task): its baseline, once.
   const approvePlan = (sessionId) => act(sessionId, 'approvePlan', async (task) => {
+    if (phaseOf(task) !== 'quick') return failed(APPROVE_REFUSED);
     await takeBaseline(task);
     return null;
   });
@@ -617,7 +668,9 @@ export function createTaskService({
     state,
     hasActive,
     prRefusal,
+    approveRefusal,
     approvePlan,
+    reopen,
     ...ACTIONS,
     // The IPC's door: only the card's actions, by name.
     run: (sessionId, action, arg) => (Object.hasOwn(ACTIONS, action) ? ACTIONS[action](sessionId, arg) : Promise.resolve(failed('Ação desconhecida.'))),

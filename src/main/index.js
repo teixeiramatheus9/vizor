@@ -1182,13 +1182,13 @@ async function startIssue(number, { root: given = null, title = null } = {}) {
   if (existing?.sessionId) {
     await voiceOpenOrFocus({ sessionId: existing.sessionId, cwd: existing.cwd });
     taskLinks.link(root, number, existing.sessionId);
-    bindTask(existing.sessionId, existing.cwd ?? root, number);
+    startTask(existing.sessionId, existing.cwd ?? root, number);
     return { sessionId: existing.sessionId };
   }
   const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number, root, title });
   if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
   taskLinks.link(root, number, opened.sessionId);
-  bindTask(opened.sessionId, found.cwd ?? root, number);
+  startTask(opened.sessionId, found.cwd ?? root, number);
   workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
   return { sessionId: opened.sessionId };
 }
@@ -1249,6 +1249,8 @@ const planActions = createPlanActions({
   deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
   // The card, Ctrl+K and the voice alike: a task opens its PR only from its pr phase.
   refusePr: (sessionId) => taskService.prRefusal(sessionId),
+  // A task with a contract is approved on its card, never by the old ok.
+  refuseApprove: (sessionId) => taskService.approveRefusal(sessionId),
 });
 const planAction = (sessionId, action) => planActions.run(sessionId, action);
 ipcMain.handle('workspace:plan', (event, { sessionId, action } = {}) => (fromWorkspace(event) ? planAction(sessionId, action) : 'failed'));
@@ -1294,6 +1296,14 @@ const taskService = createTaskService({
 });
 function bindTask(sessionId, cwd, number) {
   if (sessionId && cwd) taskService.bind(sessionId, cwd, number).catch((error) => log(`task bind failed: ${error?.stack ?? error}`));
+}
+// The dev started the issue (Ctrl+K, voice, "Puxar"): a task ended on its card begins again.
+function startTask(sessionId, cwd, number) {
+  if (!sessionId || !cwd) return;
+  taskService
+    .reopen(cwd, number)
+    .then(() => taskService.bind(sessionId, cwd, number))
+    .catch((error) => log(`task start failed: ${error?.stack ?? error}`));
 }
 // The plan card's task actions, and what it shows.
 ipcMain.handle('workspace:task', async (event, { sessionId, action, arg } = {}) => {
@@ -5007,6 +5017,7 @@ function createVoiceSessionForApp() {
       // A resumed chat is bound to its task now; a new one when it writes its plan.
       bindTask(sessionId, registry.sessions.get(sessionId)?.cwd, number);
     },
+    startTask: (number, sessionId, cwd) => startTask(sessionId, cwd ?? voiceRoot(), number),
     sessionInfo: voiceSessionInfo,
     deliverPrompt: voiceDeliverPrompt,
     askManager: voiceAskManager,

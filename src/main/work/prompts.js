@@ -14,7 +14,7 @@ export const startIssuePrompt = (number) =>
   'Termine com uma linha `Vizor-plano: caminho/arquivo.js#funcao, outro/arquivo.js` (caminhos relativos à raiz do projeto). ' +
   'Depois pare e espere eu aprovar o contrato antes de mexer no código. ' +
   'A cada passo concluído, troque o `- [ ]` dele por `- [x]` e ponha logo abaixo uma linha recuada `  porquê: …` (no máximo 2 frases). ' +
-  `${NO_GUI.replace(/^N/, 'n')}`;
+  NO_GUI;
 
 export const CONTRACT_APPROVED_PROMPT =
   'Contrato aprovado. Agora escreva os testes que provam o contrato, sem o código da solução: ' +
@@ -31,19 +31,19 @@ export const devStepPrompt = (text) =>
   `deixe um comentário \`TODO(dev): …\` onde a lógica entra, sem escrever a lógica, e pare. ${NO_GUI}`;
 
 export const DEV_DONE_PROMPT =
-  'Fiz o passo [dev]; rode os testes e continue: marque esse passo com `- [x]` e o `porquê:`, e pare antes do próximo.';
+  `Fiz o passo [dev]; rode os testes e continue: marque esse passo com \`- [x]\` e o \`porquê:\`, e pare antes do próximo. ${NO_GUI}`;
 
 export const TRUST_PROMPT =
   'Modo confiança: siga os passos do plano até o fim, marcando cada `- [x]` com o `porquê:` logo abaixo. ' +
   `Num passo [dev], prepare o andaime, deixe \`TODO(dev): …\` e pare. ${NO_GUI}`;
 
 export const undoStepPrompt = (n, text) =>
-  `Desfaça o passo ${n} (${text}): volte o código que esse passo mudou, troque o \`- [x]\` dele por \`- [ ]\` e pare.`;
+  `Desfaça o passo ${n} (${text}): volte o código que esse passo mudou, troque o \`- [x]\` dele por \`- [ ]\` e pare. ${NO_GUI}`;
 
 export const restoredPrompt = (n, left) =>
   `Voltei os arquivos pra antes do passo ${n} (nada foi apagado). ` +
   (left.length ? `Ficaram arquivos criados depois: ${left.slice(0, 10).join(', ')}${left.length > 10 ? '…' : ''}. ` : '') +
-  `Desmarque no plano os passos desfeitos (do ${n} em diante) e pare.`;
+  `Desmarque no plano os passos desfeitos (do ${n} em diante) e pare. ${NO_GUI}`;
 
 export const APPROVE_PROMPT = 'Plano aprovado, pode seguir. A cada passo concluído, marque `- [x]` no arquivo do plano.';
 

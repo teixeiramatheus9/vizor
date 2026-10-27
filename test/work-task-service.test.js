@@ -382,6 +382,21 @@ describe('the task service: going back', () => {
     expect(ctx.saved.get(KEY).checkpoints).toEqual({ 0: 'refs/vizor/tarefa/abc/169/0', 1: 'refs/vizor/tarefa/abc/169/1' });
   });
 
+  it('after a restore, a restart does not checkpoint the steps still ticked', async () => {
+    const ctx = await ticked();
+    await ctx.service.restoreBefore('s1', 2);
+    expect(ctx.saved.get(KEY).waitUntick).toEqual([2, 3]);
+    const again = setup({ stored: { [KEY]: ctx.saved.get(KEY) }, plans: { [`${WT}#169`]: planText({ done: 3 }) } });
+    await again.service.start();
+    await again.service.bind('s1', WT, 169);
+    expect(again.deps.checkpoints.take).not.toHaveBeenCalled();
+    again.plans[`${WT}#169`] = planText({ done: 1 });
+    await again.service.bind('s1', WT, 169);
+    again.plans[`${WT}#169`] = planText({ done: 2 });
+    await again.service.bind('s1', WT, 169);
+    expect(again.deps.checkpoints.take).toHaveBeenCalledWith(WT, 169, 2);
+  });
+
   it('before step 1 is the baseline taken when the tests were approved; a restore error comes back in words', async () => {
     const ctx = await ticked();
     expect(await ctx.service.restoreBefore('s1', 1)).toMatchObject({ ok: true });
@@ -400,10 +415,66 @@ describe('the task service: the end of a task', () => {
     await toSteps(ctx);
     expect(await ctx.service.endTask('s1')).toEqual({ ok: true });
     expect(ctx.rules.doc).toEqual({ version: 1, sessions: {}, folders: {} });
-    expect(ctx.saved.has(KEY)).toBe(false);
+    expect(ctx.saved.get(KEY)).toMatchObject({ ended: true, tests: null, contract: null, sessions: [] });
     expect(ctx.deps.checkpoints.drop).toHaveBeenCalledWith(WT, 169);
     expect(await ctx.service.state('s1')).toBeNull();
     expect(ctx.service.hasActive()).toBe(false);
+  });
+
+  it('an ended task stays ended: the chat writing its plan again holds nothing, after a restart too', async () => {
+    const ctx = setup();
+    await toSteps(ctx);
+    await ctx.service.endTask('s1');
+    await ctx.service.bind('s1', WT, 169);
+    await ctx.service.onPlan('s1', WT, 169, parseTaskPlan(planText()));
+    expect(ctx.rules.doc.sessions).toEqual({});
+    expect(await ctx.service.state('s1')).toBeNull();
+    expect(ctx.service.hasActive()).toBe(false);
+
+    const again = setup({ stored: { [KEY]: ctx.saved.get(KEY) }, plans: { [`${WT}#169`]: planText() } });
+    await again.service.start();
+    await again.service.bind('s1', WT, 169);
+    expect(again.rules.doc.sessions).toEqual({});
+  });
+
+  it('starting the issue again (Ctrl+K, voice, Puxar) clears the tombstone: a new task begins', async () => {
+    const ctx = setup();
+    await toSteps(ctx);
+    await ctx.service.endTask('s1');
+    await ctx.service.reopen(WT, 169);
+    await ctx.service.bind('s1', WT, 169);
+    expect(ctx.rules.doc.sessions.s1.phase).toBe('contract');
+    expect(ctx.saved.get(KEY).ended).toBe(false);
+    // Reopening a live task changes nothing.
+    await ctx.service.reopen(WT, 169);
+    expect(ctx.rules.doc.sessions.s1.phase).toBe('contract');
+  });
+
+  it('a run that finishes after the task ended saves nothing into it', async () => {
+    const ctx = setup();
+    await toSteps(ctx);
+    let release;
+    ctx.deps.verifier.run.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    ctx.plans[`${WT}#169`] = planText({ done: 1 });
+    const ticking = ctx.service.bind('s1', WT, 169);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await ctx.service.endTask('s1');
+    release({ kind: 'contract', status: 'ok', tail: 'passou', ms: 1 });
+    await ticking;
+    expect(ctx.saved.get(KEY)).toMatchObject({ ended: true, lastRun: null });
+  });
+
+  it('the old "Aprovar plano" does nothing on a contract task: no baseline, nothing sent', async () => {
+    const ctx = setup();
+    await ctx.service.bind('s1', WT, 169);
+    expect(ctx.service.approveRefusal('s1')).toBe('esta tarefa tem contrato: aprove o contrato no card');
+    expect(await ctx.service.approvePlan('s1')).toEqual({ error: expect.stringMatching(/contrato/) });
+    expect(ctx.deps.checkpoints.take).not.toHaveBeenCalled();
+    expect(ctx.deps.deliver).not.toHaveBeenCalled();
+    const quick = setup({ plans: { [`${WT}#169`]: QUICK } });
+    await quick.service.bind('s1', WT, 169);
+    expect(quick.service.approveRefusal('s1')).toBeNull();
+    expect(quick.service.approveRefusal('nobody')).toBeNull();
   });
 
   it('a quick plan takes its baseline when the dev approves it, and a checkpoint per tick after that', async () => {
@@ -461,6 +532,27 @@ describe('the task service: the end of a task', () => {
     expect(ctx.rules.doc.sessions).toEqual({});
     expect(ctx.saved.size).toBe(0);
     expect(ctx.timers.filter((item) => !item.cleared && item !== timer)).toHaveLength(0);
+  });
+
+  it('a failing expiry is logged, never thrown from the timer', async () => {
+    const ctx = setup();
+    await ctx.service.bind('s1', WT, 169);
+    ctx.deps.checkpoints.drop.mockImplementation(() => { throw new Error('git sumiu'); });
+    const timer = ctx.timers.filter((item) => !item.cleared).at(-1);
+    ctx.clock.t += EXPIRY_MS + 10_000;
+    await expect(timer.fn()).resolves.toBeUndefined();
+    expect(ctx.deps.log).toHaveBeenCalledWith(expect.stringMatching(/git sumiu/));
+  });
+
+  it('on start the rules are written before gh is asked about closed issues', async () => {
+    const ctx = setup({
+      stored: { [KEY]: { ...newTaskState(), worktree: WT, issue: 169, sessions: ['s1'], updatedAt: 999_000 } },
+      plans: { [`${WT}#169`]: planText() },
+    });
+    let writesWhenAsked = null;
+    ctx.deps.issueClosed.mockImplementation(async () => { writesWhenAsked = ctx.rules.writes; return false; });
+    await ctx.service.start();
+    expect(writesWhenAsked).toBeGreaterThan(0);
   });
 
   it('on start the rules are rewritten from the saved tasks, and a broken one is dropped', async () => {
