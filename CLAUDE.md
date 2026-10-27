@@ -43,6 +43,13 @@ App Electron (src/main/index.js)
   │                          verdict, compose, review-store em ~/.config/vizor/revisao/;
   │                          renderer: src/renderer/review/ com abas Resumo/Mudanças/
   │                          Impacto/Ao vivo, compositor e gaveta de terminal)
+  ├── agents/              → kanban da aba Agentes: coluna de cada chat (waiting/working/
+  │                          done/idle/failed, ociosa após 30 min) e ações do card
+  ├── github/              → issues e PRs por projeto via gh (uma query falha sem
+  │                          apagar as outras); Puxar/Revisar abrem o chat
+  ├── project-avatar.js    → avatar do dono no GitHub por projeto (cache em
+  │                          ~/.config/vizor/avatars, 7 dias) e a cor de destaque
+  ├── notify-batch.js      → rajadas de avisos viram um só (janela de 3 s); o urgente passa direto
   ├── terminal-target.js   → foco EXATO de aba via CLI do terminal (kitty/wezterm/tmux),
   │                          com a identidade que o hook capturou do env da sessão
   ├── maestro/             → modo Maestro (#159), camada sem layout próprio sobre a
@@ -54,6 +61,9 @@ App Electron (src/main/index.js)
   │                          chamadas, e calcula o que cada músico tocou/planejou
   ├── warp.js              → FALLBACK: foco de janela/aba do terminal (xdotool)
   └── renderer (app.*)     → bolha, tooltip, painel, chat, configurações
+      └── workspace: shell/ (abas do topo, atalhos, barra de status), agents/ (kanban),
+          github/ (listas + markdown seguro), shared/ (skeleton, safe-markdown),
+          project-accent.js (cor/monograma por projeto)
 ```
 
 Pontos críticos:

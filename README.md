@@ -111,6 +111,54 @@ com tudo feito, "Abrir PR" pede pra rodar os testes e abrir a PR. A mesma barra
 leva a qualquer chat, interrompe um que está rodando, chama a revisão de uma PR
 e liga o Maestro. Por voz: "aprova o plano" e "abre a PR da 169".
 
+### Abas: Agentes e GitHub
+
+O workspace tem três abas no topo: **Workspace** (a revisão), **Agentes** e
+**GitHub**. **Ctrl+1 … 3** troca de aba de qualquer lugar, inclusive com o
+terminal focado; teclas soltas (**1 … 4** nas abas da revisão e **?** pra lista
+de atalhos) só valem fora do terminal e de campos de texto. Os outros atalhos:
+**Ctrl+K** (barra de comandos), **Ctrl+`** (gaveta do terminal) e
+**Ctrl+Shift+E** (recolher o inspetor).
+
+**Agentes** mostra todo chat do Claude Code como um card num kanban, com cinco
+colunas: **Esperando você** (pergunta, permissão ou pedido do guarda de regras),
+**Trabalhando**, **Terminou**, **Ociosa** (terminou há 30 min ou mais, ou você
+já viu) e **Falhou** (o chat morreu no meio do turno). O card traz o projeto
+(avatar), o título, o plano (`2/5`), a branch, há quanto tempo está assim e a
+pergunta pendente. Os botões variam com o estado: **Abrir** (foca o chat),
+**Responder** (caixa de resposta no próprio card), **Aprovar** (permissão),
+**Interromper** (só em chat do Vizor que está rodando, com confirmação) e
+**Dispensar** (chat que falhou). Dá pra filtrar por projeto, por "Outros" (chats
+fora dos projetos do workspace) e por "Só o que precisa de mim". Chats abertos
+fora do Vizor aparecem com o selo "fora do Vizor".
+
+**GitHub** lê as issues e as PRs abertas do projeto escolhido (só os projetos
+com remote no github.com), via `gh`. As issues filtram por "atribuídas a mim",
+"sem responsável", label e busca; um clique numa linha mostra o texto ao lado.
+**Puxar** (na issue) abre um chat do Claude pra ela, igual ao Ctrl+K; **Revisar**
+(na PR) abre a revisão dela; **Abrir no GitHub** abre no navegador. As listas
+atualizam sozinhas a cada 5 minutos enquanto a aba está aberta (nada roda com
+ela fechada), ao abrir a aba quando a leitura tem mais de 5 minutos e no botão
+**atualizar**. Se uma atualização falha, a última leitura boa continua na tela
+com o aviso de quando ela foi feita.
+
+A **barra de status** no rodapé mostra os tokens do gerente hoje contra o teto,
+quantos agentes rodam e esperam (clicar abre Agentes) e, quando existir, a
+próxima automação. Em Configurações > aparência > workspace, a **densidade**
+pode ser confortável ou **compacta** (fonte menor, linhas mais justas). O
+movimento é curto e suave (abas, gaveta, avisos) e fica parado se o sistema
+pedir menos movimento; listas carregando mostram um esqueleto e as vazias dizem
+o próximo passo.
+
+Avisos em rajada viram um só: eventos que não precisam de você (vários chats
+terminando juntos) esperam 3 s e saem como um único balão, um som e uma fala
+("3 chats terminaram"). Pergunta, permissão e pedido do guarda nunca esperam.
+
+Cada projeto leva o **avatar do dono no GitHub** (guardado em
+`~/.config/vizor/avatars/`, renovado a cada semana) e uma **cor** tirada dele; sem
+avatar, entra um monograma com a cor do nome. A cor aparece na barra lateral,
+nos cards e no seletor de projetos do GitHub.
+
 ### Modo Maestro
 
 O **Maestro** é uma camada por cima da tela de revisão, sem layout próprio: você
@@ -214,7 +262,7 @@ e tire o `--no-sandbox` do script `start`.
 
 ## Arquivos de runtime
 
-`~/.config/vizor/` → `vizor.sock`, `state.json` (posição da bolha), `log`.
+`~/.config/vizor/` → `vizor.sock`, `state.json` (posição da bolha), `log`, `avatars/` (avatares dos projetos).
 
 ## Vindo do Claude Manager?
 
