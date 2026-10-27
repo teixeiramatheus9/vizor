@@ -6,8 +6,14 @@ function tscItem(tsc) {
   if (tsc?.status === 'running') return { key: 'tsc', text: 'tsc: rodando…', tone: 'muted' };
   if (tsc?.status === 'ok') return { key: 'tsc', text: 'tsc ✓', tone: 'ok' };
   if (tsc?.status === 'fail') {
-    const count = tsc.errors?.length ?? 0;
-    return { key: 'tsc', text: `tsc: ${plural(count, 'erro', 'erros')}`, tone: 'bad' };
+    // The list keeps 500 errors; the rest are only counted, and errors in
+    // files outside the worktree (a linked package) count apart.
+    const count = (tsc.errors?.length ?? 0) + (tsc.omitted ?? 0);
+    const outside = tsc.outside ?? 0;
+    // A failed run whose output had no error line we could read proves nothing.
+    if (count === 0 && outside === 0) return { key: 'tsc', text: 'tsc: não verificado (saída sem erros legíveis)', tone: 'warn' };
+    const extra = outside > 0 ? ` +${outside} fora do worktree` : '';
+    return { key: 'tsc', text: `tsc: ${plural(count, 'erro', 'erros')}${extra}`, tone: 'bad' };
   }
   const reason = tsc?.reason ?? (tsc?.status === 'timeout' ? 'tempo esgotado' : null);
   return { key: 'tsc', text: reason ? `tsc: não verificado (${reason})` : 'tsc: não verificado', tone: 'muted' };

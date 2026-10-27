@@ -19,6 +19,16 @@ describe('buildVerdict', () => {
     expect(text({ ...base, tsc: { status: 'running' } }, 'tsc')).toBe('tsc: rodando…');
     expect(text({ ...base, tsc: null }, 'tsc')).toBe('tsc: não verificado');
   });
+  it('counts omitted tsc errors and tells those outside the worktree', () => {
+    expect(text({ ...base, tsc: { status: 'fail', errors: [1, 2], omitted: 3, outside: 0 } }, 'tsc')).toBe('tsc: 5 erros');
+    expect(text({ ...base, tsc: { status: 'fail', errors: [1], omitted: 0, outside: 4 } }, 'tsc')).toBe('tsc: 1 erro +4 fora do worktree');
+  });
+  it('never shows a fail with no readable errors as 0 errors in red', () => {
+    const tsc = { status: 'fail', errors: [], omitted: 0, outside: 0 };
+    expect(text({ ...base, tsc }, 'tsc')).toBe('tsc: não verificado (saída sem erros legíveis)');
+    expect(buildVerdict({ ...base, tsc }).find((i) => i.key === 'tsc').tone).toBe('warn');
+    expect(text({ ...base, tsc: { status: 'fail', errors: [], outside: 2 } }, 'tsc')).toBe('tsc: 0 erros +2 fora do worktree');
+  });
   it('words every tests state', () => {
     expect(text(base, 'tests')).toBe('testes ✓');
     expect(text({ ...base, tests: { status: 'fail' } }, 'tests')).toBe('testes ✗');
