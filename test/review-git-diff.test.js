@@ -194,6 +194,12 @@ describe('baseCandidates', () => {
       'dev', 'origin/feat', 'origin/main', 'main', 'origin/master', 'master',
     ]);
   });
+  it('skips an upstream that is just the current branch pushed', () => {
+    expect(baseCandidates({ upstream: 'origin/feat/x', branch: 'feat/x' })).toEqual([
+      'origin/main', 'main', 'origin/master', 'master',
+    ]);
+    expect(baseCandidates({ upstream: 'origin/feat/0.22.0', branch: 'feat/x' })[0]).toBe('origin/feat/0.22.0');
+  });
   it('skips what is missing and does not repeat', () => {
     expect(baseCandidates({ upstream: 'origin/main' })).toEqual([
       'origin/main', 'main', 'origin/master', 'master',

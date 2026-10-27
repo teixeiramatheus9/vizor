@@ -6,8 +6,12 @@ import { createHash } from 'node:crypto';
 const BINARY_SNIFF_CHARS = 8000;
 
 // Refs to try as the branch's base, best first. Falsy entries and repeats drop.
-export function baseCandidates({ upstream, config } = {}) {
-  const list = [config?.base, upstream, 'origin/main', 'main', 'origin/master', 'master'];
+// An upstream that is the current branch pushed (origin/feat/x on feat/x) is
+// no base: the merge-base with it is HEAD itself, so the review would be empty.
+export function baseCandidates({ upstream, config, branch } = {}) {
+  const shortUpstream = upstream?.includes('/') ? upstream.slice(upstream.indexOf('/') + 1) : upstream;
+  const ownPush = Boolean(branch) && (shortUpstream === branch || upstream === branch);
+  const list = [config?.base, ownPush ? null : upstream, 'origin/main', 'main', 'origin/master', 'master'];
   return [...new Set(list.filter(Boolean))];
 }
 

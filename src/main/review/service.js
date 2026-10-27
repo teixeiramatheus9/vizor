@@ -78,7 +78,9 @@ export function createReviewService({
     s.base ??= (async () => {
       const config = await configOf(wt);
       const upstream = (await run(wt, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).catch(() => '')).trim();
-      for (const candidate of baseCandidates({ upstream, config })) {
+      // The branch name only matters to tell an upstream that is this branch pushed.
+      const branch = upstream ? (await run(wt, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim() : '';
+      for (const candidate of baseCandidates({ upstream, config, branch })) {
         try {
           const sha = (await run(wt, ['merge-base', 'HEAD', candidate])).trim();
           if (sha) return { sha };

@@ -18,6 +18,7 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
   const timers = [];
   const gitMap = {
     'rev-parse --abbrev-ref --symbolic-full-name @{upstream}': new Error('no upstream'),
+    'rev-parse --abbrev-ref HEAD': 'feat/x\n',
     'merge-base HEAD origin/main': 'BASE\n',
     'diff --raw --numstat -z -M BASE': ':100644 100644 a b M\0a.js\x001\t1\ta.js\0',
     'ls-files --others --exclude-standard -z': '',
@@ -63,6 +64,16 @@ describe('review service', () => {
     expect(s.base).toBeNull();
     expect(s.baseError).toMatch(/base/i);
     expect(s.files).toEqual([]);
+  });
+
+  it('never takes the current branch pushed as the base', async () => {
+    const { service, calls } = setup({
+      git: { 'rev-parse --abbrev-ref --symbolic-full-name @{upstream}': 'origin/feat/x\n', 'merge-base HEAD origin/feat/x': 'HEAD\n' },
+      files: { '/w/a.js': 'x' },
+    });
+    const s = await service.summary(WT);
+    expect(s.base).toBe('BASE');
+    expect(calls.some((c) => c.key === 'merge-base HEAD origin/feat/x')).toBe(false);
   });
 
   it('lists files cheaply from one raw+numstat call, with the request from the source', async () => {
