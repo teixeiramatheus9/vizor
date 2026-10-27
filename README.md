@@ -83,7 +83,8 @@ texto do terminal. Quatro abas:
   elas chamam em laranja.
 - **Ao vivo**: as edições do agente conforme acontecem.
 
-O **tsc** roda sozinho quando o agente para (só se o projeto tem `tsconfig.json`
+O **tsc** roda sozinho quando o agente para, nos worktrees que você já abriu
+na revisão (só se o projeto tem `tsconfig.json`
 e `typescript` próprio; quando não dá pra confiar, o veredito diz "tsc: não
 verificado" em vez de um ✓ falso), e o botão **rodar testes** usa o script
 `test` do `package.json`. Os padrões se ajustam por projeto em
@@ -94,8 +95,10 @@ verificado" em vez de um ✓ falso), e o botão **rodar testes** usa o script
 **gaveta**: **Ctrl+`** abre e fecha, e a altura é arrastável. Seu progresso de
 revisão fica guardado em `~/.config/vizor/revisao/`.
 
-Leve por desenho: com a janela escondida nada roda, o grafo só é lido quando
-você abre o Impacto e nenhuma dependência nova foi adicionada.
+Leve por desenho: nada roda antes de você abrir a janela do workspace nem
+enquanto ela está escondida (o que chegou nesse meio-tempo vira um recálculo só
+quando ela volta), o grafo só é lido quando as Mudanças ou o Impacto precisam
+dele e nenhuma dependência nova foi adicionada.
 
 ### Fluxo principal: issue → plano → PR (Ctrl+K)
 
