@@ -17,6 +17,19 @@ describe('status bar', () => {
     expect(agentsLabel({ working: 0, waiting: 0 })).toBe('nenhum agente ativo');
     expect(renderStatusBar({ tokens: { used: 0, cap: 0 }, agents: { working: 1, waiting: 0 } })).toContain('data-top-tab="agents"');
   });
+  it('puts a visible separator between items and never at the ends', () => {
+    const sep = /<span class="status-sep"[^>]*>[^<]*<\/span>/g;
+    const html = renderStatusBar({ tokens: { used: 0, cap: 0 }, agents: { working: 1, waiting: 0 }, nextAutomation: { at: '14:00' } });
+    const seps = html.match(sep) ?? [];
+    expect(seps).toHaveLength(2);
+    expect(html.indexOf('status-tokens')).toBeLessThan(html.search(sep));
+    expect(html.search(sep)).toBeLessThan(html.indexOf('status-agents'));
+    expect(html.startsWith('<span class="status-item status-tokens')).toBe(true);
+    expect(html.endsWith('</span>')).toBe(true);
+    expect(html.slice(html.lastIndexOf('</span>') - 40)).not.toMatch(/status-sep/);
+    const twoItems = renderStatusBar({ tokens: { used: 0, cap: 0 }, agents: {} });
+    expect(twoItems.match(sep)).toHaveLength(1);
+  });
   it('shows nothing about automations while there are none', () => {
     expect(renderStatusBar({ tokens: { used: 0, cap: 0 }, agents: {}, nextAutomation: null })).not.toContain('automação');
     expect(renderStatusBar({ tokens: { used: 0, cap: 0 }, agents: {}, nextAutomation: { at: '14:00' } })).toContain('próxima automação: 14:00');
