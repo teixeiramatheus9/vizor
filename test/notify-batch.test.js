@@ -46,11 +46,22 @@ describe('notify batch', () => {
     expect(flushed).toEqual([[{ kind: 'question', sessionId: 'a' }], [{ kind: 'done', sessionId: 'b' }]]);
   });
 
-  it('batches the 10 minute reminder but not a fresh waiting', () => {
-    expect(isUrgent({ kind: 'waiting' })).toBe(true);
-    expect(isUrgent({ kind: 'waiting', reminder: true })).toBe(false);
+  it('only a question, a permission or a guard ask is urgent; a plain waiting and a reminder wait', () => {
+    expect(isUrgent({ kind: 'question' })).toBe(true);
     expect(isUrgent({ kind: 'permission' })).toBe(true);
+    expect(isUrgent({ kind: 'guard' })).toBe(true);
+    expect(isUrgent({ kind: 'waiting' })).toBe(false);
+    expect(isUrgent({ kind: 'permission', reminder: true })).toBe(false);
     expect(isUrgent({ kind: 'done' })).toBe(false);
+  });
+
+  it("ten chats' idle Notifications leave as one notice", () => {
+    const { batch, flushed, fire } = harness();
+    for (let i = 0; i < 10; i++) batch.push({ kind: 'waiting', sessionId: `s${i}` });
+    expect(flushed).toHaveLength(0);
+    fire();
+    expect(flushed).toHaveLength(1);
+    expect(flushed[0]).toHaveLength(10);
   });
 
   it('starts a new window after a flush', () => {

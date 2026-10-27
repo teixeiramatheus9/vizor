@@ -4,10 +4,12 @@
 // permission, a guard ask) never waits. Pure: timers and the sink are injected.
 export const BATCH_WINDOW_MS = 3000;
 
-const URGENT_KINDS = new Set(['question', 'permission', 'guard', 'waiting']);
+// A plain 'waiting' is Claude Code's idle "waiting for your input" a minute
+// after each Stop: it asks nothing, so ten of them leave together.
+const URGENT_KINDS = new Set(['question', 'permission', 'guard']);
 
-// A reminder is the same "waiting" news repeated after the cooldown: it is
-// not new, so it may wait and merge with whatever else is pending.
+// A reminder is the same news repeated after the cooldown: it is not new, so
+// it may wait and merge with whatever else is pending.
 export const isUrgent = (event) => event?.urgent ?? (URGENT_KINDS.has(event?.kind) && !event?.reminder);
 
 export function createNotifyBatch({ windowMs = BATCH_WINDOW_MS, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout, flush } = {}) {

@@ -324,7 +324,9 @@ const noticeBatch = createNotifyBatch({
 async function bark(session, kind, text, tooltip) {
   const reminder = kind === 'waiting' && lastAnnouncements.get(session.id)?.text === text;
   if (!(await allowAnnouncement(session, kind, text))) return;
-  noticeBatch.push({ kind, sessionId: session.id, tooltip, reminder });
+  // A permission ask rides the 'waiting' notice but cannot wait in the batch.
+  const batchKind = kind === 'waiting' && session.needsPermission ? 'permission' : kind;
+  noticeBatch.push({ kind: batchKind, sessionId: session.id, tooltip, reminder });
 }
 
 // 'none' | 'asleep' | 'active' — the hint pipeline says different things for
