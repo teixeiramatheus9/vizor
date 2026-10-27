@@ -47,8 +47,9 @@ export function createAgentsController({
       const guardAsk = guardOf(session.id);
       const card = sessionCard(session, { project: session.project, plan, guardAsk, now: at });
       if (guardAsk) card.guardAsk = guardAsk;
-      // A plan waiting for the ok is approved from the card, whatever else the chat waits on.
-      if (plan && !plan.approved && card.column !== 'failed' && !card.actions.includes('approve')) card.actions.push('approve');
+      // A plan waiting for the ok has its own button: "Aprovar" alone is a
+      // permission ask, answered in the chat's terminal.
+      if (plan && !plan.approved && card.column !== 'failed') card.actions.push('approve-plan');
       return card;
     });
   }
@@ -161,13 +162,11 @@ export function createAgentsController({
       ui.confirming = null;
       ui.error = null;
     } else if (action === 'approve') {
-      const plan = plans[sessionId];
-      if (plan && !plan.approved) {
-        api.planAction(sessionId, 'approve');
-        return;
-      }
       // A permission ask lives in the chat's terminal: take the user there.
       return open(sessionId);
+    } else if (action === 'approve-plan') {
+      api.planAction(sessionId, 'approve');
+      return;
     } else if (action === 'interrupt') {
       ui.confirming = sessionId;
       ui.answering = null;

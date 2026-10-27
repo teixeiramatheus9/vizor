@@ -178,12 +178,30 @@ describe('agents controller', () => {
       guardAsks: [{ id: 'g1', sessionId: 's1', summary: 'rm x', ruleSource: 'r', cwd: '/p/a', tool: 'Bash' }],
     });
     controller.setVisible(true);
-    expect(el.innerHTML).toContain('data-action="approve"');
+    expect(el.innerHTML).toContain('data-action="approve-plan"');
+    expect(el.innerHTML).toContain('>Aprovar plano<');
     expect(el.innerHTML).toContain('data-guard-id="g1"');
-    click(listeners, actionButton('approve', 's1'));
+    click(listeners, actionButton('approve-plan', 's1'));
     expect(api.planAction).toHaveBeenCalledWith('s1', 'approve');
     click(listeners, { '[data-guard-choice]': { dataset: { guardId: 'g1', guardChoice: 'liberar' }, closest: () => null } });
     expect(api.answerGuard).toHaveBeenCalledWith('g1', 'liberar');
+  });
+
+  it('on a permission ask, Aprovar opens the chat even with a plan waiting; the plan has its own button', () => {
+    const openSession = vi.fn();
+    const t = setup({ openSession });
+    t.controller.setState({
+      sessions: [session({ status: 'waiting', needsPermission: true })],
+      plans: { s1: { steps: [{ text: 'a', done: false }], approved: false } },
+    });
+    t.controller.setVisible(true);
+    expect(t.el.innerHTML).toContain('data-action="approve"');
+    expect(t.el.innerHTML).toContain('data-action="approve-plan"');
+    click(t.listeners, actionButton('approve', 's1'));
+    expect(t.api.planAction).not.toHaveBeenCalled();
+    expect(openSession).toHaveBeenCalledWith('s1');
+    click(t.listeners, actionButton('approve-plan', 's1'));
+    expect(t.api.planAction).toHaveBeenCalledWith('s1', 'approve');
   });
 
   it('marks a finished chat seen once per Stop when looked at', () => {

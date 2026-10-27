@@ -20,6 +20,7 @@ const ACTION_LABELS = {
   focus: 'Abrir',
   answer: 'Responder',
   approve: 'Aprovar',
+  'approve-plan': 'Aprovar plano',
   interrupt: 'Interromper',
   dismiss: 'Dispensar',
 };
