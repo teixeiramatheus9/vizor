@@ -156,6 +156,51 @@ describe('automação: secrets are never read through Bash', () => {
   });
 });
 
+// Final review: paths glued to a short option, grep's -d recurse, /proc and rg's hidden files.
+describe('automação: secrets behind option spellings', () => {
+  const SECRET = 'Automação do Vizor: leitura de arquivo sensível barrada.';
+  const reads = [
+    // a path glued to a short option is read like a word of its own
+    `git commit -F${home}/.ssh/id_rsa`, `git commit -t${home}/.git-credentials -m x`, `gh issue create -t x -F${home}/.ssh/id_rsa`,
+    'git commit -F~/.netrc', `git commit -nF${home}/.ssh/id_rsa`, 'git commit -Fkeys/id_rsa', `git commit -F=${home}/.netrc`, 'cat -A~/.netrc',
+    // grep -d recurse is -r
+    `grep -d recurse -h BEGIN ${home}`, 'grep -drecurse BEGIN ~', 'grep --directories=recurse BEGIN ~', 'grep --directories recurse BEGIN ~',
+    'grep --dir=recurse BEGIN ~', 'grep -nd recurse BEGIN ~', 'grep -hdrecurse BEGIN ~', 'grep --rec BEGIN ~', 'grep --recursiv BEGIN ~',
+    // the env and memory of a process
+    'cat /proc/self/environ', 'cat /proc/1/cmdline', 'head -c 10 /proc/self/mem', 'cat /proc/self/task/1/environ', 'cat /proc/thread-self/environ',
+    'grep -r x /proc', 'grep -r x /', 'cat /proc/self/../self/environ',
+    'cat /proc/self/cwd/../.netrc', 'cat /proc/self/root/etc/hostname', 'cat /proc/1/fd/3', 'cat /proc/self/task/1/cwd/x',
+    // rg reaching hidden or ignored files
+    'rg --hidden KEY', 'rg -u KEY', 'rg -uu KEY', 'rg -uuu KEY', 'rg -nu KEY', 'rg --no-ignore KEY', 'rg --no-ignore-vcs KEY',
+    'rg --no-ignore-dot KEY', 'rg --unrestricted KEY', 'rg -. KEY', 'rg -n. KEY',
+    // the kernel follows a link before its `..`: escape/.. is the home, not the worktree
+    'cat escape/../.ssh/id_rsa', `cat ${root}/escape/../.ssh/id_rsa`, 'cat keys/../.ssh/id_rsa',
+  ];
+  for (const command of reads) {
+    it(`denies at every level: ${command}`, () => {
+      for (const level of LEVELS) expect(verdict(bash(command), level), level).toBe(SECRET);
+    });
+  }
+  it('grep -d takes only read, skip or recurse, spelled out', () => {
+    for (const command of ['grep -d rec x .', 'grep --directories=r x .', 'grep -d foo x .', 'grep -dskipx x .', 'grep --di=rec x .', 'grep -d'])
+      expect(deniedEverywhere(bash(command)), command).toBe(true);
+  });
+  it('an edit through a link and `..` is denied (the kernel would land outside)', () => {
+    for (const level of ['worktree', 'project']) {
+      expect(verdict(edit(`${root}/escape/../x.txt`), level), level).not.toBeNull();
+      expect(verdict(edit(`${root}/sub/../a.txt`), level), level).not.toBeNull();
+    }
+  });
+  it('ordinary option spellings are fine', () => {
+    for (const command of [
+      'grep -d skip x .', 'grep -d read x a.txt', 'grep -d recurse x sub', 'grep -drecurse x sub', 'grep -n5 x a.txt', 'grep -e-d x a.txt',
+      'rg -t js x', 'rg -tjs x', 'rg -n x', 'rg -g x x', 'cat /proc/cpuinfo', 'git log -n5', 'git status -uall', 'git log --since=2.weeks',
+    ])
+      expect(verdict(bash(command)), command).toBeNull();
+    expect(verdict(bash('git commit -Fmsg.txt'), 'worktree')).toBeNull();
+  });
+});
+
 describe('automação: gh api endpoints carry nothing but a path', () => {
   for (const command of ['gh api repos/o/r?x=1', 'gh api repos/o/r#x', 'gh api repos/o/r%2F', 'gh api https://api.github.com/repos/o/r', 'gh api user@x', 'gh api "repos/o/r x"', `gh api repos/${'a'.repeat(200)}`]) {
     it(`denies at every level: ${command}`, () => expect(deniedEverywhere(bash(command))).toBe(true));

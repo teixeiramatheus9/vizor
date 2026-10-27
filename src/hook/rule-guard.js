@@ -551,8 +551,68 @@ function gitOptionBanned(arg) {
   return GIT_BANNED_OPTIONS.some((full) => full.startsWith(name));
 }
 
+// A short-option cluster as getopt reads it (-nF/x, -drecurse, -d x): the
+// letters up to the first one that takes a value, that letter, and its value
+// (the rest of the word, else the next word; '' when there is none).
+function shortCluster(args, index, takesValue) {
+  const arg = args[index];
+  for (let at = 1; at < arg.length; at++) {
+    if (!takesValue.includes(arg[at])) continue;
+    const rest = arg.slice(at + 1);
+    return { letters: arg.slice(1, at), letter: arg[at], value: rest || (args[index + 1] ?? ''), usedNext: !rest };
+  }
+  return { letters: arg.slice(1), letter: null, value: null, usedNext: false };
+}
+
+// getopt_long takes any unambiguous prefix of a long option (--rec = --recursive).
+const longIs = (name, full, shortest) => name.length >= shortest && full.startsWith(name);
+
+// What a grep line recurses with: -r, -R, --rec…, --dereference-rec…, or a
+// -d/--directories value (getopt spelling: -drecurse, -d recurse, --dir=recurse).
+const GREP_VALUE_SHORTS = 'ABCDdefm';
+function grepOptions(args) {
+  let recursive = false;
+  const directories = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--') break;
+    if (arg.startsWith('--')) {
+      const name = arg.split('=')[0];
+      const inline = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : null;
+      if (longIs(name, '--recursive', 5) || longIs(name, '--dereference-recursive', 5)) recursive = true;
+      else if (longIs(name, '--directories', 4)) directories.push(inline ?? args[++index] ?? '');
+    } else if (arg.length > 1 && arg.startsWith('-')) {
+      const cluster = shortCluster(args, index, GREP_VALUE_SHORTS);
+      if (/[rR]/.test(cluster.letters)) recursive = true;
+      if (cluster.letter === 'd') directories.push(cluster.value);
+      if (cluster.usedNext) index++;
+    }
+  }
+  if (directories.includes('recurse')) recursive = true;
+  return { recursive, directories };
+}
+
+// rg options that reach hidden or ignored files (.env, keys a .gitignore
+// keeps out): --hidden, -., -u…, --unrestricted, --no-ignore….
+const RG_VALUE_SHORTS = 'ABCdEefgjMmrtT';
+function rgReachesHidden(args) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--') break;
+    if (arg === '--hidden' || arg === '--unrestricted' || arg.startsWith('--no-ignore')) return true;
+    if (arg.length > 1 && arg.startsWith('-') && !arg.startsWith('--')) {
+      const cluster = shortCluster(args, index, RG_VALUE_SHORTS);
+      if (/[u.]/.test(cluster.letters)) return true;
+      if (cluster.usedNext) index++;
+    }
+  }
+  return false;
+}
+
 // Options of an allowed program that would run or write something.
 function argsSafe(program, args) {
+  // grep -d takes read, skip or recurse, and any prefix of them: only the full words pass.
+  if (program === 'grep') return grepOptions(args).directories.every((value) => ['read', 'skip', 'recurse'].includes(value));
   if (program === 'git') return !args.some(gitOptionBanned);
   if (program === 'rg') return !args.some((arg) => arg.startsWith('--pre') || arg.startsWith('--hostname-bin'));
   if (program === 'gh' && args[0] === 'api') return ghApiReads(args.slice(1));
@@ -635,8 +695,10 @@ function editReason(rules, call, home) {
   const named = [call.input?.notebook_path, call.input?.file_path].filter((value) => value !== undefined);
   if (named.length === 2 && named[0] !== named[1]) return 'edição com dois caminhos diferentes';
   const file = call.tool === 'NotebookEdit' ? (named[0] ?? '') : (call.input?.file_path ?? named[0] ?? '');
-  // A path ending in / names a directory, never a file to write.
-  const real = typeof file === 'string' && path.isAbsolute(file) && !/[\\/]$/.test(file) ? realTarget(path.resolve(file)) : null;
+  // A path ending in / names a directory, never a file to write. A `..`
+  // is refused: the kernel follows a link before it, path.resolve does not.
+  const plain = typeof file === 'string' && path.isAbsolute(file) && !/[\\/]$/.test(file) && !file.split(/[\\/]/).includes('..');
+  const real = plain ? realTarget(path.resolve(file)) : null;
   if (real === null) return `edição fora do permitido para esta automação (${file})`;
   const root = realTarget(rules.allowEditsUnder) ?? rules.allowEditsUnder;
   if (!within(root, real)) return `editar fora da worktree da automação (${file})`;
@@ -665,8 +727,27 @@ function secretRoots(home) {
   return [...new Set(roots.flatMap((root) => [root, realTarget(root)]).filter(Boolean))];
 }
 
-// A word of the line (or an --opt=value) that names a secret, a .env file
-// anywhere, or, for a recursive grep/rg, a directory holding a secret.
+// The env, command line and memory of a process (the run's own env holds its
+// keys), and its cwd, root and fds, links that lead anywhere.
+const PROC_SECRET = /^\/proc\/[^/]+\/(?:task\/[^/]+\/)?(?:(?:environ|cmdline|mem)$|(?:cwd|root|fd|map_files)(?:\/|$))/;
+
+// Every value a word hands its program: the word itself, an --opt=value, and
+// for a short-option cluster whatever follows each of its letters (-F/x,
+// -nF~/x, -t=x), since the guard cannot know which letter takes a value.
+function valuesOf(arg) {
+  if (!arg.startsWith('-')) return [arg];
+  if (arg.startsWith('--')) return arg.includes('=') ? [arg.slice(arg.indexOf('=') + 1)] : [];
+  const values = [];
+  for (let at = 2; at < arg.length; at++) {
+    values.push(arg.slice(at));
+    if (arg[at] === '=') values.push(arg.slice(at + 1));
+  }
+  return values.filter(Boolean);
+}
+
+// A word of the line (or a value glued to an option) that names a secret, a
+// .env file anywhere, a process's env, or, for a recursive grep/rg, a
+// directory holding a secret.
 function readsSecret(segments, cwd, home) {
   const roots = secretRoots(home);
   return segments.some((segment) => {
@@ -680,20 +761,28 @@ function readsSecret(segments, cwd, home) {
         (program === 'grep' && arg === '--dereference-recursive') ||
         (/^-[A-Za-z]/.test(arg) && !arg.startsWith('--') && [...shorts].some((flag) => arg.includes(flag)));
       if (args.some(banned)) return true;
+      if (program === 'rg' && rgReachesHidden(args)) return true;
     }
-    const recursive =
-      program === 'rg' || (program === 'grep' && args.some((arg) => /^--(?:dereference-)?recursive$/.test(arg) || /^-[A-Za-z]*[rR]/.test(arg)));
-    return args.some((arg) => {
-      const value = arg.startsWith('-') ? (arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : '') : arg;
-      if (!value) return false;
-      let named = null;
-      if (value === '~' || value.startsWith('~/')) named = path.join(home, value.slice(1));
-      else if (path.isAbsolute(value)) named = path.resolve(value);
-      else if (cwd) named = path.resolve(cwd, value);
-      if (named === null) return false;
-      const real = realTarget(named) ?? named;
-      if (isEnvFile(named) || isEnvFile(real)) return true;
-      return roots.some((root) => within(root, named) || within(root, real) || (recursive && (within(named, root) || within(real, root))));
+    const recursive = program === 'rg' || (program === 'grep' && grepOptions(args).recursive);
+    return args.flatMap(valuesOf).some((value) => {
+      let raw = null;
+      if (value === '~' || value.startsWith('~/')) raw = `${home}${value.slice(1)}`;
+      else if (path.isAbsolute(value)) raw = value;
+      else if (cwd) raw = `${cwd}/${value}`;
+      if (raw === null) return false;
+      const named = path.resolve(raw);
+      // path.resolve drops `x/..` before any link is followed; the kernel
+      // follows x first (/proc/self/cwd/../.netrc), so its answer counts too.
+      let kernel = null;
+      try {
+        kernel = fs.realpathSync.native(raw);
+      } catch {
+        // not there: nothing to read
+      }
+      const files = [named, realTarget(named) ?? named, kernel].filter(Boolean);
+      if (PROC_SECRET.test(raw) || files.some((file) => isEnvFile(file) || PROC_SECRET.test(file))) return true;
+      if (recursive && files.some((file) => within(file, '/proc') || within('/proc', file))) return true;
+      return roots.some((root) => files.some((file) => within(root, file) || (recursive && within(file, root))));
     });
   });
 }
