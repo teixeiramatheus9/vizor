@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { diffHunks } from './edit-hunks.js';
+import { needsYou } from './session-status.js';
 
 // Pure shaping of the workspace sidebar: projects → worktrees → sessions →
 // files touched in the current task. No git, no fs: index.js feeds it.
@@ -79,6 +80,7 @@ function sessionNode(session, taskOf) {
     status: session.status,
     unread: Boolean(session.unread),
     needsPermission: Boolean(session.needsPermission),
+    question: Boolean(session.question),
     ptyId: session.term?.VIZOR_PTY_ID ?? null,
     inside: Boolean(session.term?.VIZOR_PTY_ID),
     files: taskFileStats(taskOf(session.id)),
@@ -109,7 +111,7 @@ export function buildWorkspaceTree({ projects, sessions, taskOf }) {
       unplacedSessions.push(sessionNode(session, taskOf));
     }
     if (session.status === 'working') counts.working += 1;
-    else if (session.status === 'waiting') counts.waiting += 1;
+    else if (session.status === 'waiting' && needsYou(session)) counts.waiting += 1;
   }
   return { projects: nodes, unplaced, unplacedSessions, counts };
 }

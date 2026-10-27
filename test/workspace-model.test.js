@@ -121,6 +121,7 @@ describe('buildWorkspaceTree', () => {
         session('s1', '/elsewhere'),
         session('s2', '/r', { status: 'waiting' }),
         session('s3', '/r'),
+        session('s4', '/r', { status: 'waiting', question: { questions: [] } }),
       ],
       taskOf: noTask,
     });

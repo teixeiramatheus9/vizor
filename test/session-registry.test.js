@@ -472,8 +472,19 @@ describe('haloState', () => {
     expect(haloState([{ ...base, status: STATUS.DONE }])).toBe('done');
   });
 
-  it('yellow for a pending question or a waiting chat', () => {
-    expect(haloState([{ ...base, status: STATUS.WAITING }])).toBe('question');
+  it('an idle notice after a Stop stays green, not yellow', () => {
+    const registry = new SessionRegistry();
+    registry.applyEvent(promptEvent());
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    expect(haloState(registry.list())).toBe('done');
+    registry.applyEvent(promptEvent({ hook_event_name: 'Notification', message: 'Claude is waiting for your input' }));
+    expect(registry.list()[0].status).toBe(STATUS.WAITING);
+    expect(haloState(registry.list())).toBe('done');
+    expect(haloState([{ ...base, status: STATUS.WAITING }])).toBe('done');
+  });
+
+  it('yellow for a pending question', () => {
+    expect(haloState([{ ...base, status: STATUS.WAITING, question: { questions: [] } }])).toBe('question');
     expect(haloState([{ ...base, status: STATUS.DONE, question: { questions: [] } }])).toBe('question');
   });
 
@@ -484,7 +495,7 @@ describe('haloState', () => {
   it('the most urgent chat wins the bubble', () => {
     const sessions = [
       { ...base, status: STATUS.DONE },
-      { ...base, status: STATUS.WAITING },
+      { ...base, status: STATUS.WAITING, question: { questions: [] } },
       { ...base, status: STATUS.WAITING, needsPermission: true },
     ];
     expect(haloState(sessions)).toBe('permission');

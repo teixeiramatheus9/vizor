@@ -41,7 +41,8 @@ describe('escapeHtml', () => {
 describe('statusIcon', () => {
   it('permission beats waiting, waiting beats the rest', () => {
     expect(statusIcon(session('s', { status: 'waiting', needsPermission: true }))).toBe(ICONS.permission);
-    expect(statusIcon(session('s', { status: 'waiting' }))).toBe(ICONS.waiting);
+    expect(statusIcon(session('s', { status: 'waiting', question: true }))).toBe(ICONS.waiting);
+    expect(statusIcon(session('s', { status: 'waiting' }))).toBe(ICONS.done);
     expect(statusIcon(session('s', { status: 'done' }))).toBe(ICONS.done);
     expect(statusIcon(session('s'))).toBe(ICONS.working);
   });
@@ -412,7 +413,7 @@ describe('backlog fixes (#125, #139)', () => {
 describe('collapsible sidebar (#152)', () => {
   const files = (n) => Array.from({ length: n }, (_, i) => ({ filePath: `/r/f${i}.js`, added: 1, removed: 0, writing: false }));
   const twoSessions = () =>
-    tree([session('a', { files: files(5) }), session('b', { status: 'waiting', files: files(2) })]);
+    tree([session('a', { files: files(5) }), session('b', { status: 'waiting', question: true, files: files(2) })]);
 
   it('projects and worktrees are open by default, each with a fold toggle', () => {
     const html = renderSidebar(twoSessions(), null, null, {});

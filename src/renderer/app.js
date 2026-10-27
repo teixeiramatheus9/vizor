@@ -1338,7 +1338,8 @@ function emptyStateElement() {
 }
 
 function sessionElement(session, index) {
-  const state = session.question ? 'question' : session.status;
+  // An idle notice after a Stop asks nothing: the chat is just done.
+  const state = session.question ? 'question' : session.status === 'waiting' && !needsYou(session) ? 'done' : session.status;
   const card = document.createElement('div');
   card.className = `session ${state}${session.unread ? ' unread' : ''}`;
   card.title = 'Abrir no terminal';
@@ -1478,12 +1479,17 @@ function sessionElement(session, index) {
   return finishCard(card, session);
 }
 
+// The shared predicate lives in a module (guard-card-global.js exposes it);
+// until that loads, the same rule inline.
+const needsYou = (session) =>
+  window.vizorNeedsYou ? window.vizorNeedsYou(session) : Boolean(session.question || session.needsPermission);
+
 let lastUnreadCount = 0;
 
 // The bubble mirrors the sessions as a whole: someone waiting wins over
 // someone working, and an idle bubble carries no badge at all.
 function renderBadge(sessions) {
-  const waiting = sessions.some((s) => s.question || s.status === 'waiting');
+  const waiting = sessions.some((s) => needsYou(s));
   const working = sessions.some((s) => s.status === 'working');
   badge.className = waiting ? 'waiting' : working ? 'working' : '';
   badge.style.display = waiting || working ? 'block' : 'none';

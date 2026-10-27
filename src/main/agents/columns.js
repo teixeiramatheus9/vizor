@@ -1,5 +1,5 @@
 // Loaded by the renderer too: no node: imports here, directly or through a dependency.
-import { STATUS } from '../session-status.js';
+import { STATUS, needsYou } from '../session-status.js';
 
 // The kanban's columns, in display order. Pure: the clock and the guard's
 // pending asks come in as arguments.
@@ -20,14 +20,10 @@ function isIdle(session, now) {
   return now - stop >= IDLE_AFTER_MS;
 }
 
-// Claude Code's "waiting for your input" ~60 s after each Stop asks nothing:
-// only a question, a permission or a guard ask make a chat wait on the user.
-const asksTheUser = (session, guardAsk) => Boolean(session.question || session.needsPermission || guardAsk);
-
 // guardAsk: truthy when the rule guard has an ask pending for this session.
 export function columnOf(session, { now, guardAsk = false } = {}) {
   if (session.status === STATUS.FAILED) return 'failed';
-  if (asksTheUser(session, guardAsk)) return 'waiting';
+  if (needsYou(session, { guardAsk })) return 'waiting';
   if (session.status === STATUS.WORKING) return 'working';
   // Done, or a Notification with nothing asked: the chat is just finished.
   return isIdle(session, now) ? 'idle' : 'done';

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 
-import { STATUS } from './session-status.js';
+import { STATUS, needsYou } from './session-status.js';
 
 export { STATUS };
 
@@ -325,8 +325,8 @@ export function haloState(sessions) {
   for (const session of sessions) {
     if (!session.unread) continue;
     if (session.needsPermission) return 'permission';
-    if (session.question || session.status === STATUS.WAITING) state = 'question';
-    else if (session.status === STATUS.DONE && state === null) state = 'done';
+    if (needsYou(session)) state = 'question';
+    else if ((session.status === STATUS.DONE || session.status === STATUS.WAITING) && state === null) state = 'done';
   }
   return state;
 }

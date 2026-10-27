@@ -2,6 +2,7 @@
 // run them and the renderer only swaps innerHTML. Everything interpolated goes
 // through escapeHtml — session names and paths come from the user's disk.
 
+import { needsYou } from '../main/session-status.js';
 import { monogramColor, monogramOf } from './project-accent.js';
 
 export function escapeHtml(text) {
@@ -51,7 +52,7 @@ export const STATUS_LABEL = {
 
 function statusKey(session) {
   if (session.needsPermission) return 'permission';
-  if (session.status === 'waiting') return 'waiting';
+  if (session.status === 'waiting') return needsYou(session) ? 'waiting' : 'done';
   if (session.status === 'done') return 'done';
   // A tombstone (the chat died mid-turn) is not running, whatever its last state said.
   if (session.status === 'failed') return 'failed';
