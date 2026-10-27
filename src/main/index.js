@@ -41,6 +41,8 @@ import { createBackstage, descendantsOf, parseListeners, portsFor } from './maes
 import { excludeWithPlan, isPlanEdit } from './work/plan.js';
 import { createPlanActions, createPlanTracker } from './work/plans.js';
 import { catalogFrom, catalogStale } from './work/catalog.js';
+import { columnOf } from './agents/columns.js';
+import { createGithubFetcher, reduceChecks } from './github/fetch.js';
 import { reviewPrPrompt, startIssuePrompt, taskTabTitle } from './work/prompts.js';
 import { readTail } from './maestro/log-tail.js';
 import { shouldSuggest } from './maestro/reviewer.js';
@@ -883,10 +885,11 @@ async function deliverWhenFree(sessionId, text, { tries = 30, everyMs = 2000 } =
 
 // Picking an issue by keyboard: its chat if it has one (the newest of several),
 // otherwise a new one asked for the plan first.
-async function startIssue(number) {
-  const root = voiceRoot();
+// root: the GitHub tab names its own project; voice and Ctrl+K leave it out.
+async function startIssue(number, { root: given = null, title = null } = {}) {
+  const root = given ?? voiceRoot();
   if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
-  const found = await voiceResolveTask(number, { byTitle: false });
+  const found = await voiceResolveTask(number, { byTitle: false, root });
   log(`issue ${number}: ${found.sessionId ? `its chat ${found.sessionId}` : `new chat in ${found.cwd ?? root}`}`);
   const existing = found.sessionId ? found : null;
   if (existing?.sessionId) {
@@ -894,10 +897,20 @@ async function startIssue(number) {
     taskLinks.link(root, number, existing.sessionId);
     return { sessionId: existing.sessionId };
   }
-  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number });
+  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number, root, title });
   if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
   taskLinks.link(root, number, opened.sessionId);
   workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
+  return { sessionId: opened.sessionId };
+}
+
+// A fresh chat for the PR's review. root: see startIssue.
+async function reviewPr(number, { root: given = null } = {}) {
+  const root = given ?? voiceRoot();
+  if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+  const opened = await voiceOpenNew({ cwd: root, prompt: reviewPrPrompt(number), root });
+  if (!opened.sessionId) return { error: 'Não consegui abrir o chat do avaliador.' };
+  taskLinks.link(root, number, opened.sessionId);
   return { sessionId: opened.sessionId };
 }
 
@@ -919,14 +932,7 @@ ipcMain.handle('workspace:command', async (event, action = {}) => {
       log(`command: issue ${action.number} → ${started.error ?? `chat ${started.sessionId}`}`);
       return started;
     }
-    if (action.type === 'review-pr' && Number.isInteger(action.number)) {
-      const root = voiceRoot();
-      if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
-      const opened = await voiceOpenNew({ cwd: root, prompt: reviewPrPrompt(action.number) });
-      if (!opened.sessionId) return { error: 'Não consegui abrir o chat do avaliador.' };
-      taskLinks.link(root, action.number, opened.sessionId);
-      return { sessionId: opened.sessionId };
-    }
+    if (action.type === 'review-pr' && Number.isInteger(action.number)) return await reviewPr(action.number);
     if (action.type === 'interrupt' && typeof action.sessionId === 'string') {
       const ptyId = ptyOfSession(action.sessionId);
       return ptyId && maestroInterrupt(ptyId) ? {} : { error: 'Esse chat não está numa aba do Vizor.' };
@@ -3684,6 +3690,92 @@ ipcMain.handle('agents:answer', async (event, sessionId, text) => {
   return outcome;
 });
 
+// --- the GitHub tab --------------------------------------------------------
+// Every handler names a project root; only the workspace's own projects count,
+// and gh always gets -R owner/repo from that project's origin.
+const githubFetcher = createGithubFetcher({ gh: (args) => runText('gh', args) });
+const githubRepos = new Map(); // root -> owner/repo (only known GitHub projects)
+const CHAT_STATE_LABELS = { waiting: 'esperando você', working: 'trabalhando', done: 'terminou', idle: 'ociosa', failed: 'falhou' };
+
+async function githubRepoFor(root) {
+  if (typeof root !== 'string' || !workspaceProjects().includes(root)) return null;
+  if (githubRepos.has(root)) return githubRepos.get(root);
+  const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
+  const repo = avatarOwnerOf(remote) ? githubRepoOf(remote) : null;
+  if (repo) githubRepos.set(root, repo);
+  return repo;
+}
+
+// issue/PR number -> { state } of the newest chat linked to it.
+function githubChats(root, numbers) {
+  const chats = {};
+  for (const number of numbers) {
+    for (const id of taskLinks.linksFor(root, number)) {
+      const session = registry.sessions.get(id);
+      if (!session) continue;
+      chats[number] = { state: CHAT_STATE_LABELS[columnOf(session, { now: Date.now() })] ?? '' };
+      break;
+    }
+  }
+  return chats;
+}
+
+ipcMain.handle('github:repos', async (event) => {
+  if (!fromWorkspace(event)) return {};
+  const roots = workspaceProjects();
+  const repos = await Promise.all(roots.map((root) => githubRepoFor(root)));
+  return Object.fromEntries(roots.flatMap((root, index) => (repos[index] ? [[root, repos[index]]] : [])));
+});
+
+ipcMain.handle('github:list', async (event, root, force) => {
+  if (!fromWorkspace(event)) return { error: 'Ação desconhecida.' };
+  const repo = await githubRepoFor(root);
+  if (!repo) return { error: 'Esse projeto não está no GitHub.' };
+  try {
+    const raw = await githubFetcher.list(repo, { force: force === true });
+    for (const key of ['issues', 'mine', 'prs']) if (raw[key]?.error) log(`github: ${repo}: ${key} failed: ${raw[key].error}`);
+    // Checks arrive reduced: the rollup can be huge and the page needs one word.
+    const prs = Array.isArray(raw.prs) ? raw.prs.map(({ statusCheckRollup, ...pr }) => ({ ...pr, checks: reduceChecks(statusCheckRollup) })) : raw.prs;
+    const numbers = [...(Array.isArray(raw.issues) ? raw.issues : []), ...(Array.isArray(prs) ? prs : [])].map((item) => item.number);
+    return { data: { ...raw, prs }, chats: githubChats(root, numbers) };
+  } catch (error) {
+    log(`github: list failed: ${error}`);
+    return { error: String(error?.message ?? error) };
+  }
+});
+
+ipcMain.handle('github:body', async (event, root, kind, number) => {
+  const repo = fromWorkspace(event) && Number.isInteger(number) && (kind === 'issue' || kind === 'pr') ? await githubRepoFor(root) : null;
+  if (!repo) return null;
+  return githubFetcher.body(repo, kind, number).catch((error) => {
+    log(`github: body ${repo}#${number} failed: ${error}`);
+    return null;
+  });
+});
+
+// A chat for the issue in the tab's own project (not the voice's).
+ipcMain.handle('github:pull', async (event, root, number) => {
+  if (!fromWorkspace(event) || !Number.isInteger(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
+  const cached = await githubFetcher.list(await githubRepoFor(root)).catch(() => null);
+  const title = Array.isArray(cached?.issues) ? cached.issues.find((item) => item.number === number)?.title : null;
+  return startIssue(number, { root, title }).catch((error) => ({ error: String(error?.message ?? error) }));
+});
+
+ipcMain.handle('github:review', async (event, root, number) => {
+  if (!fromWorkspace(event) || !Number.isInteger(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
+  return reviewPr(number, { root }).catch((error) => ({ error: String(error?.message ?? error) }));
+});
+
+// The URL is built here from the project's own origin, never taken from the page.
+ipcMain.handle('github:open', async (event, root, kind, number) => {
+  const repo = fromWorkspace(event) && Number.isInteger(number) && number > 0 && (kind === 'issue' || kind === 'pr') ? await githubRepoFor(root) : null;
+  if (!repo) return false;
+  const url = `https://github.com/${repo}/${kind === 'pr' ? 'pull' : 'issues'}/${number}`;
+  if (!url.startsWith('https://github.com/')) return false;
+  await shell.openExternal(url);
+  return true;
+});
+
 // Manual drag (managed/X11 mode only): the renderer reports press/release on
 // the bubble; main polls the cursor, moves the window, and tells the
 // renderer when a press was really just a click.
@@ -4315,6 +4407,9 @@ async function voiceGhDigest() {
     settled.forEach((outcome, index) => {
       results[entries[index][0]] = outcome.status === 'fulfilled' ? outcome.value : { error: String(outcome.reason) };
     });
+    settled.forEach((outcome, index) => {
+      if (outcome.status === 'rejected') log(`gh digest: ${entries[index][0]} failed: ${outcome.reason}`);
+    });
     if (settled.every((outcome) => outcome.status === 'rejected')) throw settled[0].reason;
     lastGhDigest = buildDigest(results, spokenLang());
     lastGhContext = managerContext(results);
@@ -4329,8 +4424,8 @@ async function voiceGhDigest() {
   return lastGhDigest;
 }
 
-async function voiceResolveTask(number, { byTitle = true } = {}) {
-  const root = voiceRoot();
+async function voiceResolveTask(number, { byTitle = true, root: given = null } = {}) {
+  const root = given ?? voiceRoot();
   if (!root) return { none: true };
   const worktrees = worktreeCache.get(root) ?? (await listWorktrees(root).catch(() => [])) ?? [];
   const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
@@ -4390,14 +4485,14 @@ async function excludePlanFile(cwd) {
 
 // task: the issue the chat is for, which names its tab (taskTitles, over the
 // title the terminal sets itself).
-async function voiceOpenNew({ cwd, prompt, task = null }) {
+async function voiceOpenNew({ cwd, prompt, task = null, root = null, title = null }) {
   workspaceWindow?.show();
   if (cwd) await excludePlanFile(cwd);
   const opened = openTerminal({ cwd, kind: 'claude', prompt });
   if (opened.error) return Promise.resolve({ sessionId: null });
   if (Number.isInteger(task)) {
-    const issue = catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root: voiceRoot() }).issues.find((item) => item.number === task);
-    taskTitles.set(opened.id, taskTabTitle(task, issue?.title));
+    const issue = title ? null : catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root: root ?? voiceRoot() }).issues.find((item) => item.number === task);
+    taskTitles.set(opened.id, taskTabTitle(task, title ?? issue?.title));
   }
   return new Promise((resolve) => {
     pendingNewChats.set(opened.id, resolve);

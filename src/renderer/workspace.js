@@ -34,6 +34,7 @@ import { createReviewController } from './review/review-controller.js';
 import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
 import { keyAction, renderShortcuts } from './shell/shortcuts.js';
 import { createAgentsController } from './agents/agents-controller.js';
+import { createGithubController } from './github/github-controller.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -342,6 +343,7 @@ function accentOf(uri) {
         accents.set(uri, nudgeColor(...average));
         renderSidebarOnly();
         agents.refresh();
+        github.refresh();
       }
     } catch {
       // no canvas readback: the monogram colour stays
@@ -405,7 +407,20 @@ const agents = createAgentsController({
     selectSession(sessionId);
   },
 });
-const syncAgentsVisibility = () => agents.setVisible(topTab === 'agents' && !document.hidden);
+// The GitHub tab reads and keeps its 5-min refresh only while it is on screen.
+const github = createGithubController({
+  el: document.getElementById('view-github'),
+  api: window.vizor,
+  projects: agentProjects,
+  // "Puxar"/"Revisar" open a new chat: it lives in the Workspace.
+  openWorkspace: () => setTopTab('workspace'),
+  notify: (text) => toast(text),
+});
+const syncGithubVisibility = () => github.setVisible(topTab === 'github' && !document.hidden);
+const syncAgentsVisibility = () => {
+  agents.setVisible(topTab === 'agents' && !document.hidden);
+  syncGithubVisibility();
+};
 document.addEventListener('visibilitychange', syncAgentsVisibility);
 
 topTabsEl.addEventListener('click', (event) => {

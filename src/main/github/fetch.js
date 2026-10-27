@@ -33,16 +33,21 @@ export function createGithubFetcher({ gh, now = Date.now }) {
   const lists = new Map();
   const bodies = new Map();
 
-  async function list(repo) {
-    if (lists.has(repo)) return lists.get(repo);
-    const entries = Object.entries(githubQueries(repo));
+  // force: read everything again (the refresh button, the 5-min timer). Without
+  // it only what is missing or failed is read: a {error} key is never cached.
+  async function list(repo, { force = false } = {}) {
+    const cached = force ? null : lists.get(repo);
+    const entries = Object.entries(githubQueries(repo)).filter(([key]) => !cached || !(key in cached.keys));
+    if (cached && !entries.length) return { at: cached.at, ...cached.keys };
     const settled = await Promise.allSettled(entries.map(async ([, args]) => JSON.parse(await gh(args))));
+    const keys = { ...(cached?.keys ?? {}) };
     const result = { at: now() };
     settled.forEach((outcome, index) => {
       result[entries[index][0]] = outcome.status === 'fulfilled' ? outcome.value : { error: String(outcome.reason?.message ?? outcome.reason) };
+      if (outcome.status === 'fulfilled') keys[entries[index][0]] = outcome.value;
     });
-    lists.set(repo, result);
-    return result;
+    lists.set(repo, { at: result.at, keys });
+    return { ...keys, ...result };
   }
 
   async function body(repo, kind, number) {

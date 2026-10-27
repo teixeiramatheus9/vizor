@@ -2190,3 +2190,328 @@ select.composer-target {
     transition: none !important;
   }
 }
+
+/* --- GitHub tab ---------------------------------------------------------------
+   Colours come from the palette tokens; ok/fail are the only fixed hues and
+   have a light-palette (giz) variant. Quiet under prefers-reduced-motion. */
+#view-github {
+  --gh-ok: #3fb950;
+  --gh-fail: #f85149;
+  padding: 10px 14px 14px;
+  gap: 10px;
+  overflow: hidden;
+  background: var(--ws-bg);
+}
+
+body[data-palette='giz'] #view-github {
+  --gh-ok: #1a7f37;
+  --gh-fail: #cf222e;
+}
+
+.gh-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gh-top,
+.gh-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gh-picker {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gh-project,
+.gh-filter,
+.gh-refresh,
+.gh-action,
+.gh-label-filter,
+.gh-search {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.gh-search {
+  border-radius: 6px;
+  cursor: text;
+  min-width: 160px;
+}
+
+.gh-action {
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.gh-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gh-project:hover,
+.gh-filter:hover,
+.gh-refresh:hover,
+.gh-action:hover {
+  background: var(--ws-hover);
+}
+
+.gh-project.selected,
+.gh-filter.on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.gh-avatar {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.gh-avatar.mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.gh-updated {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.gh-refresh {
+  margin-left: auto;
+}
+
+.gh-columns {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 10px;
+}
+
+.gh-section,
+.gh-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+}
+
+.gh-section-head,
+.gh-body-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--ws-line);
+}
+
+.gh-count {
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.gh-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gh-item {
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--ws-raised);
+  cursor: pointer;
+}
+
+.gh-item:hover {
+  background: var(--ws-hover);
+}
+
+.gh-item.selected {
+  border-color: var(--accent);
+}
+
+.gh-line,
+.gh-meta,
+.gh-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gh-meta,
+.gh-actions {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.gh-number {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.gh-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gh-chat,
+.gh-draft,
+.gh-review,
+.gh-branch {
+  padding: 0 6px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+.gh-chat {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.gh-checks {
+  font-weight: 700;
+}
+
+.gh-checks-ok {
+  color: var(--gh-ok);
+}
+
+.gh-checks-fail {
+  color: var(--gh-fail);
+}
+
+.gh-checks-running {
+  color: var(--warn);
+}
+
+.gh-label {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+}
+
+.gh-error {
+  margin: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--gh-fail);
+  border-radius: 6px;
+  color: var(--gh-fail);
+  font-size: var(--fs-sm);
+}
+
+.gh-body-head {
+  color: var(--text);
+}
+
+.gh-markdown {
+  padding: 10px 12px;
+  overflow-y: auto;
+  color: var(--text);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.gh-markdown pre {
+  margin: 6px 0;
+  padding: 8px;
+  overflow-x: auto;
+  background: var(--ws-bg);
+  border-radius: 6px;
+}
+
+.gh-markdown .md-h {
+  display: block;
+  margin: 8px 0 4px;
+  font-weight: 600;
+}
+
+.gh-markdown .md-url {
+  color: var(--accent);
+}
+
+.gh-empty,
+.empty-state {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+/* Skeletons: a quiet pulse (opacity only), still under reduced motion. */
+.skeleton-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.skeleton-bar {
+  flex: 1;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--ws-hover);
+  animation: skeleton-pulse 1.2s ease-in-out infinite;
+}
+
+.skeleton-bar.short {
+  flex: 0 0 30%;
+}
+
+.skeleton-list {
+  grid-column: 1 / -1;
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-bar {
+    animation: none;
+  }
+}

@@ -54,6 +54,12 @@ contextBridge.exposeInMainWorld('vizor', {
   agentsDismiss: (sessionId) => ipcRenderer.send('agents:dismiss', sessionId),
   agentsInterrupt: (sessionId) => ipcRenderer.invoke('agents:interrupt', sessionId),
   agentsAnswer: (sessionId, text) => ipcRenderer.invoke('agents:answer', sessionId, text),
+  githubRepos: () => ipcRenderer.invoke('github:repos'),
+  githubList: (root, force) => ipcRenderer.invoke('github:list', root, force),
+  githubBody: (root, kind, number) => ipcRenderer.invoke('github:body', root, kind, number),
+  githubPull: (root, number) => ipcRenderer.invoke('github:pull', root, number),
+  githubReview: (root, number) => ipcRenderer.invoke('github:review', root, number),
+  githubOpen: (root, kind, number) => ipcRenderer.invoke('github:open', root, kind, number),
   commandCatalog: () => ipcRenderer.invoke('workspace:catalog'),
   runCommand: (action) => ipcRenderer.invoke('workspace:command', action),
 });

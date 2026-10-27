@@ -71,6 +71,31 @@ describe('createGithubFetcher', () => {
     expect(gh).toHaveBeenCalledTimes(6);
   });
 
+  it('never caches an {error} key and reads it again next time', async () => {
+    let fail = true;
+    const gh = vi.fn(async (args) => {
+      if (args[0] === 'pr' && fail) throw new Error('rate limited');
+      return '[]';
+    });
+    const fetcher = createGithubFetcher({ gh });
+    expect((await fetcher.list('a/b')).prs.error).toBeTruthy();
+    fail = false;
+    const again = await fetcher.list('a/b');
+    expect(again.prs).toEqual([]);
+    expect(again.issues).toEqual([]);
+    expect(gh).toHaveBeenCalledTimes(4); // only prs was read again
+    await fetcher.list('a/b');
+    expect(gh).toHaveBeenCalledTimes(4);
+  });
+
+  it('force reads everything again', async () => {
+    const gh = vi.fn(async () => '[]');
+    const fetcher = createGithubFetcher({ gh });
+    await fetcher.list('a/b');
+    await fetcher.list('a/b', { force: true });
+    expect(gh).toHaveBeenCalledTimes(6);
+  });
+
   it('body is lazy, cached and cut at 8000 characters', async () => {
     const gh = vi.fn(async () => json({ body: 'x'.repeat(9000) }));
     const fetcher = createGithubFetcher({ gh });
