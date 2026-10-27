@@ -28,7 +28,7 @@ import {
 } from './inspector-state.js';
 import { createPlanController } from './work/plan-controller.js';
 import { averageColor, nudgeColor } from './project-accent.js';
-import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
+import { buildCommands, createConfirmGate, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
 import { createReviewController } from './review/review-controller.js';
 import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
@@ -1314,9 +1314,14 @@ function toast(text) {
   commandToastTimer = setTimeout(() => (commandToast.hidden = true), 5000);
 }
 
+const unlockGate = createConfirmGate();
 async function runCommandItem(item) {
   if (!item || item.disabled) return;
   const { action } = item;
+  // Unlocking the tests asks twice, like the card: the bar stays open meanwhile.
+  if (action.type === 'task' && action.name === 'unlockTests') {
+    if (unlockGate.press(item.id) === 'armed') return toast('Enter de novo pra destravar os testes');
+  } else unlockGate.reset();
   // Everything but "ir pra <tela>" acts on the Workspace (drawer, chat, plan):
   // show it first so the user sees the result.
   const onAutomations = action.type === 'new-automation' || action.type === 'run-automation';

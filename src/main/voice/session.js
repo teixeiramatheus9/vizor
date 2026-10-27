@@ -69,6 +69,7 @@ const LINES = {
       refused: (reason) => `Não rolou: ${reason}`,
       noTask: 'Esse chat não tem tarefa com contrato.',
       wrongPhase: { 'approve-contract': 'O contrato já foi aprovado.', 'approve-tests': 'Os testes não estão esperando aprovação.', 'next-step': 'Ainda não há passos: aprove o contrato e os testes antes.', 'unlock-tests': 'Os testes não estão travados.' },
+      noHold: 'Não consigo segurar essa ordem agora; destrave pelo card.',
       blocked: 'Esse chat tem uma pergunta na tela: responda antes.',
       myTurn: (step, where) => `Sua vez no passo ${step.n}, ${step.text}${where ? `: ${where}` : ''}.`,
       notMine: 'Não tem passo seu agora.',
@@ -171,6 +172,7 @@ const LINES = {
       refused: (reason) => `It didn't work: ${reason}`,
       noTask: "That chat has no task with a contract.",
       wrongPhase: { 'approve-contract': 'The contract is already approved.', 'approve-tests': "The tests aren't waiting for approval.", 'next-step': 'No steps yet: approve the contract and the tests first.', 'unlock-tests': "The tests aren't locked." },
+      noHold: "I can't hold that order right now; unlock from the card.",
       blocked: 'That chat has a question on screen: answer it first.',
       myTurn: (step, where) => `Your turn on step ${step.n}, ${step.text}${where ? `: ${where}` : ''}.`,
       notMine: 'No step of yours right now.',
@@ -346,6 +348,9 @@ export function createVoiceSession(deps) {
     }
     if (!PHASE_OK[action](state)) return say(lines().task.wrongPhase[action]);
     if (action !== 'unlock-tests' && deps.sessionBlocked?.(sessionId)) return say(lines().task.blocked);
+    // Fail closed: unlocking without a hold to cancel in never runs.
+    if (action === 'unlock-tests' && !deps.pendingOrder) return say(lines().task.noHold);
+    // Typing waits out a dialog on screen in deliverWhenFree (index.js); the check above is the early refusal.
     return held(
       ORDER.task(musicianOfSession(sessionId), action),
       async () => {

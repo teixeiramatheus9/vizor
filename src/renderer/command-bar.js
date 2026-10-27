@@ -1,5 +1,5 @@
 // The Ctrl+K bar: the core flow by keyboard, the same actions the voice has.
-// Typed is meant, so nothing here is held or spoken. Pure: workspace.js opens
+// Pure: workspace.js opens
 // it, asks main for the issues and PRs and runs the chosen action.
 import { escapeHtml } from './workspace-view.js';
 
@@ -40,8 +40,7 @@ export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, f
   return items;
 }
 
-// The contract flow for the chat in front, by the phase of its task. Typed is
-// meant, so "destravar" is not held here.
+// The contract flow for the chat in front, by the phase of its task.
 function taskCommands(chat, task, blocked) {
   if (!chat || !task || task.phase === 'quick' || task.quick) return [];
   const item = (name, label) => ({ id: `task:${name}:${chat.sessionId}`, group: 'Plano', label: `${label} de ${chat.name}`, action: { type: 'task', sessionId: chat.sessionId, name } });
@@ -58,6 +57,22 @@ function taskCommands(chat, task, blocked) {
     items.push(item('myTurn', `Sua vez${todo ? ` (${todo.file}:${todo.line})` : ''}`));
   }
   return items;
+}
+
+// An item that asks twice: the first activation arms it, a second one of the
+// same item within windowMs runs it; any other activation disarms it.
+export function createConfirmGate({ now = Date.now, windowMs = 4000 } = {}) {
+  let armed = null; // { id, until }
+  return {
+    press(id) {
+      const ready = armed?.id === id && now() <= armed.until;
+      armed = ready ? null : { id, until: now() + windowMs };
+      return ready ? 'run' : 'armed';
+    },
+    reset() {
+      armed = null;
+    },
+  };
 }
 
 // Every word must match; a bare number ("169", "#169") puts its issue first.

@@ -1140,6 +1140,12 @@ describe('voice session — the contract flow', async () => {
     await tick();
     expect(cancelled.actions).toEqual([]);
 
+    const noHold = build({ phase: 'steps', tests: { locked: ['a.test.js'] } }, { pendingOrder: undefined });
+    await noHold.session.onUtterance('destrava os testes');
+    await tick();
+    expect(noHold.actions).toEqual([]);
+    expect(noHold.texts().at(-1)).toBe('Não consigo segurar essa ordem agora; destrave pelo card.');
+
     const free = build({ phase: 'steps', tests: { locked: [] } });
     await free.session.onUtterance('destrava os testes');
     await tick();
