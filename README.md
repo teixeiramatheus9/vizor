@@ -196,7 +196,8 @@ regras do nível que você escolheu. Fica na aba **Automações** do workspace.
 tokens do gerente) pra ficar mais claro pra quem for executar. A skill pode
 morar em **pessoal** (`~/.claude/skills/vizor-<apelido>/`, o padrão) ou **do
 projeto** (`.claude/skills/` dentro do repositório: ela entra no seu git e vai
-pra quem clonar, então confira antes de commitar).
+pra quem clonar, então confira antes de commitar). O nível "Editar numa
+worktree" só aceita a skill pessoal: a do projeto não chega na worktree nova.
 
 **Quando.** "a cada N min/h" (mínimo 15 min), "todo dia às X", "dias úteis às X"
 ou "nos dias escolhidos às X" (seg, ter…). Se o horário passar com o Vizor
@@ -221,13 +222,25 @@ exatamente como o projeto configurou, sem argumentos extras. Os dois níveis
 que editam exigem a **trava** ligada (nas configurações); sem ela só o "Ler e
 relatar" fica disponível.
 
+Um `.env` nunca é lido pelo nome, mas uma busca recursiva (`grep -r`) numa
+pasta que tenha um lê o que ele contém, e isso inclui o `.env` do próprio
+projeto. O `rg` pula arquivos ocultos e ignorados, e a trava barra
+`--hidden`, `-u` e `--no-ignore`.
+
+Com a trava desligada, o "Ler e relatar" fica só com as flags do `claude`: o
+que você liberou em `permissions.allow` (no `~/.claude/settings.json` ou nas
+configurações do projeto) também vale pra automação. As proibições acima
+continuam como negações, que ganham de qualquer liberação.
+
 ### Custos e tempo
 
 - **Teto por execução**: US$ 1,00 por padrão (entre 0,05 e 20). Passou, a
   execução é cortada e a automação fica bloqueada até você olhar.
 - **Teto do dia**: US$ 5,00 por padrão, somando todas as automações. Dá pra
   subir na própria aba ("subir teto"). Estourou, elas pausam até o dia
-  seguinte ou até você subir o limite.
+  seguinte ou até você subir o limite. O teto de uma execução não pode passar
+  do teto do dia: se você baixar o do dia abaixo do de uma automação, só ela
+  fica bloqueada (as outras seguem) até um dos dois mudar.
 - **Tempo limite**: 15 min por padrão (1 a 60). Estourou, o processo e tudo que
   ele abriu são encerrados.
 - Quando o custo não é conhecido (falha, tempo estourado), conta o teto inteiro
