@@ -96,6 +96,42 @@ describe('parseTaskPlan', () => {
   });
 });
 
+describe('a malformed contract never passes as a quick task', () => {
+  const MALFORMED = /malformado/;
+  it('flags every heading variant and stray Vizor- lines', () => {
+    for (const heading of ['## Contrato:', '### Contrato', '# Contrato', '## Contrato (casos)', '## Contratos', '## contrato final']) {
+      const plan = parseTaskPlan(`${heading}\n- a → b\n- c → d\n\n## Passos\n- [ ] x`);
+      expect(plan.contract, heading).toBeNull();
+      expect(plan.error, heading).toMatch(MALFORMED);
+    }
+    expect(parseTaskPlan('Vizor-contrato: a.test.js\n- [ ] x').error).toMatch(MALFORMED);
+    expect(parseTaskPlan('Vizor-teste: npm test\n- [ ] x').error).toMatch(MALFORMED);
+  });
+
+  it('a plan that merely mentions the word is still a quick task', () => {
+    expect(parseTaskPlan('# Plano\nler o contrato da API\n- [ ] x').error).toBeNull();
+  });
+});
+
+describe('contract hardening', () => {
+  it('only top-level bullets are cases', () => {
+    const plan = parseTaskPlan('## Contrato\n- a → b\n  - nota sobre a\n- c → d\n\t- outra nota\n');
+    expect(plan.contract).toHaveLength(2);
+    expect(plan.error).toBeNull();
+  });
+
+  it('refuses a NUL byte and a backslash climb in a test path', () => {
+    for (const file of ['a\0.test.js', '..\\x.test.js', 'test\\..\\..\\x.js']) {
+      expect(parseTaskPlan(`${withCases(2)}\nVizor-contrato: ${file}`).error, JSON.stringify(file)).toMatch(/fora da pasta/);
+    }
+  });
+
+  it('a second Vizor-teste or Vizor-contrato line is an error', () => {
+    expect(parseTaskPlan(`${withCases(2)}\nVizor-teste: npm test\nVizor-teste: rm -rf x`).error).toMatch(/mais de uma/);
+    expect(parseTaskPlan(`${withCases(2)}\nVizor-contrato: a.js\nVizor-contrato: b.js`).error).toMatch(/mais de uma/);
+  });
+});
+
 describe('findDevTodos', () => {
   it('lists each TODO(dev) with its 1-based line and note', () => {
     const text = 'a\n  // TODO(dev): decidir o que fazer sem bandeja\nb\nTODO(dev): outra\n// TODO: comum';

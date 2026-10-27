@@ -11,7 +11,10 @@ export const MAX_WHY = 300;
 export const MAX_COMMAND = 200;
 
 const CONTRACT_HEADING = /^##\s+Contrato\s*$/i;
-const ITEM_LINE = /^\s*[-*+]\s+(?!\[[ xX]\]\s)(.+?)\s*$/;
+// Top-level bullets only: an indented sub-bullet is a note on its case, not a case.
+const ITEM_LINE = /^[-*+]\s+(?!\[[ xX]\]\s)(.+?)\s*$/;
+const CONTRACT_LIKE = /^#{1,6}\s+contratos?\b/i;
+const MALFORMED = 'O contrato está malformado (use `## Contrato` e itens `- situação → resultado`).';
 const FILES_LINE = /^[ \t>*-]*`?Vizor-contrato:`?[ \t]*(.*)$/im;
 const TEST_LINE = /^[ \t>*-]*`?Vizor-teste:`?[ \t]*(.*)$/im;
 const WHY_LINE = /^\s+porqu[êe]:\s*(.+?)\s*$/i;
@@ -32,13 +35,15 @@ function contractCases(lines) {
 }
 
 // Test files stay relative to the session's folder: no absolute path, no "..".
-function contractFiles(text) {
-  const raw = text.match(FILES_LINE)?.[1] ?? '';
+function contractFiles(lines) {
+  const found = lines.filter((line) => FILES_LINE.test(line));
+  if (found.length > 1) return { files: [], error: 'Há mais de uma linha Vizor-contrato.' };
+  const raw = found[0]?.match(FILES_LINE)[1] ?? '';
   const files = [];
   for (const piece of raw.split(',')) {
     const file = unquote(piece);
     if (!file) continue;
-    if (file.startsWith('/') || file.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(file) || file.split(/[\\/]/).includes('..')) {
+    if (file.includes('\0') || file.startsWith('/') || file.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(file) || file.split(/[\\/]/).includes('..')) {
       return { files: [], error: `Arquivo de teste fora da pasta do projeto: ${file}.` };
     }
     files.push(file);
@@ -49,6 +54,7 @@ function contractFiles(text) {
 // One line, short: the dev approves this exact text and the Vizor runs it.
 function testCommand(lines) {
   const index = lines.findIndex((line) => TEST_LINE.test(line));
+  if (lines.filter((line) => TEST_LINE.test(line)).length > 1) return { command: null, error: 'Há mais de uma linha Vizor-teste.' };
   if (index < 0) return { command: null, error: null };
   const command = unquote(lines[index].match(TEST_LINE)[1]);
   const continued = command.endsWith('\\') || /^[ \t]+\S/.test(lines[index + 1] ?? '');
@@ -75,12 +81,16 @@ export function parseTaskPlan(markdown) {
   const text = String(markdown ?? '');
   const lines = text.split('\n');
   const contract = contractCases(lines);
-  const files = contractFiles(text);
+  const files = contractFiles(lines);
   const command = testCommand(lines);
   const steps = planSteps(text);
   let error = null;
   if (contract && (contract.length < MIN_CASES || contract.length > MAX_CASES)) {
     error = `O contrato precisa de ${MIN_CASES} a ${MAX_CASES} casos (achei ${contract.length}).`;
+  }
+  // Anything that looks like a contract but did not parse must not pass as a quick task.
+  if (!contract && (lines.some((line) => CONTRACT_LIKE.test(line)) || lines.some((line) => FILES_LINE.test(line) || TEST_LINE.test(line)))) {
+    error = MALFORMED;
   }
   error ??= files.error ?? command.error;
   if (!error && steps.filter((step) => step.dev).length > MAX_DEV_STEPS) {

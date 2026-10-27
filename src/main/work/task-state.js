@@ -19,40 +19,67 @@ export const newTaskState = () => ({
   mode: 'step', // the default: the músico stops after each step
   contract: null, // { hash } once the dev approved the contract text
   tests: null, // { command, hashes } once the dev approved the tests and the command
-  reviewed: [], // step indexes (0-based, as in the plan) the dev checked
+  reviewed: [], // normalized step texts the dev checked: reordering the plan keeps them
   checkpoints: {}, // step → ref already taken
   openAnyway: false, // the dev opens the PR with unreviewed steps
   updatedAt: 0,
 });
 
+// A step is told apart by its text, not its position: the músico may insert one.
+export const stepKey = (text) => String(text ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 const hasContract = (plan) => Array.isArray(plan?.contract) && !plan.error;
 
 // quick | contract | tests | steps | pr
 export function nextPhase(state, plan) {
+  if (plan?.error) return 'contract';
   if (!Array.isArray(plan?.contract)) return 'quick';
   if (!hasContract(plan) || state.contract?.hash !== contractHash(plan)) return 'contract';
   // The command is what the dev approved: any other text must be approved again.
   if (!state.tests || state.tests.command !== plan.testCommand) return 'tests';
   const steps = plan.steps ?? [];
   if (!steps.length || steps.some((step) => !step.done)) return 'steps';
-  const reviewed = steps.every((_, index) => state.reviewed.includes(index));
+  const reviewed = steps.every((step) => state.reviewed.includes(stepKey(step.text)));
   return reviewed || state.openAnyway ? 'pr' : 'steps';
 }
 
 // A plan that does not parse cleanly cannot be approved: the state stays as it is.
 export const approveContract = (state, plan) => (hasContract(plan) ? { ...state, contract: { hash: contractHash(plan) } } : state);
-export const approveTests = (state, plan, hashes) => (hasContract(plan)
+// Nothing to lock or run without a command and at least one test file.
+export const approveTests = (state, plan, hashes) => (hasContract(plan) && plan.testCommand && plan.contractFiles?.length > 0
   ? { ...state, tests: { command: plan.testCommand, hashes: { ...hashes } } }
   : state);
 export const unlockTests = (state) => ({ ...state, tests: null });
-export const reviewStep = (state, n) => (state.reviewed.includes(n) ? state : { ...state, reviewed: [...state.reviewed, n].sort((a, b) => a - b) });
+export const reviewStep = (state, text) => {
+  const key = stepKey(text);
+  return state.reviewed.includes(key) ? state : { ...state, reviewed: [...state.reviewed, key] };
+};
 export const setMode = (state, mode) => (MODES.includes(mode) ? { ...state, mode } : state);
 export const openAnyway = (state) => ({ ...state, openAnyway: true });
 export const markSeenCheckpoint = (state, n, ref) => ({ ...state, checkpoints: { ...state.checkpoints, [n]: ref } });
 
-export const isStale = (state, now) => now - (state?.updatedAt ?? 0) > EXPIRY_MS;
+// Never saved (updatedAt 0) is fresh, not 56 years idle.
+export const isStale = (state, now) => Boolean(state?.updatedAt) && now - state.updatedAt > EXPIRY_MS;
 // The state while it lives, null once it is over (issue closed or a week idle).
 export const expire = (state, { now, issueClosed }) => (issueClosed || isStale(state, now) ? null : state);
+
+const isObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
+
+// Field by field: a hand-edited or old file never puts a wrong type in the state.
+function coerce(data) {
+  const base = newTaskState();
+  return {
+    version: 1,
+    mode: MODES.includes(data.mode) ? data.mode : base.mode,
+    contract: isObject(data.contract) && typeof data.contract.hash === 'string' ? { hash: data.contract.hash } : null,
+    tests: isObject(data.tests) && typeof data.tests.command === 'string' && isObject(data.tests.hashes)
+      ? { command: data.tests.command, hashes: Object.fromEntries(Object.entries(data.tests.hashes).filter(([, h]) => typeof h === 'string')) }
+      : null,
+    reviewed: Array.isArray(data.reviewed) ? data.reviewed.filter((x) => typeof x === 'string') : [],
+    checkpoints: isObject(data.checkpoints) ? Object.fromEntries(Object.entries(data.checkpoints).filter(([, r]) => typeof r === 'string')) : {},
+    openAnyway: data.openAnyway === true,
+    updatedAt: Number.isFinite(data.updatedAt) ? data.updatedAt : 0,
+  };
+}
 
 const isState = (data) => data && typeof data === 'object' && !Array.isArray(data) && data.version === 1;
 
@@ -84,7 +111,7 @@ export function createTaskStore({ dir, readFile, writeFile, rename, mkdir, readd
     try {
       const data = JSON.parse(text);
       if (!isState(data)) throw new Error('unexpected shape');
-      return { ...newTaskState(), ...data };
+      return coerce(data);
     } catch (error) {
       // A bad file is moved aside, never overwritten by the next save.
       const backup = `${file}.corrupt-${now()}`;

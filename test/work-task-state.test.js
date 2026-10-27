@@ -39,9 +39,9 @@ describe('phases', () => {
     state = approveTests(state, p, { 'test/a.test.js': 'h1' });
     expect(state.tests).toEqual({ command: 'npm test', hashes: { 'test/a.test.js': 'h1' } });
     expect(nextPhase(state, p)).toBe('steps');
-    const finished = parseTaskPlan(`## Contrato\n- a → b\n- c → d\nVizor-teste: npm test\n## Passos\n- [x] um\n- [x] dois\n`);
+    const finished = parseTaskPlan(`## Contrato\n- a → b\n- c → d\nVizor-contrato: test/a.test.js\nVizor-teste: npm test\n## Passos\n- [x] um\n- [x] dois\n`);
     expect(nextPhase(state, finished)).toBe('steps'); // finished steps but neither reviewed
-    state = reviewStep(reviewStep(state, 0), 1);
+    state = reviewStep(reviewStep(state, 'um'), '  DOIS ');
     expect(nextPhase(state, finished)).toBe('pr');
   });
 
@@ -53,7 +53,7 @@ describe('phases', () => {
   });
 
   it('"abrir assim mesmo" opens the PR with unreviewed steps; trust mode alone does not', () => {
-    const p = parseTaskPlan(`## Contrato\n- a → b\n- c → d\nVizor-teste: npm test\n## Passos\n- [x] um\n`);
+    const p = parseTaskPlan(`## Contrato\n- a → b\n- c → d\nVizor-contrato: t.test.js\nVizor-teste: npm test\n## Passos\n- [x] um\n`);
     let state = approveTests(approveContract(newTaskState(), p), p, {});
     state = setMode(state, 'trust');
     expect(nextPhase(state, p)).toBe('steps');
@@ -67,7 +67,7 @@ describe('approvals', () => {
     let state = approveTests(approveContract(newTaskState(), p), p, {});
     const edited = parseTaskPlan('## Contrato\n- a → b\n- c → outra coisa\nVizor-teste: npm test\n## Passos\n- [ ] x');
     expect(nextPhase(state, edited)).toBe('contract');
-    // approving the new text brings the old tests approval back only if the command still matches
+    // the tests approval is separate and survives a contract edit while the command is the same
     state = approveContract(state, edited);
     expect(nextPhase(state, edited)).toBe('steps');
   });
@@ -96,18 +96,40 @@ describe('approvals', () => {
   it('transitions never mutate their input', () => {
     const state = newTaskState();
     const frozen = structuredClone(state);
-    approveContract(state, plan()); reviewStep(state, 0); setMode(state, 'trust'); markSeenCheckpoint(state, 1, 'r');
+    approveContract(state, plan()); reviewStep(state, 'um'); setMode(state, 'trust'); markSeenCheckpoint(state, 1, 'r');
     expect(state).toEqual(frozen);
   });
 
   it('reviewStep is idempotent, setMode checks its value, checkpoints are remembered', () => {
-    let state = reviewStep(reviewStep(newTaskState(), 2), 2);
-    expect(state.reviewed).toEqual([2]);
+    let state = reviewStep(reviewStep(newTaskState(), 'Passo  A'), 'passo a');
+    expect(state.reviewed).toEqual(['passo a']);
     expect(setMode(state, 'step').mode).toBe('step');
     expect(setMode(state, 'wild')).toBe(state);
     expect(newTaskState().mode).toBe('step');
     state = markSeenCheckpoint(state, 3, 'refs/vizor/tarefa/169/3');
     expect(state.checkpoints).toEqual({ 3: 'refs/vizor/tarefa/169/3' });
+  });
+});
+
+describe('hardening', () => {
+  it('approving the tests needs a command and at least one file', () => {
+    const noCmd = parseTaskPlan('## Contrato\n- a → b\n- c → d\nVizor-contrato: a.test.js\n');
+    const noFile = parseTaskPlan('## Contrato\n- a → b\n- c → d\nVizor-teste: npm test\n');
+    for (const p of [noCmd, noFile]) {
+      const state = approveContract(newTaskState(), p);
+      expect(approveTests(state, p, {}).tests).toBeNull();
+    }
+  });
+
+  it('a plan with an error always sits in the contract phase', () => {
+    const p = plan();
+    const state = approveTests(approveContract(newTaskState(), p), p, {});
+    expect(nextPhase(state, { ...p, error: 'x' })).toBe('contract');
+  });
+
+  it('never saved (updatedAt 0) is fresh', () => {
+    expect(isStale(newTaskState(), 9e15)).toBe(false);
+    expect(expire(newTaskState(), { now: 9e15, issueClosed: false })).toEqual(newTaskState());
   });
 });
 
@@ -175,6 +197,19 @@ describe('the task store', () => {
     expect(fs.files.get(`${file}.corrupt-5000`)).toBe('{nope');
     expect(fs.files.has(file)).toBe(false);
     expect(log).toHaveBeenCalled();
+  });
+
+  it('coerces wrong field types on read', async () => {
+    const file = `/cfg/tarefas/${KEY}.json`;
+    const bad = { version: 1, mode: 'wild', contract: 'x', tests: { command: 5 }, reviewed: 'nope', checkpoints: [1], openAnyway: 'yes', updatedAt: 'ontem' };
+    const fs = fakeFs({ [file]: JSON.stringify(bad) });
+    expect(await make(fs).load(KEY)).toEqual(newTaskState());
+    const good = { ...newTaskState(), reviewed: ['a', 3, null], checkpoints: { 1: 'r', 2: 9 }, updatedAt: 7 };
+    const fs2 = fakeFs({ [file]: JSON.stringify(good) });
+    const loaded = await make(fs2).load(KEY);
+    expect(loaded.reviewed).toEqual(['a']);
+    expect(loaded.checkpoints).toEqual({ 1: 'r' });
+    expect(loaded.updatedAt).toBe(7);
   });
 
   it('a wrong shape counts as corrupt too', async () => {
