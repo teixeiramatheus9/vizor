@@ -20,6 +20,12 @@ describe('the músico plan file', () => {
     expect(steps[0].text.length).toBe(200);
   });
 
+  it('with sections, only the Passos section holds steps; without, every line does', () => {
+    const md = '## Contrato\n- [ ] solto\n\n## Passos\n- [ ] um\n- [x] dois\n\n## Notas\n- [ ] fora';
+    expect(parseChecklist(md)).toEqual([{ text: 'um', done: false }, { text: 'dois', done: true }]);
+    expect(parseChecklist('## Contrato\n- [ ] sem Passos')).toEqual([{ text: 'sem Passos', done: false }]);
+  });
+
   it('progress counts the done steps and points at the first pending one', () => {
     expect(planProgress([{ done: true }, { done: false }, { done: false }])).toEqual({ done: 1, total: 3, current: 1 });
     expect(planProgress([{ done: true }])).toEqual({ done: 1, total: 1, current: -1 });

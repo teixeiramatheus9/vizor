@@ -4,14 +4,28 @@
 // path it computes itself, never from the one the event names. Pure.
 import path from 'node:path';
 
-const MAX_STEPS = 30;
-const MAX_TEXT = 200;
-const CHECK_LINE = /^\s*[-*+]\s+\[([ xX])\]\s+(.+?)\s*$/;
+export const MAX_STEPS = 30;
+export const MAX_TEXT = 200;
+export const CHECK_LINE = /^\s*[-*+]\s+\[([ xX])\]\s+(.+?)\s*$/;
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+
+const PASSOS_HEADING = /^##\s+Passos\s*$/i;
+
+// The lines the steps live in: the "## Passos" section when the plan has one
+// (so a checkbox in the contract or a note never counts), else every line, as
+// the old plans (no sections) always did.
+export function stepLines(markdown) {
+  const lines = String(markdown ?? '').split('\n');
+  const start = lines.findIndex((line) => PASSOS_HEADING.test(line));
+  if (start < 0) return lines;
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => /^#{1,2}\s/.test(line));
+  return end < 0 ? rest : rest.slice(0, end);
+}
 
 export function parseChecklist(markdown) {
   const steps = [];
-  for (const line of String(markdown ?? '').split('\n')) {
+  for (const line of stepLines(markdown)) {
     const match = line.match(CHECK_LINE);
     if (!match) continue;
     steps.push({ text: match[2].slice(0, MAX_TEXT), done: match[1] !== ' ' });
