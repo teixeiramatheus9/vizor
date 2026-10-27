@@ -1183,6 +1183,9 @@ window.addEventListener('focus', reportSelection);
 // A request that lands before the tree knows the session waits for it.
 let pendingFocus = null;
 window.vizor.onFocusSession(({ sessionId }) => {
+  // The chat lives in the Workspace tab (bubble, balloon, panel card, Maestro,
+  // voice, a pulled issue): show it, and let this beat the saved tab still loading.
+  if (sessionId) setTopTab('workspace');
   if (sessionId && !findSession(sessionId)) {
     pendingFocus = sessionId;
     return;

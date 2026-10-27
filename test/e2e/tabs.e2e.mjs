@@ -219,6 +219,15 @@ try {
   assert.equal(await workspace.evaluate(() => document.body.dataset.reviewTab), reviewTab, 'and did not move the review tab');
   assert.equal(await topTab(), 'workspace');
 
+  // ---- 5b. A focus request from outside (bubble, balloon, panel) lands in the Workspace
+  await workspace.keyboard.press('Control+2');
+  await workspace.waitForSelector('#view-agents:not([hidden])', { timeout: 5000 });
+  await app.evaluate(({ BrowserWindow }, sessionId) => {
+    BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('workspace.html')).webContents.send('workspace:focus', { sessionId });
+  }, pulled);
+  await workspace.waitForFunction(() => document.querySelector('#top-tabs [aria-selected="true"]')?.dataset.topTab === 'workspace', null, { timeout: 5000 });
+  assert.equal(await workspace.getAttribute(`[data-session="${pulled}"]`, 'aria-selected'), 'true');
+
   // ---- 6. Three Stops inside a second make ONE notice -----------------------
   // The balloon lives in the main window's page: record every text it takes.
   const bubble = await windowOf('app.html');
