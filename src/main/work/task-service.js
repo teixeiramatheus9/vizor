@@ -316,7 +316,12 @@ export function createTaskService({
   async function expireDue({ checkClosed }) {
     for (const task of [...tasks.values()]) {
       const closed = checkClosed ? await issueClosed(task.worktree, task.issue).catch(() => false) : false;
-      if (T.expire(task.state, { now: now(), issueClosed: closed }) === null) await serial(task, () => drop(task));
+      // A tombstone never ages out (a plan write would re-gate the chat): it
+      // goes only with its plan file or its issue.
+      const over = task.state.ended
+        ? closed || (await readParsed(task.worktree, task.issue)) === null
+        : T.expire(task.state, { now: now(), issueClosed: closed }) === null;
+      if (over) await serial(task, () => drop(task));
     }
   }
 
@@ -324,7 +329,7 @@ export function createTaskService({
   function schedule() {
     clearTimer(expiryTimer);
     expiryTimer = null;
-    const due = [...tasks.values()].filter((task) => task.state.updatedAt > 0).map((task) => task.state.updatedAt + T.EXPIRY_MS);
+    const due = [...tasks.values()].filter((task) => task.state.updatedAt > 0 && !task.state.ended).map((task) => task.state.updatedAt + T.EXPIRY_MS);
     if (!due.length) return;
     const delay = Math.min(MAX_DELAY, Math.max(0, Math.min(...due) - now()) + 1000);
     expiryTimer = setTimer(async () => {

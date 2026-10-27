@@ -437,6 +437,22 @@ describe('the task service: the end of a task', () => {
     expect(again.rules.doc.sessions).toEqual({});
   });
 
+  it('a tombstone never expires by age; only a gone plan file or a closed issue prunes it', async () => {
+    const tomb = (issue) => ({ ...newTaskState(), worktree: WT, issue, ended: true, updatedAt: 1000 });
+    const ctx = setup({
+      start: 1000 + 3 * EXPIRY_MS,
+      stored: { [taskKey(WT, 169)]: tomb(169), [taskKey(WT, 170)]: tomb(170), [taskKey(WT, 171)]: tomb(171) },
+      plans: { [`${WT}#169`]: planText(), [`${WT}#171`]: planText() },
+      closed: [171],
+    });
+    await ctx.service.start();
+    expect([...ctx.saved.keys()]).toEqual([taskKey(WT, 169)]);
+    // No timer for a tombstone: it has no expiry.
+    expect(ctx.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+    await ctx.service.bind('s1', WT, 169);
+    expect(ctx.rules.doc.sessions).toEqual({});
+  });
+
   it('starting the issue again (Ctrl+K, voice, Puxar) clears the tombstone: a new task begins', async () => {
     const ctx = setup();
     await toSteps(ctx);
