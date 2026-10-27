@@ -106,6 +106,18 @@ describe('cliArgs', () => {
   });
 });
 
+describe('cliArgs keeps the Read tool off secrets', () => {
+  it('every level denies reading the secret locations and .env files', () => {
+    for (const level of ['read', 'worktree', 'project']) {
+      const denied = list(cliArgs({ ...base, level }, {}), '--disallowedTools');
+      for (const rule of ['Read(~/.ssh/**)', 'Read(~/.gnupg/**)', 'Read(~/.config/gh/**)', 'Read(~/.claude/.credentials.json)', 'Read(~/.git-credentials)',
+        'Read(~/.netrc)', 'Read(~/.aws/**)', 'Read(~/.config/gcloud/**)', 'Read(~/.docker/config.json)', 'Read(~/.kube/**)', 'Read(~/.npmrc)',
+        'Read(~/.pypirc)', 'Read(**/.env)', 'Read(**/.env.*)'])
+        expect(denied, `${level} ${rule}`).toContain(rule);
+    }
+  });
+});
+
 describe('guardRules', () => {
   const programs = (r) => r.allowBash.map((e) => [e.program, ...(e.sub ?? e.argsPrefix ?? [])].join(' '));
   it('read: no edits, reads only', () => {

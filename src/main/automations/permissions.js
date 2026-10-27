@@ -23,6 +23,12 @@ const NEVER = DENY_ALWAYS.map((c) => (c.startsWith('--') ? `* ${c}` : c));
 // Edits are scoped by acceptEdits to the cwd; these paths are denied on top
 // because the Claude config is where a hook or permission could be rewritten.
 const PROTECTED_PATHS = ['~/.claude/**', '~/.config/vizor/**'];
+// The Read tool never reaches the guard (its matcher), so the secrets the
+// guard keeps Bash off are denied here too. Tilde/glob form of the Read rule
+// is assumed from the permission syntax, not verified at runtime.
+const SECRET_DIRS = ['~/.ssh', '~/.gnupg', '~/.config/gh', '~/.aws', '~/.config/gcloud', '~/.kube'];
+const SECRET_FILES = ['~/.claude/.credentials.json', '~/.git-credentials', '~/.netrc', '~/.docker/config.json', '~/.npmrc', '~/.pypirc'];
+const SECRET_READS = [...SECRET_DIRS.map((d) => `Read(${d}/**)`), ...SECRET_FILES.map((f) => `Read(${f})`), 'Read(**/.env)', 'Read(**/.env.*)'];
 const GIT_OUTPUT = ['git diff', 'git log', 'git show'].map((c) => `${c} *--output*`);
 
 // `cmd` alone and `cmd *`: the separator keeps `git logx` / `npm test-x` from matching.
@@ -53,6 +59,7 @@ export function cliArgs(a, { testCmd, lintCmd, prompt } = {}) {
     ...bash(NEVER),
     ...GIT_OUTPUT.map((c) => `Bash(${c})`),
     ...(edits ? PROTECTED_PATHS.flatMap((p) => [`Edit(${p})`, `Write(${p})`]) : []),
+    ...SECRET_READS,
   ];
   return [
     '-p', text,

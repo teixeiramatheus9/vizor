@@ -32,7 +32,7 @@ afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 const rulesFor = (level) => guardRules({ id: 'auto-1', level }, { worktreePath: root, testCmd: 'npm test', lintCmd: 'npx eslint .' });
 const bash = (command) => ({ tool: 'Bash', input: { command } });
 const edit = (file, tool = 'Edit') => ({ tool, input: tool === 'NotebookEdit' ? { notebook_path: file } : { file_path: file } });
-const verdict = (call, level = 'worktree') => automationVerdict({ rules: rulesFor(level), call, home });
+const verdict = (call, level = 'worktree') => automationVerdict({ rules: rulesFor(level), call, cwd: root, home });
 const deniedEverywhere = (call) => LEVELS.every((level) => verdict(call, level) !== null);
 
 // Every probe of the adversarial review: each must be denied at every level.
@@ -125,6 +125,41 @@ describe('automação: an allowlist, deny what the guard cannot read', () => {
   it('says which level, in pt-BR', () => {
     expect(verdict(bash('true && git push'))).toBe('Automação do Vizor (nível worktree): comando fora do permitido para esta automação.');
     expect(verdict(bash('git push'), 'read')).toContain('(nível ler)');
+  });
+});
+
+describe('automação: secrets are never read through Bash', () => {
+  const SECRET = 'Automação do Vizor: leitura de arquivo sensível barrada.';
+  fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.ssh', 'id_rsa'), 'k');
+  fs.writeFileSync(path.join(root, '.env'), 'X=1');
+  fs.symlinkSync(path.join(home, '.ssh'), path.join(root, 'keys'));
+  const reads = [
+    'cat ~/.ssh/id_rsa', `cat ${home}/.ssh/id_rsa`, 'ls ~/.ssh', 'head ~/.gnupg/x', 'cat ~/.config/gh/hosts.yml',
+    'cat ~/.claude/.credentials.json', 'cat ~/.git-credentials', 'cat ~/.netrc', 'cat ~/.aws/credentials',
+    'cat ~/.config/gcloud/x.json', 'cat ~/.docker/config.json', 'cat ~/.kube/config', 'cat ~/.npmrc', 'cat ~/.pypirc',
+    'cat keys/id_rsa', 'cat .env', 'cat sub/.env.local', `cat ${outside}/.env`, 'grep -r token ~', 'grep -rn token ~/.config',
+    'rg token ~', 'rg token ~/.config', 'git diff --no-index ~/.ssh/id_rsa /dev/null', "cat '~/.ssh/id_rsa'", 'cat ~/.s"sh"/id_rsa',
+    `grep --file=${home}/.netrc x`, 'cat a.txt && cat ~/.netrc',
+  ];
+  for (const command of reads) {
+    it(`denies at every level: ${command}`, () => {
+      for (const level of LEVELS) expect(verdict(bash(command), level), level).toBe(SECRET);
+      expect(automationVerdict({ rules: MISSING_AUTOMATION_RULES, call: bash(command), cwd: root, home })).toBe(SECRET);
+    });
+  }
+  it('ordinary reads are fine', () => {
+    for (const command of ['cat a.txt', 'grep -rn x .', 'rg x', 'ls ~', 'cat ~/notes.txt', 'grep -r x sub', 'ls -la ~/.config/other'])
+      expect(verdict(bash(command)), command).toBeNull();
+  });
+});
+
+describe('automação: gh api endpoints carry nothing but a path', () => {
+  for (const command of ['gh api repos/o/r?x=1', 'gh api repos/o/r#x', 'gh api repos/o/r%2F', 'gh api https://api.github.com/repos/o/r', 'gh api user@x', 'gh api "repos/o/r x"', `gh api repos/${'a'.repeat(200)}`]) {
+    it(`denies at every level: ${command}`, () => expect(deniedEverywhere(bash(command))).toBe(true));
+  }
+  it('a plain path passes', () => {
+    expect(verdict(bash('gh api /repos/o/r/pulls/1/files --paginate'))).toBeNull();
   });
 });
 

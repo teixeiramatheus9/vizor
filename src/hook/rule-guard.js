@@ -521,6 +521,8 @@ function plainLine(command) {
 const isFlag = (arg, flag) =>
   arg === flag || arg.startsWith(`${flag}=`) || (/^-[A-Za-z]$/.test(flag) && /^-[A-Za-z]+$/.test(arg) && arg.includes(flag[1]));
 
+const GH_API_ENDPOINT = /^\/?[A-Za-z0-9._/-]{1,200}$/;
+
 // gh api: only `gh api <endpoint>` plus --paginate, --jq/-q <expr> and
 // -H 'Accept: …', each as its own word. pflag reads short clusters
 // (-iXPUT, -ifbody=x), so any other option is denied, not parsed.
@@ -536,7 +538,8 @@ function ghApiReads(args) {
     } else if (arg.startsWith('-') || endpoint !== null) return false;
     else endpoint = arg;
   }
-  return endpoint !== null && !/graphql/i.test(endpoint);
+  // A path only: a query string, a host or an escape could carry data out.
+  return endpoint !== null && GH_API_ENDPOINT.test(endpoint) && !/graphql/i.test(endpoint);
 }
 
 // git takes any unambiguous prefix of a long option (--outp = --output).
@@ -574,8 +577,7 @@ function entryMatches(entry, segment) {
   return argsSafe(entry.program, texts.slice(1));
 }
 
-function bashAllowed(rules, command) {
-  const segments = plainLine(command);
+function bashAllowed(rules, segments) {
   if (!segments) return false;
   return segments.every((segment) => {
     const [program] = segment;
@@ -649,6 +651,43 @@ function editReason(rules, call, home) {
   return null;
 }
 
+// Where keys and tokens live: never read by an automação, whatever its level.
+const SECRET_PATHS = [
+  '.ssh', '.gnupg', '.config/gh', '.aws', '.config/gcloud', '.kube',
+  '.claude/.credentials.json', '.git-credentials', '.netrc', '.docker/config.json', '.npmrc', '.pypirc',
+];
+const SECRET_MESSAGE = 'Automação do Vizor: leitura de arquivo sensível barrada.';
+const isEnvFile = (file) => /^\.env(?:\..+)?$/.test(path.basename(file));
+
+function secretRoots(home) {
+  const roots = SECRET_PATHS.map((name) => path.join(home, name));
+  if (process.env.CLAUDE_CONFIG_DIR) roots.push(path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json'));
+  return [...new Set(roots.flatMap((root) => [root, realTarget(root)]).filter(Boolean))];
+}
+
+// A word of the line (or an --opt=value) that names a secret, a .env file
+// anywhere, or, for a recursive grep/rg, a directory holding a secret.
+function readsSecret(segments, cwd, home) {
+  const roots = secretRoots(home);
+  return segments.some((segment) => {
+    const [program, ...args] = segment.map((word) => word.text);
+    const recursive =
+      program === 'rg' || (program === 'grep' && args.some((arg) => /^--(?:dereference-)?recursive$/.test(arg) || /^-[A-Za-z]*[rR]/.test(arg)));
+    return args.some((arg) => {
+      const value = arg.startsWith('-') ? (arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : '') : arg;
+      if (!value) return false;
+      let named = null;
+      if (value === '~' || value.startsWith('~/')) named = path.join(home, value.slice(1));
+      else if (path.isAbsolute(value)) named = path.resolve(value);
+      else if (cwd) named = path.resolve(cwd, value);
+      if (named === null) return false;
+      const real = realTarget(named) ?? named;
+      if (isEnvFile(named) || isEnvFile(real)) return true;
+      return roots.some((root) => within(root, named) || within(root, real) || (recursive && (within(named, root) || within(real, root))));
+    });
+  });
+}
+
 // An automação whose rules could not be read (no file, corrupt, no entry for
 // its id) may only read until the Vizor writes them: fail closed.
 export const MISSING_AUTOMATION_RULES = Object.freeze({
@@ -662,13 +701,15 @@ const MISSING_MESSAGE = 'Automação do Vizor: não achei as regras desta automa
 
 // The deny reason for an automação's call, or null. Never throws: a call the
 // guard fails to read is denied.
-export function automationVerdict({ rules, call, home = os.homedir() }) {
+export function automationVerdict({ rules, call, cwd = null, home = os.homedir() }) {
   if (!rules) return null;
   let what = null;
   try {
     if (!AUTOMATION_TOOLS.has(call.tool)) what = `ferramenta ${call.tool} fora do permitido para esta automação`;
     else if (call.tool === 'Bash') {
-      if (!bashAllowed(rules, call.input?.command)) what = 'comando fora do permitido para esta automação';
+      const segments = plainLine(call.input?.command);
+      if (segments && readsSecret(segments, cwd, home)) return SECRET_MESSAGE;
+      if (!bashAllowed(rules, segments)) what = 'comando fora do permitido para esta automação';
     } else if (EDIT_TOOLS.has(call.tool)) what = editReason(rules, call, home);
   } catch {
     what = 'um passo que a trava não conseguiu conferir';
@@ -786,7 +827,7 @@ function resolveDir(cwd, dir) {
 export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {}, automation = null, automationId = null }) {
   const call = toolCall(event);
   const summary = () => (call.tool === 'Bash' ? String(call.input.command ?? '') : `${call.tool} ${editPath(call.input)}`.trim()).slice(0, 200);
-  const barred = automationVerdict({ rules: automation, call });
+  const barred = automationVerdict({ rules: automation, call, cwd: event.cwd ?? null });
   if (barred) {
     notify({
       type: 'guard-event',
