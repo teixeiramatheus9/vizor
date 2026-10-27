@@ -47,12 +47,15 @@ export function createReviewService({
   git, readFile, stat, graphFor, graphBuilt = (wt) => graphFor(wt)?.graph(), verifier, storeFor, sessionsOf,
   setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout,
   cacheDir = path.join(os.homedir(), '.cache', 'vizor', 'tsc'),
+  startPaused = false, log = () => {},
 }) {
   const service = new EventEmitter();
   const states = new Map();
   let requestSource = () => null;
-  let paused = false;
-  const parked = []; // verifies that arrived while paused
+  // main starts it paused: nothing runs before the workspace window first shows.
+  let paused = startPaused;
+  const parked = new Map(); // `${wt}\0${kind}` → the release of the one verify waiting out a pause
+  const asked = new Set(); // worktrees the screen has read: only they get a tsc on agent stop
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
@@ -261,10 +264,12 @@ export function createReviewService({
   const emptySummary = (wt, baseError) => ({ base: null, baseError, files: [], order: [], verdict: buildVerdict({}), contract: [], request: requestSource(wt) ?? null });
 
   async function summary(wt) {
+    asked.add(wt);
     try {
       return await summarise(wt);
     } catch (error) {
       // Unborn HEAD, not a git repo...: show it on screen, never throw to the IPC.
+      log(`review summary of ${wt} failed: ${error?.stack ?? error}`);
       const why = String(error?.message ?? error).split('\n')[0].slice(0, 120);
       return emptySummary(wt, `não deu pra ler as mudanças: ${why}`);
     }
@@ -368,6 +373,7 @@ export function createReviewService({
   }
 
   async function file(wt, rel, { force = false } = {}) {
+    asked.add(wt);
     const base = await baseOf(wt);
     if (base.error) return { path: rel, status: 'modified', hunks: [], error: base.error, tscErrors: [] };
     const s = stateOf(wt);
@@ -423,6 +429,7 @@ export function createReviewService({
   }
 
   async function slice(wt, { expanded = [], showHidden = false } = {}) {
+    asked.add(wt);
     const indexer = graphFor(wt);
     const graph = indexer?.graph();
     if (graph?.unavailable) return { status: 'unavailable', reason: graph.unavailable };
@@ -456,9 +463,17 @@ export function createReviewService({
     return command ? { command } : { skip: 'sem script de testes no projeto' };
   }
 
+  // With a debounce pending the notice rides it: whatever lands inside those
+  // 300 ms goes out as one 'changed'.
   function announce(wt) {
-    stateOf(wt).dirty = true;
-    if (!paused) flushDirty(wt);
+    const s = stateOf(wt);
+    s.dirty = true;
+    if (!paused && s.timer == null) flushDirty(wt);
+  }
+  function schedule(wt) {
+    const s = stateOf(wt);
+    if (s.timer != null) clearTimer(s.timer);
+    s.timer = setTimer(() => { s.timer = null; announce(wt); }, DEBOUNCE_MS);
   }
   function flushDirty(wt) {
     const s = stateOf(wt);
@@ -481,7 +496,12 @@ export function createReviewService({
 
   async function verify(wt, kind) {
     const plan = await planFor(wt, kind);
-    if (paused) await new Promise((resolve) => parked.push(resolve));
+    if (paused) {
+      // Ten stops while hidden are one tsc on show: a newer ask replaces the parked one.
+      const key = `${wt}\0${kind}`;
+      const run = await new Promise((resolve) => { parked.get(key)?.(false); parked.set(key, resolve); });
+      if (!run) return { kind, status: 'cancelled' };
+    }
     return execute(wt, kind, plan);
   }
 
@@ -490,20 +510,26 @@ export function createReviewService({
     s.base = null;
     s.config = null;
     s.epoch++;
-    if (s.timer != null) clearTimer(s.timer);
-    s.timer = setTimer(() => { s.timer = null; announce(wt); }, DEBOUNCE_MS);
+    schedule(wt);
   }
 
   Object.assign(service, {
     setRequestSource(fn) { requestSource = typeof fn === 'function' ? fn : () => null; },
     summary, file, approve, reject, slice, verify, invalidate,
+    // A notice from outside (a graph batch, an issue body) that joins the debounce.
+    notify(wt) { stateOf(wt).dirty = true; schedule(wt); },
     pause() { paused = true; },
+    // Back on screen: what got dirty while hidden goes out through the debounce,
+    // merged with the notices and the focus invalidate that follow the show.
     resume() {
       paused = false;
-      for (const wt of states.keys()) flushDirty(wt);
-      for (const release of parked.splice(0)) release();
+      for (const [wt, s] of states) if (s.dirty) schedule(wt);
+      const released = [...parked.values()];
+      parked.clear();
+      for (const release of released) release(true);
     },
     async onAgentStop(wt) {
+      if (!asked.has(wt)) return; // never opened on screen: no tsc on every stop of every session
       const plan = await planFor(wt, 'tsc');
       if (plan.skip) { stateOf(wt).tsc = { kind: 'tsc', status: 'skipped', reason: plan.skip, ms: 0 }; return; }
       return verify(wt, 'tsc');

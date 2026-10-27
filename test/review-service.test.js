@@ -246,16 +246,76 @@ describe('review service', () => {
       fire();
       expect(seen).toEqual([]);
       service.resume();
+      fire();
+      expect(seen.sort()).toEqual(['/other', WT]);
+    });
+
+    it('merges the flush on resume, an outside notice and a focus invalidate into one changed', () => {
+      const { service, fire } = setup();
+      const seen = [];
+      service.on('changed', (wt) => seen.push(wt));
+      service.pause();
+      service.invalidate(WT);
+      fire();
+      service.resume();
+      service.notify(WT);
+      service.notify('/other');
+      service.invalidate(WT);
+      expect(seen).toEqual([]);
+      fire();
       expect(seen.sort()).toEqual(['/other', WT]);
     });
   });
 
   it('onAgentStop runs the tsc plan through the verifier', async () => {
     const { service, calls } = setup({ files: { '/w/tsconfig.json': '{}', '/w/node_modules/.bin/tsc': '' } });
+    await service.file(WT, 'a.js');
     await service.onAgentStop(WT);
     const run = calls.find((c) => c.verify === 'tsc');
     expect(run.plan.command).toBe('nice');
     expect(run.plan.args).toContain('--noEmit');
+  });
+
+  it('onAgentStop leaves alone a worktree the screen never asked about', async () => {
+    const { service, calls } = setup({ files: { '/w/tsconfig.json': '{}', '/w/node_modules/.bin/tsc': '' } });
+    await service.onAgentStop(WT);
+    expect(calls.some((c) => c.verify)).toBe(false);
+    await service.summary(WT);
+    await service.onAgentStop(WT);
+    expect(calls.filter((c) => c.verify === 'tsc')).toHaveLength(1);
+  });
+
+  it('can start paused, holding verifies until the first resume', async () => {
+    const { service, calls } = setup({ files: { '/w/tsconfig.json': '{}', '/w/node_modules/.bin/tsc': '' }, extra: { startPaused: true } });
+    const pending = service.verify(WT, 'tsc');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls.some((c) => c.verify)).toBe(false);
+    service.resume();
+    expect((await pending).status).toBe('ok');
+  });
+
+  it('keeps only the last verify of a kind parked while paused', async () => {
+    const { service, calls } = setup({ files: { '/w/tsconfig.json': '{}', '/w/node_modules/.bin/tsc': '', '/w/package.json': '{"scripts":{"test":"vitest"}}' } });
+    service.pause();
+    const first = service.verify(WT, 'tsc');
+    const second = service.verify(WT, 'tsc');
+    const tests = service.verify(WT, 'tests');
+    const third = service.verify(WT, 'tsc');
+    await new Promise((resolve) => setImmediate(resolve));
+    service.resume();
+    expect((await first).status).toBe('cancelled');
+    expect((await second).status).toBe('cancelled');
+    expect((await third).status).toBe('ok');
+    expect((await tests).status).toBe('ok');
+    expect(calls.filter((c) => c.verify === 'tsc')).toHaveLength(1);
+    expect(calls.filter((c) => c.verify === 'tests')).toHaveLength(1);
+  });
+
+  it('logs why a summary failed before showing the short reason', async () => {
+    const logged = [];
+    const { service } = setup({ git: { 'diff --raw --numstat -z -M BASE': new Error('fatal: bad revision') }, extra: { log: (line) => logged.push(line) } });
+    await service.summary(WT);
+    expect(logged.join('\n')).toMatch(/fatal: bad revision/);
   });
 
   it('onAgentStop does not run a skipped tsc', async () => {

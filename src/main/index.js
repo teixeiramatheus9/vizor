@@ -2758,6 +2758,9 @@ const reviewService = createReviewService({
   verifier: reviewVerifier,
   storeFor: reviewStoreFor,
   sessionsOf: reviewSessionsIn,
+  // Nothing runs before the workspace window first shows (its 'show' resumes it).
+  startPaused: true,
+  log,
 });
 
 const sendReviewChanged = (worktree) => {
@@ -2766,7 +2769,7 @@ const sendReviewChanged = (worktree) => {
 // The service holds its own notices while paused; the rest (a graph batch,
 // an issue body, a first prompt landing) wait here while the window is hidden
 // and go out once when it shows again.
-let reviewWindowHidden = false;
+let reviewWindowHidden = true; // until the workspace window first shows
 const reviewHeldNotices = new Set();
 const notifyReview = (worktree) => {
   if (reviewWindowHidden) reviewHeldNotices.add(worktree);
@@ -2921,10 +2924,11 @@ workspaceWindow?.onVisibility((visible) => {
   if (visible) {
     disarmGraphDiscard();
     reviewService.resume();
-    // What landed while hidden, plus the worktree on screen (its graph may have been dropped and rebuilt).
+    // What landed while hidden, plus the worktree on screen (its graph may have been dropped and rebuilt),
+    // ride the service's debounce: with the dirty flush and the focus invalidate, one recompute each.
     const selected = workspaceSelectedSession ? sessionWorktree(workspaceSelectedSession) : null;
     if (selected) reviewHeldNotices.add(selected);
-    for (const worktree of reviewHeldNotices) sendReviewChanged(worktree);
+    for (const worktree of reviewHeldNotices) reviewService.notify(worktree);
     reviewHeldNotices.clear();
   } else {
     reviewService.pause();
