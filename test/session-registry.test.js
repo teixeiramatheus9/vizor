@@ -593,6 +593,14 @@ describe('tombstones and seen marks', () => {
     expect(registry.list()).toHaveLength(1);
   });
 
+  it('flags an adopted session until a hook speaks for it', () => {
+    const registry = new SessionRegistry();
+    registry.adopt([{ sessionId: S1, cwd: '/tmp/a', status: 'idle' }]);
+    expect(registry.list()[0].adopted).toBe(true);
+    registry.applyEvent(promptEvent({ session_id: S1 }));
+    expect(registry.list()[0].adopted).toBeUndefined();
+  });
+
   it('markSeen stamps the time', () => {
     let t = 1000;
     const registry = live(() => t);

@@ -78,6 +78,7 @@ export class SessionRegistry extends EventEmitter {
     // An event proves the chat is alive: a tombstone for it is stale.
     delete session.failedAt;
     delete session.failReason;
+    delete session.adopted;
     session.updatedAt = this.now();
 
     if (eventName === 'UserPromptSubmit') {
@@ -240,6 +241,8 @@ export class SessionRegistry extends EventEmitter {
         wave: null,
         term: null,
         seenAlive: true,
+        // Built from Claude Code's record alone: no hook has spoken yet.
+        adopted: true,
       });
       added++;
     }
