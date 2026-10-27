@@ -27,7 +27,9 @@ export function tscPlan({ root, tsconfigText, hasLocalTsc, config = {}, cacheDir
   if (tsconfigText == null) return { skip: 'sem tsconfig.json' };
   if (!hasLocalTsc) return { skip: 'sem typescript instalado no projeto' };
   const ts = parseTsconfig(tsconfigText);
-  if (ts && Array.isArray(ts.references) && ts.references.length && (!ts.files || ts.files.length === 0)) {
+  // A solution config only points at its projects: references and an explicit "files": [].
+  // Without "files" tsc falls back to include, so that config compiles code of its own.
+  if (ts && Array.isArray(ts.references) && ts.references.length && Array.isArray(ts.files) && ts.files.length === 0) {
     return { skip: 'tsconfig de solução (só referências)' };
   }
   const info = path.join(cacheDir, `${createHash('sha1').update(root).digest('hex')}.tsbuildinfo`);

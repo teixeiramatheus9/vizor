@@ -21,6 +21,10 @@ describe('tscPlan', () => {
     const sol = '{ // solution\n "files": [], "references": [{"path":"./a"}] }';
     expect(tscPlan({ ...base, tsconfigText: sol })).toHaveProperty('skip');
   });
+  it('does not take a config without files for a solution config', () => {
+    expect(tscPlan({ ...base, tsconfigText: '{"references":[{"path":"x"}],"include":["src"]}' })).toHaveProperty('command');
+    expect(tscPlan({ ...base, tsconfigText: '{"files":[],"references":[]}' })).toHaveProperty('command');
+  });
   it('does not skip a tsconfig with references and files', () => {
     expect(tscPlan({ ...base, tsconfigText: '{"files":["a.ts"],"references":[{"path":"x"}]}' })).toHaveProperty('command');
   });
