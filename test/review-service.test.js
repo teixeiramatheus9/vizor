@@ -130,6 +130,42 @@ describe('review service', () => {
     expect(s.files.find((f) => f.path === 'n.js')).toMatchObject({ status: 'added', untracked: true, added: 2, removed: 0 });
   });
 
+  it('never reads an untracked file over the diff limit, and shows it too big', async () => {
+    const read = [];
+    const { service } = setup({
+      git: { 'ls-files --others --exclude-standard -z': 'big.log\0' },
+      files: { '/w/a.js': 'x' },
+      extra: {
+        readFile: async (p) => { read.push(p); if (p !== '/w/a.js') throw new Error('ENOENT'); return 'x'; },
+        stat: async (p) => (p === '/w/big.log' ? { mtimeMs: 1, size: 50 * 1024 * 1024 } : p === '/w/a.js' ? { mtimeMs: 1, size: 1 } : Promise.reject(new Error('ENOENT'))),
+      },
+    });
+    const s = await service.summary(WT);
+    expect(s.files.find((f) => f.path === 'big.log')).toMatchObject({ status: 'added', untracked: true, added: null });
+    const f = await service.file(WT, 'big.log');
+    expect(f.tooBig).toBe(true);
+    expect(read).not.toContain('/w/big.log');
+  });
+
+  it('reads an unchanged untracked file once across summaries and slices', async () => {
+    const read = [];
+    const files = { '/w/a.js': 'x', '/w/n.js': 'one\ntwo\n' };
+    const graph = { modules: [], functions: [], imports: [], calls: [], edges: [], callEdges: [] };
+    const { service } = setup({
+      git: { 'ls-files --others --exclude-standard -z': 'n.js\0' },
+      files,
+      graph: { graph: () => graph },
+      extra: { readFile: async (p) => { read.push(p); if (!(p in files)) throw new Error('ENOENT'); return files[p]; } },
+    });
+    await service.summary(WT);
+    await service.summary(WT);
+    await service.slice(WT, {});
+    expect(read.filter((p) => p === '/w/n.js').length).toBeLessThanOrEqual(2);
+    const before = read.filter((p) => p === '/w/n.js').length;
+    await service.summary(WT);
+    expect(read.filter((p) => p === '/w/n.js').length).toBe(before);
+  });
+
   it('fills a file opened before the summary from the full diff, and caches by mtime and size', async () => {
     const { service, calls } = setup({ files: { '/w/a.js': 'x' } });
     const f = await service.file(WT, 'a.js');

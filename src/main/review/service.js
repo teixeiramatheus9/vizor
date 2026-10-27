@@ -56,7 +56,7 @@ export function createReviewService({
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, baseTexts: new Map(), baseSha: null, open: null, refreshing: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, refreshing: null });
     }
     return states.get(wt);
   };
@@ -137,13 +137,33 @@ export function createReviewService({
     }));
     const tracked = new Set(files.map((f) => f.path));
     const untracked = others.split('\0').filter((p) => p && !tracked.has(p));
+    const s = stateOf(wt);
+    const seen = new Map();
     const extra = await chunked(untracked, async (p) => {
-      const text = await readText(wt, p);
-      const binary = text !== null && text.slice(0, 8000).includes('\0');
-      return { path: p, status: 'added', added: binary || text === null ? null : countLines(text), removed: binary || text === null ? null : 0, binary, contract: false, untracked: true };
+      const info = await untrackedInfo(wt, p, s.untrackedSeen);
+      seen.set(p, info);
+      const counted = !info.binary && info.added !== null;
+      return { path: p, status: 'added', added: counted ? info.added : null, removed: counted ? 0 : null, binary: info.binary, contract: false, untracked: true };
     });
-    stateOf(wt).untracked = new Set(untracked);
+    s.untracked = new Set(untracked);
+    s.untrackedSeen = seen; // only the files still untracked stay cached
     return [...files, ...extra];
+  }
+
+  // An untracked file as an all-added patch, cached by (path, mtime, size) so
+  // a summary or slice does not read it again. Over the diff limit it is never
+  // read: it shows as too big.
+  async function untrackedInfo(wt, rel, cache) {
+    const st = await statOf(wt, rel);
+    const stamp = keyOf(st);
+    const known = cache?.get(rel);
+    if (known?.stamp === stamp) return known;
+    if (st && st.size > MAX_DIFF_BYTES) {
+      return { stamp, binary: false, added: null, bytes: st.size, file: { path: rel, oldPath: null, status: 'added', binary: false, hunks: [] } };
+    }
+    const text = await readText(wt, rel);
+    const file = untrackedAsFiles([rel], () => text)[0];
+    return { stamp, binary: file.binary, added: file.binary || text === null ? null : countLines(text), bytes: Buffer.byteLength(text ?? ''), file };
   }
 
   // Per-file analysis (contract changes + changed function ids), cached by
@@ -220,9 +240,9 @@ export function createReviewService({
     if (cold.length) {
       const parsed = new Map(!cold.some((f) => !f.untracked) ? [] : parseUnifiedDiff(await run(wt, ['diff', '-U3', sha])).map((f) => [f.path, f]));
       for (const f of cold) {
-        const text = f.untracked ? await readText(wt, f.path) : null;
-        const file = f.untracked ? untrackedAsFiles([f.path], () => text)[0] : parsed.get(f.path) ?? null;
-        s.files.set(`p\0${suffix(sha, f.path, stamps.get(f.path))}`, { file, untracked: f.untracked, bytes: approxBytes(file), epoch: -1, committedIds: null, lone: false });
+        const info = f.untracked ? await untrackedInfo(wt, f.path, s.untrackedSeen) : null;
+        const file = info ? info.file : parsed.get(f.path) ?? null;
+        s.files.set(`p\0${suffix(sha, f.path, stamps.get(f.path))}`, { file, untracked: f.untracked, bytes: info ? info.bytes : approxBytes(file), epoch: -1, committedIds: null, lone: false });
       }
     }
     await openIds(wt);
@@ -331,9 +351,9 @@ export function createReviewService({
       if (!file) {
         const others = await run(wt, ['ls-files', '--others', '--exclude-standard', '-z', '--', rel]).catch(() => '');
         if (others.split('\0').includes(rel)) {
-          const text = await readText(wt, rel);
-          bytes = Buffer.byteLength(text ?? '');
-          file = untrackedAsFiles([rel], () => text)[0];
+          const info = await untrackedInfo(wt, rel, s.untrackedSeen);
+          bytes = info.bytes;
+          file = info.file;
           untracked = true;
         }
       }
