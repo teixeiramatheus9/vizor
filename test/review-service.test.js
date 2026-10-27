@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { linkGraph } from '../src/main/graph/link.js';
 import { createReviewService } from '../src/main/review/service.js';
 
 const WT = '/w';
@@ -318,6 +319,28 @@ describe('review service', () => {
     gitMap['diff --raw --numstat -z -M BASE'] = ':100644 100644 a b M\0a.js\x001\t1\ta.js\0';
     await service.summary(WT);
     expect((await service.file(WT, 'a.js')).status).toBe('modified');
+  });
+
+  it('keeps the reading order of a file set when the graph arrives, and redoes it when the set changes', async () => {
+    const ex = (id, calls = [], imports = [], withGo = true) => ({ functions: [{ id: `${id}#run`, name: 'run', startLine: 1, endLine: 5 }, ...(withGo ? [{ id: `${id}#go`, name: 'go', startLine: 6, endLine: 9 }] : [])], imports, calls });
+    const graph = linkGraph(new Map([
+      ['src/a.js', ex('src/a.js', [{ from: 'src/a.js#run', callee: { kind: 'local', name: 'go' } }], [{ from: './b.js', local: 'go', imported: 'go' }], false)],
+      ['src/b.js', ex('src/b.js')],
+      ['src/c.js', ex('src/c.js')],
+    ]));
+    let built = null;
+    const two = ':100644 100644 a b M\0src/a.js\0:100644 100644 a b M\0src/b.js\x001\t1\tsrc/a.js\x001\t1\tsrc/b.js\0';
+    const { service, gitMap } = setup({
+      git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': '', 'cat-file --batch': 'o blob 1\nx\no blob 1\nx\n' },
+      files: { '/w/src/a.js': 'y', '/w/src/b.js': 'y', '/w/src/c.js': 'y' },
+      extra: { graphFor: () => ({ graph: () => built }), graphBuilt: () => built },
+    });
+    expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
+    built = graph;
+    expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
+    gitMap['diff --raw --numstat -z -M BASE'] = `${two.slice(0, two.indexOf('1\t1'))}:100644 100644 a b M\0src/c.js\x00${two.slice(two.indexOf('1\t1'))}1\t1\tsrc/c.js\0`;
+    gitMap['cat-file --batch'] = 'o blob 1\nx\no blob 1\nx\no blob 1\nx\n';
+    expect((await service.summary(WT)).order).toEqual(['src/b.js', 'src/a.js', 'src/c.js']);
   });
 
   it('never throws out of summary when git fails (unborn HEAD, no repo)', async () => {

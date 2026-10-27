@@ -56,7 +56,7 @@ export function createReviewService({
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, refreshing: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, refreshing: null, order: null });
     }
     return states.get(wt);
   };
@@ -315,7 +315,11 @@ export function createReviewService({
       live.push(...ids);
     }
     s.store.prune?.(live);
-    const order = readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path);
+    // The order is worked out once per set of files: a graph or a contract
+    // change landing later must not reshuffle what the dev is reading.
+    const set = files.map((f) => f.path).sort().join('\0');
+    if (s.order?.set !== set) s.order = { set, paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+    const order = s.order.paths;
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,
       contract: contract.reduce((n, c) => n + c.changes.length, 0), approved: approvedCount, totalHunks,
