@@ -2906,7 +2906,8 @@ reviewHandle('review:compose', reviewFail, ({ sessionId, context, text }) => {
 reviewHandle('review:reject', reviewFail, async ({ worktree, path: rel, hunkId, sessionId }) => {
   if (!reviewWorktreeOk(worktree) || !safeRelPath(rel) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
   // The line has to be read before the hunk is gone.
-  const hunk = (await reviewService.file(worktree, rel))?.hunks?.find((item) => item.id === hunkId);
+  // force: over 3,000 lines the view is cut, but the hunk still has to be found.
+  const hunk = (await reviewService.file(worktree, rel, { force: true }))?.hunks?.find((item) => item.id === hunkId);
   const result = await reviewService.reject(worktree, rel, hunkId);
   if (result.ok && hunk && typeof sessionId === 'string' && registry.sessions.has(sessionId)) {
     const notice = rejectNotice(rel, hunk.newStart);
