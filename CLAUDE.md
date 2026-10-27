@@ -39,9 +39,14 @@ App Electron (src/main/index.js)
   ├── cc-peer.js           → cliente NDJSON do socket da sessão
   ├── work/                → fluxo principal: plano do chat (.vizor/plano-<issue>.md),
   │                          prompts compartilhados entre voz e Ctrl+K
+  ├── review/              → tela de revisão (main: git-diff, contract, slice, verify,
+  │                          verdict, compose, review-store em ~/.config/vizor/revisao/;
+  │                          renderer: src/renderer/review/ com abas Resumo/Mudanças/
+  │                          Impacto/Ao vivo, compositor e gaveta de terminal)
   ├── terminal-target.js   → foco EXATO de aba via CLI do terminal (kitty/wezterm/tmux),
   │                          com a identidade que o hook capturou do env da sessão
-  ├── maestro/             → modo Maestro (#159): orquestra (chats do workspace
+  ├── maestro/             → modo Maestro (#159), camada sem layout próprio sobre a
+  │                          revisão (voz, balão, seguir): orquestra (chats do workspace
   │                          endereçados por issue ou posição) e ordens que
   │                          esperam 3 s ("entendi: …") antes de agir
   ├── graph/               → grafo do Maestro: extrai funções/imports/chamadas
