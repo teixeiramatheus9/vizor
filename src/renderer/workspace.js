@@ -1271,6 +1271,8 @@ function refreshCommandList() {
     issuesLoading: !commandCatalog,
     chats: commandChats(),
     plans,
+    tasks: Object.fromEntries(commandChats().map((chat) => [chat.sessionId, planCard.taskOf(chat.sessionId)]).filter(([, task]) => task)),
+    blocked: agentSessionList.filter((session) => session.blocksTyping).map((session) => session.id),
     focusedId: planSessionId(),
     maestroOn: maestro.on,
     automations: automations.list(),
@@ -1327,6 +1329,20 @@ async function runCommandItem(item) {
     showDrawer();
     if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
     else selectSession(action.sessionId);
+    return;
+  }
+  if (action.type === 'task') {
+    // "Sua vez" only reads; the rest are the card's own actions.
+    if (action.name === 'myTurn') {
+      const task = planCard.taskOf(action.sessionId);
+      const todo = task?.devTodos?.[0];
+      toast(todo ? `Sua vez: ${todo.file}:${todo.line}` : 'Sua vez no passo [dev] atual');
+      return;
+    }
+    const result = await window.vizor.task(action.sessionId, action.name);
+    const note = result?.error ?? (result?.delivery && !['sent', 'pasted'].includes(result.delivery) ? PLAN_NOTES[result.delivery] ?? String(result.delivery) : null);
+    if (note) toast(note);
+    planCard.refresh(action.sessionId);
     return;
   }
   if (action.type === 'approve' || action.type === 'open-pr') {

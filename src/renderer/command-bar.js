@@ -9,8 +9,10 @@ const fold = (text) =>
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase();
 
-// chats: [{ sessionId, name, status }]; plans: sessionId → { steps, approved }.
-export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, focusedId = null, maestroOn = false, issuesError = false, prsError = false, issuesLoading = false, automations = [] } = {}) {
+// chats: [{ sessionId, name, status }]; plans: sessionId → { steps, approved };
+// tasks: sessionId → the task state main reports (phase, steps, tests, devTodos);
+// blocked: sessions with a dialog on screen, which never get typed into.
+export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, focusedId = null, maestroOn = false, issuesError = false, prsError = false, issuesLoading = false, automations = [], tasks = {}, blocked = [] } = {}) {
   const items = [];
   const focused = chats.find((chat) => chat.sessionId === focusedId);
   const plan = focused && plans[focused.sessionId];
@@ -18,6 +20,7 @@ export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, f
     items.push({ id: `approve:${focused.sessionId}`, group: 'Plano', label: `Aprovar o plano de ${focused.name}`, action: { type: 'approve', sessionId: focused.sessionId } });
   else if (plan?.steps?.length && plan.steps.every((step) => step.done))
     items.push({ id: `pr:${focused.sessionId}`, group: 'Plano', label: `Abrir a PR de ${focused.name}`, action: { type: 'open-pr', sessionId: focused.sessionId } });
+  items.push(...taskCommands(focused, tasks[focused?.sessionId], blocked.includes(focused?.sessionId)));
   for (const issue of issues)
     items.push({ id: `issue:${issue.number}`, group: 'Issues', label: `Puxar #${issue.number} ${issue.title}`, number: issue.number, action: { type: 'pick-issue', number: issue.number } });
   if (issuesLoading) items.push({ id: 'issues-loading', group: 'Issues', label: 'carregando as issues…', disabled: true });
@@ -34,6 +37,26 @@ export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, f
   for (const a of automations.filter((item) => !item.running && !item.queued && !item.blockedUntilConfirm))
     items.push({ id: `automation:run:${a.id}`, group: 'Automações', label: `Rodar ${a.name}`, action: { type: 'run-automation', id: a.id } });
   items.push({ id: 'maestro', group: 'Vizor', label: maestroOn ? 'Desligar o Maestro' : 'Ligar o Maestro', action: { type: 'maestro', on: !maestroOn } });
+  return items;
+}
+
+// The contract flow for the chat in front, by the phase of its task. Typed is
+// meant, so "destravar" is not held here.
+function taskCommands(chat, task, blocked) {
+  if (!chat || !task || task.phase === 'quick' || task.quick) return [];
+  const item = (name, label) => ({ id: `task:${name}:${chat.sessionId}`, group: 'Plano', label: `${label} de ${chat.name}`, action: { type: 'task', sessionId: chat.sessionId, name } });
+  const items = [];
+  if (!blocked) {
+    if (task.phase === 'contract') items.push(item('approveContract', 'Aprovar o contrato'));
+    if (task.phase === 'tests') items.push(item('approveTests', 'Aprovar os testes'));
+    if (task.phase === 'steps' || task.phase === 'pr') items.push(item('okNext', 'Ok, seguir pro próximo passo'));
+    if (task.tests?.locked?.length) items.push(item('unlockTests', 'Destravar os testes'));
+  }
+  const current = task.phase === 'steps' ? task.steps?.find((step) => step.n === task.current) : null;
+  if (current?.dev) {
+    const todo = task.devTodos?.[0];
+    items.push(item('myTurn', `Sua vez${todo ? ` (${todo.file}:${todo.line})` : ''}`));
+  }
   return items;
 }
 

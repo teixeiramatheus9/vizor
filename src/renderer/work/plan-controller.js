@@ -148,5 +148,5 @@ export function createPlanController({ el, api, sessionId, getSession = () => nu
     }
   });
 
-  return { render, refresh, forget: (id) => { tasks.delete(id); asked.delete(id); } };
+  return { render, refresh, taskOf: (id) => { const task = tasks.get(id); return task && task !== 'none' ? task : null; }, forget: (id) => { tasks.delete(id); asked.delete(id); } };
 }

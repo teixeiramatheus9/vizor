@@ -363,3 +363,20 @@ describe('voice commands — the plan by voice', () => {
   });
 });
 
+
+describe('voice commands — the contract flow', () => {
+  it('approving the contract, the tests, going on and asking whose turn it is', () => {
+    expect(routeUtterance('aprova o contrato')).toEqual({ type: 'task-action', action: 'approve-contract', number: null });
+    expect(routeUtterance('aprova o contrato da 169')).toEqual({ type: 'task-action', action: 'approve-contract', number: 169 });
+    expect(routeUtterance('aprova os testes')).toEqual({ type: 'task-action', action: 'approve-tests', number: null });
+    expect(routeUtterance('ok, segue')).toEqual({ type: 'task-action', action: 'next-step', number: null });
+    expect(routeUtterance('qual é a minha vez')).toEqual({ type: 'task-action', action: 'my-turn', number: null });
+    expect(routeUtterance('sua vez')).toEqual({ type: 'task-action', action: 'my-turn', number: null });
+    expect(routeUtterance('destrava os testes')).toEqual({ type: 'task-action', action: 'unlock-tests', number: null });
+  });
+
+  it('a longer phrase is still a prompt for the chat', () => {
+    expect(routeUtterance('ok segue mas troca o nome da função', chat)).toEqual({ type: 'prompt', text: 'ok segue mas troca o nome da função' });
+    expect(routeUtterance('aprova os testes de integração depois', chat).type).toBe('prompt');
+  });
+});

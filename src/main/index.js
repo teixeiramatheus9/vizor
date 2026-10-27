@@ -5068,6 +5068,9 @@ function createVoiceSessionForApp() {
     },
     interpret: voiceInterpret,
     planAction: async (sessionId, action) => planAction(sessionId, action),
+    taskState: (sessionId) => taskService.state(sessionId).catch(() => null),
+    taskAction: (sessionId, name) => taskService.run(sessionId, name),
+    sessionBlocked: (sessionId) => blocksTyping(registry.sessions.get(sessionId)),
     focusedSession: () => (maestroOn() ? maestroFocusId : workspaceSelectedSession ?? null),
     conductor: maestroConductor,
     // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
