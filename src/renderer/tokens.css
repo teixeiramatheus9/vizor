@@ -39,6 +39,13 @@
   --bg-footer: #0a0e14;
   --border: #1f2733;
   --hairline: #161b22;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #090b0f;
+  --ws-panel: #151c26;
+  --ws-raised: #1f2837;
+  --ws-line: #242f3f;
+  --ws-border: #33435b;
+  --ws-hover: color-mix(in srgb, #151c26 45%, #1f2837);
   --track: #232b38;
   --text: #e6edf3;
   --text-2: #b9c2cf;
@@ -48,6 +55,11 @@
   --accent: #7aa2f7;
   --warn: #d29922;
   --knob: #e6edf3;
+  /* type scale (workspace) */
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
 }
 
 body[data-palette='ambar'] {
@@ -56,6 +68,13 @@ body[data-palette='ambar'] {
   --bg-footer: #100d09;
   --border: #2b2419;
   --hairline: #1e1911;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #0c0a07;
+  --ws-panel: #1f1b12;
+  --ws-raised: #2e271a;
+  --ws-line: #362d1f;
+  --ws-border: #4d402c;
+  --ws-hover: color-mix(in srgb, #1f1b12 45%, #2e271a);
   --track: #30281c;
   --text: #f3eee6;
   --text-2: #d9c7af;
@@ -72,6 +91,13 @@ body[data-palette='magenta'] {
   --bg-footer: #110d13;
   --border: #2e2234;
   --hairline: #1f1724;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #0d0a0f;
+  --ws-panel: #211926;
+  --ws-raised: #2f2436;
+  --ws-line: #36293f;
+  --ws-border: #4e3a5a;
+  --ws-hover: color-mix(in srgb, #211926 45%, #2f2436);
   --track: #33263a;
   --text: #eee8f1;
   --text-2: #c9b6d2;
@@ -88,6 +114,13 @@ body[data-palette='ciano'] {
   --bg-footer: #0b1112;
   --border: #1e2e32;
   --hairline: #141f22;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #070c0d;
+  --ws-panel: #131d20;
+  --ws-raised: #1c2a2f;
+  --ws-line: #203035;
+  --ws-border: #2d464c;
+  --ws-hover: color-mix(in srgb, #131d20 45%, #1c2a2f);
   --track: #213338;
   --text: #e8f0f1;
   --text-2: #b5d0d3;
@@ -104,6 +137,13 @@ body[data-palette='mono'] {
   --bg-footer: #0e0f10;
   --border: #27292b;
   --hairline: #1b1c1d;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #0b0b0c;
+  --ws-panel: #1a1b1d;
+  --ws-raised: #26282b;
+  --ws-line: #2c2e31;
+  --ws-border: #3f4246;
+  --ws-hover: color-mix(in srgb, #1a1b1d 45%, #26282b);
   --track: #2b2e30;
   --text: #ebecee;
   --text-2: #c0c4c8;
@@ -124,6 +164,13 @@ body[data-palette='giz'] {
   --bg-footer: #f1efea;
   --border: #d8d5cf;
   --hairline: #e6e3dd;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #e6e3dd;
+  --ws-panel: #f3f1ed;
+  --ws-raised: #fcfbf9;
+  --ws-line: #d4d0c8;
+  --ws-border: #b9b5ac;
+  --ws-hover: color-mix(in srgb, #f3f1ed 45%, #fcfbf9);
   --track: #e2dfd9;
   --text: #2b2e33;
   --text-2: #565a61;
@@ -141,6 +188,13 @@ body[data-palette='magma'] {
   --bg-footer: #0e0909;
   --border: #271919;
   --hairline: #1a1111;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #0f0a0a;
+  --ws-panel: #251818;
+  --ws-raised: #362323;
+  --ws-line: #3f2929;
+  --ws-border: #593a3a;
+  --ws-hover: color-mix(in srgb, #251818 45%, #362323);
   --track: #2b1c1c;
   --text: #f2e8e7;
   --text-2: #d5b6b3;
@@ -157,6 +211,13 @@ body[data-palette='matrix'] {
   --bg-footer: #090e0b;
   --border: #19271e;
   --hairline: #111a14;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #080c09;
+  --ws-panel: #131d17;
+  --ws-raised: #1c2c21;
+  --ws-line: #213226;
+  --ws-border: #2e4737;
+  --ws-hover: color-mix(in srgb, #131d17 45%, #1c2c21);
   --track: #1c2b21;
   --text: #e8f1eb;
   --text-2: #b5d3be;
@@ -175,6 +236,13 @@ body[data-palette='pipboy'] {
   --bg-footer: #050d07;
   --border: #1c3a24;
   --hairline: #102616;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #070c08;
+  --ws-panel: #111e13;
+  --ws-raised: #192c1b;
+  --ws-line: #1d341f;
+  --ws-border: #29492d;
+  --ws-hover: color-mix(in srgb, #111e13 45%, #192c1b);
   --track: #1b3d26;
   --text: #b6ffc9;
   --text-2: #6fe093;
@@ -197,6 +265,13 @@ body[data-theme='arcade'] {
   --bg-footer: #070d12;
   --border: #35e0ff;
   --hairline: #14202a;
+  /* workspace layers: app background < panels < raised/focused */
+  --ws-bg: #000000;
+  --ws-panel: #0b0f14;
+  --ws-raised: #16202a;
+  --ws-line: #1d3a47;
+  --ws-border: #35e0ff;
+  --ws-hover: color-mix(in srgb, #0b0f14 45%, #16202a);
   --track: #14202a;
   --text: #eaeaea;
   --text-2: #9aa5ae;
@@ -214,5 +289,9 @@ body[data-theme='arcade'] {
   /* Spec type scale: titles 12, body 10, secondary 9, micro 8.5 — the
      pixel font is drawn for these; the classic sizes read inflated. */
   font-size: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 11.5px;
+  --fs-base: 12.5px;
+  --fs-lg: 14px;
   text-transform: uppercase;
 }

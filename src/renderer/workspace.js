@@ -224,10 +224,10 @@ async function ensureView(id) {
   termHost.appendChild(el);
   const term = new Terminal({
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
-    fontSize: 12,
+    fontSize: 14,
     cursorBlink: true,
     scrollback: 5000,
-    theme: { background: cssVar('--bg-surface'), foreground: cssVar('--text'), cursor: cssVar('--accent') },
+    theme: { background: cssVar('--ws-panel'), foreground: cssVar('--text'), cursor: cssVar('--accent') },
   });
   const fit = new FitAddon();
   term.loadAddon(fit);

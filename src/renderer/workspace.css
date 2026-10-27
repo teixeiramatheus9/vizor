@@ -11,17 +11,23 @@ body {
 body {
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface);
+  background: var(--ws-bg);
   color: var(--text);
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 12px;
+  font-size: var(--fs-base);
+  line-height: 1.5;
+}
+
+/* the arcade skin pins 10px on body; the workspace reads at the scale */
+body[data-theme='arcade'] {
+  font-size: var(--fs-base);
 }
 
 button {
   font: inherit;
   color: inherit;
   background: none;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
   padding: 2px 8px;
   cursor: pointer;
@@ -41,10 +47,10 @@ button:hover {
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 32px;
+  height: 38px;
   padding: 0 12px;
-  background: var(--bg-header);
-  border-bottom: 1px solid var(--border);
+  background: var(--ws-bg);
+  border-bottom: 1px solid var(--ws-border);
   color: var(--text-3);
 }
 
@@ -71,13 +77,13 @@ button:hover {
   min-height: 0;
   display: grid;
   /* sidebar | the review (tabs over the terminal drawer) | the composer */
-  grid-template-columns: 240px minmax(0, 1fr) 280px;
+  grid-template-columns: 280px minmax(0, 1fr) 300px;
 }
 
 #sidebar {
   overflow-y: auto;
-  background: var(--bg-footer);
-  border-right: 1px solid var(--border);
+  background: var(--ws-panel);
+  border-right: 1px solid var(--ws-border);
   padding: 6px 0;
 }
 
@@ -90,7 +96,7 @@ button:hover {
 .project + .project {
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--ws-border);
 }
 
 /* --- folding (#152) */
@@ -122,7 +128,7 @@ button:hover {
 }
 
 .files-fold {
-  font-size: 11px;
+  font-size: var(--fs-sm);
   margin-left: 4px;
 }
 
@@ -135,7 +141,7 @@ button:hover {
   text-overflow: ellipsis;
   color: var(--muted);
   font-weight: 400;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .fold-alert {
@@ -164,7 +170,7 @@ button:hover {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
+  min-height: 28px;
   padding: 0 10px;
   white-space: nowrap;
 }
@@ -224,11 +230,11 @@ button:hover {
 }
 
 .session:hover {
-  background: var(--hairline);
+  background: var(--ws-hover);
 }
 
 .session[aria-selected='true'] {
-  background: var(--hairline);
+  background: var(--ws-raised);
   border-left-color: var(--accent);
 }
 
@@ -276,7 +282,7 @@ button:hover {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--ws-border);
 }
 
 .pane:last-child {
@@ -284,12 +290,12 @@ button:hover {
 }
 
 .pane-bar {
-  height: 26px;
+  height: 32px;
   display: flex;
   align-items: center;
   padding: 0 10px;
-  background: var(--bg-header);
-  border-bottom: 1px solid var(--hairline);
+  background: var(--ws-bg);
+  border-bottom: 1px solid var(--ws-line);
   color: var(--text-3);
 }
 
@@ -324,6 +330,7 @@ button:hover {
 
 #terminal-pane {
   min-height: 0;
+  background: var(--ws-panel);
   position: relative;
 }
 
@@ -335,8 +342,8 @@ button:hover {
   max-height: 60vh;
   overflow-y: auto;
   padding: 4px;
-  background: var(--bg-header);
-  border: 1px solid var(--border);
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
   border-radius: 6px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
 }
@@ -354,7 +361,7 @@ button:hover {
 }
 
 .menu-item:hover:not(:disabled) {
-  background: var(--hairline);
+  background: var(--ws-hover);
   color: var(--text);
 }
 
@@ -374,15 +381,15 @@ button:hover {
 .menu-meta {
   flex: none;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .menu-heading {
   margin: 6px 8px 2px;
   padding-top: 6px;
-  border-top: 1px solid var(--hairline);
+  border-top: 1px solid var(--ws-line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .menu-note {
@@ -406,7 +413,7 @@ button:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 20px;
+  height: 24px;
   max-width: 220px;
   padding: 0 8px;
   border: none;
@@ -416,7 +423,7 @@ button:hover {
 }
 
 #tabs .tab[aria-selected='true'] {
-  background: var(--hairline);
+  background: var(--ws-raised);
   color: var(--text);
 }
 
@@ -440,6 +447,7 @@ button:hover {
 
 #term-host {
   flex: 1;
+  background: var(--ws-panel);
   min-height: 0;
   position: relative;
   padding: 4px 0 0 6px;
@@ -480,7 +488,7 @@ button:hover {
 }
 
 #inspector-head button[aria-pressed='true'] {
-  background: var(--hairline);
+  background: var(--ws-raised);
   color: var(--text);
 }
 
@@ -498,9 +506,9 @@ button:hover {
   width: 100%;
   font: inherit;
   color: var(--text-2);
-  background: var(--bg-footer);
+  background: var(--ws-raised);
   border: none;
-  border-bottom: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--ws-line);
   padding: 3px 8px;
 }
 
@@ -509,8 +517,8 @@ button:hover {
 }
 .plan-card {
   padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-header);
+  border-bottom: 1px solid var(--ws-border);
+  background: var(--ws-raised);
 }
 .plan-head {
   display: flex;
@@ -561,7 +569,7 @@ button:hover {
 #timeline {
   max-height: 38%;
   overflow-y: auto;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--ws-border);
 }
 
 #timeline [data-follow] {
@@ -571,7 +579,7 @@ button:hover {
   z-index: 1;
   display: block;
   margin: 6px 8px;
-  background: var(--bg-surface);
+  background: var(--ws-raised);
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -589,11 +597,11 @@ button:hover {
 }
 
 .edit:hover {
-  background: var(--hairline);
+  background: var(--ws-hover);
 }
 
 .edit[aria-selected='true'] {
-  background: var(--hairline);
+  background: var(--ws-raised);
   border-left-color: var(--accent);
 }
 
@@ -646,7 +654,7 @@ button:hover {
   margin: 2px 0 0;
   color: var(--text-3);
   font-family: system-ui, sans-serif;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   line-height: 1.35;
 }
 
@@ -664,7 +672,7 @@ button:hover {
 
 .card {
   margin: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -679,7 +687,7 @@ button:hover {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  background: var(--bg-header);
+  background: var(--ws-raised);
   color: var(--text-3);
 }
 
@@ -726,10 +734,10 @@ button:hover {
   margin: 4px 8px 2px;
   padding: 3px 8px;
   border-left: 2px solid var(--accent);
-  background: var(--bg-header);
+  background: var(--ws-raised);
   color: var(--text-3);
   font-family: system-ui, sans-serif;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   white-space: normal;
 }
 
@@ -763,7 +771,7 @@ body[data-inspector-width='collapsed'] #rail {
   min-width: 18px;
   padding: 1px 4px;
   border-radius: 9px;
-  background: var(--hairline);
+  background: var(--ws-raised);
   color: var(--text-2);
   text-align: center;
 }
@@ -785,7 +793,7 @@ body[data-inspector-width='collapsed'] #rail {
   border: 1px solid var(--warn);
   border-radius: 3px;
   color: var(--warn);
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 
 /* --- comments (#95) --- */
@@ -825,7 +833,7 @@ body[data-inspector-width='collapsed'] #rail {
   padding: 2px 0;
   color: var(--text-2);
   font-family: system-ui, sans-serif;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .comment-text {
@@ -842,8 +850,8 @@ body[data-inspector-width='collapsed'] #rail {
 }
 
 #composer {
-  border-top: 1px solid var(--border);
-  background: var(--bg-header);
+  border-top: 1px solid var(--ws-border);
+  background: var(--ws-raised);
   padding: 6px 8px;
 }
 
@@ -857,8 +865,8 @@ body[data-inspector-width='collapsed'] #rail {
   resize: vertical;
   font: inherit;
   color: var(--text);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
   padding: 4px 6px;
 }
@@ -915,7 +923,7 @@ body[data-maestro='true'] .maestro-only {
 }
 .maestro-title {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin: 2px 0 6px;
@@ -935,7 +943,7 @@ body[data-maestro='true'] .maestro-only {
   cursor: pointer;
 }
 .musician[aria-current='true'] {
-  background: var(--bg-surface);
+  background: var(--ws-raised);
   outline: 1px solid var(--accent);
 }
 .musician.manager {
@@ -954,12 +962,12 @@ body[data-maestro='true'] .maestro-only {
 .musician-status {
   display: block;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .orchestra-empty,
 .impact-empty {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-base);
   padding: 4px;
 }
 #maestro-order:empty,
@@ -976,13 +984,13 @@ body[data-maestro='true'] .maestro-only {
 }
 .maestro-order {
   pointer-events: auto;
-  background: var(--bg-header);
+  background: var(--ws-raised);
   margin: 0 12px;
   padding: 6px 10px;
   border: 1px dashed var(--warn);
   border-radius: 6px;
   color: var(--warn);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .maestro-order .order-hint {
   color: var(--muted);
@@ -1003,7 +1011,7 @@ body[data-maestro='true'] .maestro-only {
   color: var(--bg-surface);
   border-radius: 10px;
   padding: 7px 10px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   box-shadow: 0 4px 14px rgb(0 0 0 / 30%);
 }
 #maestro-balloon .balloon::after {
@@ -1032,7 +1040,7 @@ body[data-maestro='true'] .maestro-only {
 }
 #maestro-consequences {
   padding: 6px 0;
-  font-size: 12px;
+  font-size: var(--fs-base);
 }
 .consequence {
   white-space: nowrap;
@@ -1043,7 +1051,7 @@ body[data-maestro='true'] .maestro-only {
   list-style: none;
   margin: 0;
   padding: 0;
-  font-size: 12px;
+  font-size: var(--fs-base);
 }
 .impact-files li {
   padding: 3px 4px;
@@ -1083,8 +1091,8 @@ svg.graph:active {
   cursor: grabbing;
 }
 svg.graph .group-area {
-  fill: var(--bg-surface);
-  stroke: var(--border);
+  fill: var(--ws-raised);
+  stroke: var(--ws-border);
   stroke-width: 1;
   opacity: 0.55;
 }
@@ -1105,7 +1113,7 @@ svg.graph .fn-label.outside {
   fill: var(--muted);
 }
 svg.graph line.import {
-  stroke: var(--border);
+  stroke: var(--ws-border);
 }
 svg.graph [data-module] {
   cursor: pointer;
@@ -1116,23 +1124,23 @@ svg.graph [data-module].opened {
 }
 svg.graph .graph-note {
   fill: var(--warn);
-  font-size: 12px;
+  font-size: var(--fs-base);
 }
 .graph-unavailable {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-base);
   padding: 8px 4px;
 }
 /* the graph, take 2: folder colors, readable labels, names on click */
 svg.graph .group-area {
-  fill: var(--bg-surface);
+  fill: var(--ws-raised);
   opacity: 0.5;
   stroke-width: 1.5;
 }
 svg.graph .group-label {
   font-weight: 600;
   paint-order: stroke;
-  stroke: var(--bg-footer);
+  stroke: var(--ws-panel);
   stroke-width: 3px;
   stroke-linejoin: round;
 }
@@ -1144,7 +1152,7 @@ svg.graph line.call.lit {
   opacity: 1;
 }
 svg.graph .selected-label rect {
-  fill: var(--bg-footer);
+  fill: var(--ws-panel);
   stroke: var(--accent);
   stroke-width: 1px;
   vector-effect: non-scaling-stroke;
@@ -1157,7 +1165,7 @@ svg.graph [data-function] {
   cursor: pointer;
 }
 svg.graph .open-backdrop {
-  fill: var(--bg-footer);
+  fill: var(--ws-panel);
   fill-opacity: 0.94;
   stroke: var(--accent);
   stroke-width: 1px;
@@ -1178,7 +1186,7 @@ svg.graph line.call.picked {
 .musician-order {
   display: block;
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 /* the backstage (#142): chips in the consequences strip, a detail on click */
 .backstage-chips {
@@ -1188,12 +1196,12 @@ svg.graph line.call.picked {
   margin-bottom: 4px;
 }
 .backstage-chip {
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   border-radius: 10px;
-  background: var(--bg-surface);
+  background: var(--ws-raised);
   color: var(--text);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   padding: 1px 8px;
   cursor: pointer;
 }
@@ -1208,16 +1216,16 @@ svg.graph line.call.picked {
 }
 .backstage-item {
   padding: 3px 0;
-  border-bottom: 1px solid var(--hairline, var(--border));
+  border-bottom: 1px solid var(--ws-line);
 }
 .backstage-state,
 .backstage-files {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .backstage-log {
   margin: 3px 0 0;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   color: var(--muted);
 }
@@ -1230,8 +1238,8 @@ svg.graph line.call.picked {
   transform: translateX(-50%);
   width: min(640px, calc(100vw - 32px));
   z-index: 50;
-  background: var(--bg-header);
-  border: 1px solid var(--border);
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
   border-radius: 8px;
   box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
   overflow: hidden;
@@ -1246,9 +1254,9 @@ svg.graph line.call.picked {
   font: inherit;
   font-size: 1.05em;
   color: var(--text);
-  background: var(--bg-surface);
+  background: var(--ws-raised);
   border: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--ws-border);
   padding: 10px 12px;
   outline: none;
 }
@@ -1270,7 +1278,7 @@ svg.graph line.call.picked {
   text-overflow: ellipsis;
 }
 .command-item[aria-selected='true'] {
-  background: var(--track);
+  background: var(--ws-border);
   color: var(--text);
 }
 .command-item.disabled {
@@ -1294,8 +1302,8 @@ svg.graph line.call.picked {
   z-index: 50;
   padding: 6px 14px;
   border-radius: 6px;
-  background: var(--bg-header);
-  border: 1px solid var(--border);
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
   color: var(--text);
 }
 
@@ -1305,25 +1313,26 @@ svg.graph line.call.picked {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--ws-border);
 }
 #review-tabs {
   gap: 2px;
   padding: 0 4px;
 }
 .review-tab {
-  height: 20px;
+  height: 24px;
   padding: 0 10px;
   border: none;
   border-radius: 3px;
   color: var(--text-3);
 }
 .review-tab.active {
-  background: var(--hairline);
+  background: var(--ws-raised);
   color: var(--text);
 }
 #review-body {
   position: relative;
+  background: var(--ws-panel);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -1354,7 +1363,7 @@ svg.graph line.call.picked {
   flex-wrap: wrap;
   gap: 4px 14px;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--ws-line);
 }
 .verdict-item {
   cursor: pointer;
@@ -1378,7 +1387,7 @@ svg.graph line.call.picked {
 .summary-request h3 {
   margin: 10px 0 4px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 400;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1396,7 +1405,7 @@ svg.graph line.call.picked {
   margin: 4px 12px;
 }
 #review-summary .plan-card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
 }
 #summary-backstage {
@@ -1421,15 +1430,15 @@ svg.graph line.call.picked {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid var(--hairline);
-  background: var(--bg-footer);
+  border-right: 1px solid var(--ws-line);
+  background: var(--ws-panel);
 }
 #changes-filter {
   margin: 6px;
   font: inherit;
   color: var(--text);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
   padding: 3px 6px;
 }
@@ -1460,7 +1469,7 @@ svg.graph line.call.picked {
 .review-dir {
   padding: 6px 8px 2px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1469,17 +1478,17 @@ svg.graph line.call.picked {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 22px;
+  min-height: 26px;
   padding: 0 8px;
   cursor: pointer;
   white-space: nowrap;
   border-left: 2px solid transparent;
 }
 .review-file:hover {
-  background: var(--hairline);
+  background: var(--ws-raised);
 }
 .review-file.selected {
-  background: var(--hairline);
+  background: var(--ws-raised);
   border-left-color: var(--accent);
 }
 .review-file .status {
@@ -1500,7 +1509,7 @@ svg.graph line.call.picked {
 .review-file .sum {
   margin-left: auto;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .review-file .plus {
   color: var(--accent);
@@ -1510,17 +1519,18 @@ svg.graph line.call.picked {
 }
 .approved-count {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .contract-badge {
   padding: 0 4px;
   border: 1px solid var(--warn);
   border-radius: 3px;
   color: var(--warn);
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 #changes-diff {
   min-width: 0;
+  background: var(--ws-bg);
   overflow: auto;
 }
 .diff-file-head {
@@ -1528,8 +1538,8 @@ svg.graph line.call.picked {
   top: 0;
   z-index: 1;
   padding: 4px 10px;
-  background: var(--bg-header);
-  border-bottom: 1px solid var(--hairline);
+  background: var(--ws-raised);
+  border-bottom: 1px solid var(--ws-line);
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1543,7 +1553,7 @@ svg.graph line.call.picked {
   content-visibility: auto;
   contain-intrinsic-size: auto 400px;
   margin: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -1558,7 +1568,7 @@ svg.graph line.call.picked {
   align-items: center;
   gap: 8px;
   padding: 3px 8px;
-  background: var(--bg-header);
+  background: var(--ws-raised);
   color: var(--text-3);
 }
 .hunk-header {
@@ -1573,7 +1583,7 @@ svg.graph line.call.picked {
 }
 .hunk-btn {
   padding: 0 6px;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .hunk-btn[aria-pressed='true'] {
   border-color: var(--accent);
@@ -1588,7 +1598,7 @@ svg.graph line.call.picked {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  border-bottom: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--ws-line);
   color: var(--warn);
 }
 .diff-line {
@@ -1622,7 +1632,7 @@ svg.graph line.call.picked {
   border-left: 2px solid #e5534b;
   color: var(--warn);
   font-family: system-ui, sans-serif;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   white-space: normal;
 }
 .tok-kw {
@@ -1653,7 +1663,7 @@ svg.graph line.call.picked {
   flex-wrap: wrap;
   gap: 8px;
   padding: 4px 10px;
-  border-bottom: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--ws-line);
   color: var(--text-3);
 }
 .impact-hidden {
@@ -1676,7 +1686,7 @@ svg.graph line.call.picked {
   display: block;
 }
 .slice-svg .edge {
-  stroke: var(--border);
+  stroke: var(--ws-border);
   stroke-width: 1.2;
 }
 .slice-svg .edge-call {
@@ -1689,14 +1699,14 @@ svg.graph line.call.picked {
   cursor: pointer;
 }
 .slice-node rect {
-  fill: var(--bg-header);
-  stroke: var(--border);
+  fill: var(--ws-raised);
+  stroke: var(--ws-border);
   stroke-width: 1.2;
 }
 .slice-node text {
   fill: var(--text);
   font-family: inherit;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .slice-node.state-changed rect {
   stroke: #e5534b;
@@ -1717,7 +1727,7 @@ svg.graph line.call.picked {
 }
 .slice-untested {
   fill: var(--warn) !important;
-  font-size: 9px !important;
+  font-size: var(--fs-xs) !important;
 }
 .slice-more-list {
   margin: 0 12px 12px;
@@ -1731,7 +1741,7 @@ svg.graph line.call.picked {
   flex-direction: column;
   flex: none;
   min-height: 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--ws-border);
 }
 #terminal-drawer #terminal-pane {
   flex: 1;
@@ -1744,11 +1754,11 @@ svg.graph line.call.picked {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 18px;
+  height: 24px;
   padding: 0 8px;
-  background: var(--bg-footer);
+  background: var(--ws-bg);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   user-select: none;
 }
 #terminal-drawer.open #drawer-bar {
@@ -1756,7 +1766,7 @@ svg.graph line.call.picked {
 }
 .drawer-hint {
   flex: 1;
-  color: var(--dim);
+  color: var(--muted);
 }
 .drawer-toggle {
   border: none;
@@ -1773,7 +1783,7 @@ body.resizing-drawer {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  background: var(--bg-footer);
+  background: var(--ws-panel);
 }
 .review-composer {
   display: flex;
@@ -1790,8 +1800,8 @@ body.resizing-drawer {
 }
 select.composer-target {
   font: inherit;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
 }
 .composer-clear {
@@ -1806,8 +1816,8 @@ select.composer-target {
   resize: vertical;
   font: inherit;
   color: var(--text);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-border);
   border-radius: 4px;
   padding: 4px 6px;
 }
