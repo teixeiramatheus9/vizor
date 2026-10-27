@@ -400,7 +400,9 @@ export function createReviewController({ api, doc = document, notify = () => {},
       diffEl.scrollTop = 0;
     }
     if (context) setComposerContext({ kind: 'file', path });
-    persist({ openFiles: [path], scrollAnchor: null });
+    // An auto-open (context false) or a reopen must not wipe the saved anchor
+    // before the prefs restore it: only a real switch to another file forgets it.
+    persist(changed && context ? { openFiles: [path], scrollAnchor: null } : { openFiles: [path] });
     loadFile();
   }
 

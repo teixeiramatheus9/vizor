@@ -2556,6 +2556,7 @@ body[data-palette='giz'] #view-github {
 
 /* status bar: one quiet line under every tab */
 #status-bar {
+  flex-shrink: 0;
   display: flex;
   gap: var(--sp-4);
   align-items: center;

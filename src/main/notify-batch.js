@@ -25,6 +25,12 @@ export function createNotifyBatch({ windowMs = BATCH_WINDOW_MS, setTimeout: setT
   return {
     push(event) {
       if (isUrgent(event)) {
+        // The chat now needs the user: a pending "finished" for it is stale.
+        if (event.sessionId != null) pending = pending.filter((item) => item.sessionId !== event.sessionId);
+        if (!pending.length && timer !== null) {
+          clearTimer(timer);
+          timer = null;
+        }
         flush([event]);
         return;
       }

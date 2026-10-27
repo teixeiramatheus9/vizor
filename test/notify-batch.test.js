@@ -37,6 +37,15 @@ describe('notify batch', () => {
     expect(flushed[1]).toEqual([{ kind: 'done', sessionId: 'a' }]);
   });
 
+  it('drops a chat\'s pending notice when it turns urgent', () => {
+    const { batch, flushed, fire } = harness();
+    batch.push({ kind: 'done', sessionId: 'a' });
+    batch.push({ kind: 'done', sessionId: 'b' });
+    batch.push({ kind: 'question', sessionId: 'a' });
+    fire();
+    expect(flushed).toEqual([[{ kind: 'question', sessionId: 'a' }], [{ kind: 'done', sessionId: 'b' }]]);
+  });
+
   it('batches the 10 minute reminder but not a fresh waiting', () => {
     expect(isUrgent({ kind: 'waiting' })).toBe(true);
     expect(isUrgent({ kind: 'waiting', reminder: true })).toBe(false);

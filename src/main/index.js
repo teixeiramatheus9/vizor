@@ -5096,6 +5096,7 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
+  noticeBatch.cancel();
   quitFreeze.willQuit();
   globalShortcut.unregisterAll();
   ptyHost?.killAll();

@@ -242,4 +242,21 @@ describe('remembering where you were', () => {
     expect(doc.body.dataset.reviewTab).toBe('changes');
     expect(scrolled).toEqual([{ block: 'start' }]);
   });
+
+  it('never persists a cleared anchor while restoring', async () => {
+    globalThis.CSS ??= { escape: (value) => value };
+    const file = { path: 'a.js', status: 'modified', tscErrors: [], hunks: [{ id: 'h2', header: '@@ -9 +9 @@', newStart: 9, newLines: 1, lines: [{ kind: '+', text: 'y', oldNo: null, newNo: 9 }] }] };
+    const sets = [];
+    const api = {
+      reviewPrefs: async (worktree, set) => { if (set) { sets.push(set); return {}; } return { innerTab: 'changes', openFiles: ['a.js'], scrollAnchor: { path: 'a.js', hunkId: 'h2' } }; },
+      reviewSummary: async () => ({ files: [{ path: 'a.js', status: 'modified' }], order: ['a.js'], verdict: [], contract: [] }),
+      reviewSlice: async () => ({ status: 'building', done: 0, total: 0 }),
+      reviewFile: async () => structuredClone(file),
+      onReviewChanged() {},
+    };
+    const review = createReviewController({ api, doc: fakeDoc() });
+    review.setContext({ worktree: '/a', sessions: [] });
+    await flush();
+    expect(sets.some((set) => 'scrollAnchor' in set)).toBe(false);
+  });
 });
