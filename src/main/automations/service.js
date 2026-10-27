@@ -46,6 +46,8 @@ export function createAutomationService({
   const floor = new Map(); // id → instant up to which slots were already handled
   const last = new Map(); // id → newest history entry
   const queue = []; // [{ id, late, slot, manual, held }]
+  // Every execute() in flight: a quit waits for their history writes, not just for the processes to die.
+  const executions = new Set();
   const running = new Map(); // id → { id, name, root, startedAt, late, capUsd, denials, cancelRequested }
   const rules = {}; // id → guardRules(...), the regras.json body
   const listeners = new Set();
@@ -164,7 +166,10 @@ export function createAutomationService({
       }
       budgetPausedDay = null;
       const [entry] = queue.splice(index, 1);
-      execute(a, entry.late).catch((error) => log(`automations: run ${a.id} crashed (${error?.stack ?? error})`));
+      const settled = execute(a, entry.late)
+        .catch((error) => log(`automations: run ${a.id} crashed (${error?.stack ?? error})`))
+        .finally(() => executions.delete(settled));
+      executions.add(settled);
     }
   }
 
@@ -488,7 +493,7 @@ export function createAutomationService({
       timer = null;
       queue.length = 0;
       for (const r of running.values()) r.cancelRequested = true;
-      return runner.cancelAll();
+      return runner.cancelAll().then(() => Promise.all([...executions]));
     },
     // Synchronous and final (process 'exit'): the inflight file speaks for the runs.
     killAllNow() {

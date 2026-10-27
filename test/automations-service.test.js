@@ -503,6 +503,20 @@ describe('automation service: review fixes', () => {
     expect(t.inflightAtAppend).toEqual([[]]);
   });
 
+  it('shutdown resolves only after the cancelled run is in the history', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    let done = false;
+    const quit = t.service.shutdown().then(() => { done = true; });
+    await quit;
+    expect(done).toBe(true);
+    // No flush in between: the app quits the moment this resolves.
+    expect(t.entries.at(-1)).toMatchObject({ id, status: 'cancelled' });
+  });
+
   it('resume() undoes a shutdown whose quit was cancelled', async () => {
     const t = setup();
     await t.service.start();
