@@ -61,6 +61,75 @@ const writePlan = (done) => {
   fs.writeFileSync(planFile, `${steps.map((step, index) => `- [${index < done ? 'x' : ' '}] ${step}`).join('\n')}\nVizor-plano: src/menu.js\n`);
 };
 
+// The contract flow (issue #149): the plan comes with a "## Contrato", then, once
+// the contract is approved, the tests and their command, then one step per ok
+// with its porquê. Everything it does comes from a line typed on its terminal.
+if (/issue #149\b/.test(prompt)) {
+  const T = { cases: ['clicar no ícone → abre o menu', 'clicar fora → fecha o menu'], steps: ['Criar o menu', 'Ligar o clique', 'Testar o menu'] };
+  const testFile = path.join(cwd, 'test', 'x.test.js');
+  const mark = (done, withTests) => {
+    fs.mkdirSync(path.dirname(planFile), { recursive: true });
+    const steps = T.steps.map((step, index) => `- [${index < done ? 'x' : ' '}] ${step}${index < done ? `\n  porquê: o passo ${index + 1} existe pra ${step.toLowerCase()}.` : ''}`).join('\n');
+    const files = withTests ? 'Vizor-contrato: test/x.test.js\nVizor-teste: node test/x.test.js\n' : '';
+    fs.writeFileSync(planFile, `# Menu de ação\n\n## Contrato\n${T.cases.map((item) => `- ${item}`).join('\n')}\n\n## Passos\n${steps}\n\n${files}Vizor-plano: src/x.js\n`);
+  };
+  const touched = (file) => emit({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: file, content: 'x' }, tool_response: {} });
+  const planWritten = () => emit({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: planFile, content: 'plano' }, tool_response: {} });
+  let done = 0;
+  emit({ hook_event_name: 'UserPromptSubmit', prompt });
+  mark(0, false);
+  planWritten();
+  say('Plano com contrato escrito. Espero seu ok.');
+  emit({ hook_event_name: 'Stop' });
+  let typedTask = '';
+  process.stdin.setRawMode?.(true);
+  process.stdin.on('data', async (chunk) => {
+    fs.appendFileSync(path.join(home, 'claude-received.log'), chunk.toString());
+    typedTask += chunk.toString();
+    if (!typedTask.includes('\r')) return;
+    const line = typedTask;
+    typedTask = '';
+    emit({ hook_event_name: 'UserPromptSubmit', prompt: line });
+    if (/Contrato aprovado/.test(line)) {
+      // Tests only: src/x.js does not exist yet, so they fail for the right reason.
+      fs.mkdirSync(path.dirname(testFile), { recursive: true });
+      fs.writeFileSync(testFile, [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "// What a run of the tests does to the file: a locked test changing on disk.",
+        "if (fs.existsSync(path.join(__dirname, '..', '.vizor', 'mutate'))) fs.appendFileSync(__filename, '\\n// touched by the run\\n');",
+        "const { double } = require('../src/x.js');",
+        "if (double(2) !== 4) throw new Error('double(2) should be 4');",
+        '',
+      ].join('\n'));
+      touched(testFile);
+      mark(0, true);
+      planWritten();
+      say('Testes escritos; falham porque src/x.js ainda não existe.');
+    } else if (/Ok, segue/.test(line)) {
+      done += 1;
+      const y = path.join(cwd, 'src', 'y.js');
+      fs.appendFileSync(y, `export const step${done} = ${done};\n`);
+      if (done === 1) fs.writeFileSync(path.join(cwd, 'src', 'x.js'), 'exports.double = (n) => n * 2;\n');
+      mark(done, true);
+      planWritten();
+      // The ticked step starts a run of the tests: when they rewrote the locked file, report.
+      if (fs.existsSync(path.join(cwd, '.vizor', 'mutate'))) {
+        for (let tries = 0; tries < 150 && !fs.readFileSync(testFile, 'utf8').includes('\n// touched by the run'); tries++) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      say(`Passo ${done} feito.`);
+    } else if (/Voltei os arquivos/.test(line)) {
+      done = 0;
+      mark(0, true);
+      planWritten();
+      say('Desmarquei os passos desfeitos.');
+    } else return;
+    emit({ hook_event_name: 'Stop' });
+  });
+  // CommonJS top-level return: the quick flow below is not this task's.
+  return;
+}
+
 emit({ hook_event_name: 'UserPromptSubmit', prompt });
 writePlan(0);
 emit({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: planFile, content: 'plano' }, tool_response: {} });
