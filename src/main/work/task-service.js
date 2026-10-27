@@ -164,6 +164,17 @@ export function createTaskService({
     return ticked;
   }
 
+  // Checkpoint 0: the files before step 1, so step 1 has a diff and a way back.
+  async function takeBaseline(task) {
+    if (task.state.checkpoints[0]) return;
+    try {
+      const { ref } = await checkpoints.take(task.worktree, task.issue, 0);
+      task.state = { ...task.state, checkpoints: { ...task.state.checkpoints, 0: ref } };
+    } catch (error) {
+      log(`tasks: baseline checkpoint of #${task.issue} failed (${error?.message ?? error})`);
+    }
+  }
+
   const contractPlan = (command) => ({ command: 'nice', args: ['-n', '10', 'sh', '-c', command] });
 
   async function runContract(task) {
@@ -200,10 +211,12 @@ export function createTaskService({
     const run = await serial(task, async () => {
       attach(task, sessionId);
       task.plan = plan ?? null;
+      // A quick plan is followed once the dev approved it (its baseline exists).
       const contractTask = !task.state.quick && Array.isArray(task.plan?.contract);
-      const ticked = contractTask ? await takeCheckpoints(task) : false;
+      const ticked = contractTask || task.state.checkpoints[0] ? await takeCheckpoints(task) : false;
+      const runs = contractTask && ticked;
       await persist(task);
-      return ticked && ['steps', 'pr'].includes(phaseOf(task));
+      return runs && ['steps', 'pr'].includes(phaseOf(task));
     });
     await settle();
     if (run) await runContract(task);
@@ -410,6 +423,7 @@ export function createTaskService({
           }
         }
       }
+      await takeBaseline(task);
       task.state = {
         ...T.approveTests(task.state, task.plan, hashes),
         changedLocked: [],
@@ -475,7 +489,6 @@ export function createTaskService({
   // Back to the files of checkpoint N-1, with every chat of the task stopped. Nothing is deleted.
   const restoreBefore = (sessionId, n) => act(sessionId, 'restoreBefore', async (task) => {
     if (!Number.isInteger(n) || n < 1) return failed('Passo inválido.');
-    if (n === 1) return failed('Antes do passo 1 não há ponto salvo: use desfazer.');
     if ([sessionId, ...task.state.sessions].some((id) => isWorking(id))) return failed('O agente está trabalhando: espere ele parar antes de voltar.');
     const ref = task.state.checkpoints[n - 1];
     if (!ref) return failed(`Não há ponto salvo antes do passo ${n}.`);
@@ -502,9 +515,16 @@ export function createTaskService({
     return { ok: true };
   }
 
-  const quick = (sessionId) => act(sessionId, 'quick', (task) => {
+  const quick = (sessionId) => act(sessionId, 'quick', async (task) => {
     task.state = { ...task.state, quick: true };
+    await takeBaseline(task);
     return { prompt: APPROVE_PROMPT };
+  });
+
+  // The old plan's "Aprovar plano" (a quick task): its baseline, once.
+  const approvePlan = (sessionId) => act(sessionId, 'approvePlan', async (task) => {
+    await takeBaseline(task);
+    return null;
   });
 
   // --- what the card shows ---------------------------------------------------
@@ -517,18 +537,16 @@ export function createTaskService({
     }
   }
 
-  async function state(sessionId) {
-    const task = taskOf(sessionId);
-    if (!task) return null;
+  function stepsOf(task) {
     const { state: s, plan } = task;
-    const phase = phaseOf(task);
-    const steps = (plan?.steps ?? []).map((step, index) => ({
+    return (plan?.steps ?? []).map((step, index) => ({
       n: index + 1, text: step.text, done: step.done, why: step.why, dev: step.dev,
       reviewed: s.reviewed.includes(T.stepKey(step.text)), checkpoint: Boolean(s.checkpoints[index + 1]),
     }));
-    const current = steps.find((step) => !step.done) ?? null;
-    const locked = Object.keys(s.tests?.hashes ?? {});
-    const files = plan?.contractFiles ?? [];
+  }
+
+  // What still keeps the PR closed, in the card's words.
+  function blockersOf(task, phase = phaseOf(task), steps = stepsOf(task)) {
     const blockers = [];
     if (phase === 'contract') blockers.push('aprove o contrato');
     if (phase === 'tests') blockers.push('aprove os testes');
@@ -536,9 +554,31 @@ export function createTaskService({
       const pending = steps.filter((step) => !step.done).length;
       const unreviewed = steps.filter((step) => step.done && !step.reviewed).length;
       if (pending) blockers.push(`${plural(pending, 'passo')} por fazer`);
-      if (unreviewed && !s.openAnyway) blockers.push(`${plural(unreviewed, 'passo')} sem revisão`);
+      if (unreviewed && !task.state.openAnyway) blockers.push(`${plural(unreviewed, 'passo')} sem revisão`);
     }
-    if (s.changedLocked.length) blockers.push('o teste do contrato mudou');
+    if (task.state.changedLocked.length) blockers.push('o teste do contrato mudou');
+    return blockers;
+  }
+
+  // Why the PR may not be opened yet, or null: a quick task and a chat with no task open it as before.
+  function prRefusal(sessionId) {
+    const task = taskOf(sessionId);
+    if (!task || phaseOf(task) === 'quick') return null;
+    const blockers = blockersOf(task);
+    if (!blockers.length) return null;
+    return blockers.map((text) => (text.endsWith('sem revisão') ? `${text} — use abrir assim mesmo` : text)).join('; ');
+  }
+
+  async function state(sessionId) {
+    const task = taskOf(sessionId);
+    if (!task) return null;
+    const { state: s, plan } = task;
+    const phase = phaseOf(task);
+    const steps = stepsOf(task);
+    const current = steps.find((step) => !step.done) ?? null;
+    const locked = Object.keys(s.tests?.hashes ?? {});
+    const files = plan?.contractFiles ?? [];
+    const blockers = blockersOf(task, phase, steps);
     return {
       issue: task.issue,
       worktree: task.worktree,
@@ -576,6 +616,8 @@ export function createTaskService({
     onStop,
     state,
     hasActive,
+    prRefusal,
+    approvePlan,
     ...ACTIONS,
     // The IPC's door: only the card's actions, by name.
     run: (sessionId, action, arg) => (Object.hasOwn(ACTIONS, action) ? ACTIONS[action](sessionId, arg) : Promise.resolve(failed('Ação desconhecida.'))),

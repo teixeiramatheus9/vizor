@@ -1242,9 +1242,13 @@ const planActions = createPlanActions({
   planOf: (sessionId) => workPlans.planOf(sessionId),
   approve: (sessionId) => {
     workPlans.approve(sessionId);
+    // A quick task's baseline checkpoint: step 1 then has a diff and a way back.
+    taskService.approvePlan(sessionId).catch((error) => log(`task baseline failed: ${error?.stack ?? error}`));
     pushWorkspaceState();
   },
   deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
+  // The card, Ctrl+K and the voice alike: a task opens its PR only from its pr phase.
+  refusePr: (sessionId) => taskService.prRefusal(sessionId),
 });
 const planAction = (sessionId, action) => planActions.run(sessionId, action);
 ipcMain.handle('workspace:plan', (event, { sessionId, action } = {}) => (fromWorkspace(event) ? planAction(sessionId, action) : 'failed'));

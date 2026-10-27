@@ -74,13 +74,16 @@ export function createPlanTracker({ readFile, knownCwd }) {
 // The card's buttons (and the voice's "aprova o plano", "abre a PR"): the ok
 // counts only once it reached the chat, and a click while one still waits for
 // the chat's turn sends nothing more. deliver(sessionId, text) → 'sent' |
-// 'failed' | 'timeout'.
-export function createPlanActions({ planOf, approve, deliver }) {
+// 'failed' | 'timeout', or { error } when the PR is refused.
+// refusePr(sessionId) → the reason the task is not ready for its PR, or null.
+export function createPlanActions({ planOf, approve, deliver, refusePr = () => null }) {
   const inFlight = new Set();
   return {
     async run(sessionId, action) {
       if (typeof sessionId !== 'string' || !['approve', 'pr'].includes(action)) return 'failed';
       if (action === 'approve' && !planOf(sessionId)) return 'no-plan';
+      const refused = action === 'pr' ? refusePr(sessionId) : null;
+      if (refused) return { error: refused };
       const key = `${sessionId}:${action}`;
       if (inFlight.has(key)) return 'busy';
       inFlight.add(key);

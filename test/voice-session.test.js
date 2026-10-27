@@ -632,6 +632,13 @@ describe('voice session — the plan by voice', async () => {
     expect(texts().at(-1)).toBe('Não consegui falar com esse chat.');
   });
 
+  it('a PR the task is not ready for is refused with the reason', async () => {
+    const { session, texts } = setup({ focusedSession: () => 's169', planAction: async () => ({ error: 'o teste do contrato mudou' }) });
+    await session.onUtterance('abre a PR');
+    await tick();
+    expect(texts().at(-1)).toBe('Ainda não dá pra abrir a PR: o teste do contrato mudou.');
+  });
+
   it('a chat with no plan, or one already waited on, is said so', async () => {
     for (const [result, line] of [['no-plan', 'Esse chat não tem plano.'], ['busy', 'Já estou esperando ele ficar livre.']]) {
       const { session, texts } = setup({ focusedSession: () => 's169', planAction: async () => result });

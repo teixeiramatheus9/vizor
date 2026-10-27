@@ -80,6 +80,7 @@ async function toSteps(ctx) {
   await ctx.service.approveTests('s1');
   ctx.deps.deliver.mockClear();
   ctx.deps.verifier.run.mockClear();
+  ctx.deps.checkpoints.take.mockClear();
   ctx.order.length = 0;
 }
 
@@ -172,6 +173,9 @@ describe('the task service: the tests', () => {
     expect(rules.doc.sessions.s1.phase).toBe('steps');
     expect(saved.get(KEY).tests).toEqual({ command: COMMAND, hashes: { 'test/menu.test.js': 'h1' } });
     expect(saved.get(KEY).lastRun).toMatchObject({ status: 'fail', tail: '1 failing' });
+    // The baseline: step 1's diff is checkpoint 0 → 1.
+    expect(deps.checkpoints.take).toHaveBeenCalledWith(WT, 169, 0);
+    expect(saved.get(KEY).checkpoints).toEqual({ 0: 'refs/vizor/tarefa/abc/169/0' });
     expect(deps.deliver).toHaveBeenLastCalledWith('s1', NEXT_STEP_PROMPT);
   });
 
@@ -257,7 +261,7 @@ describe('the task service: the steps', () => {
     await ctx.service.bind('s1', WT, 169);
     expect(ctx.deps.checkpoints.take).toHaveBeenCalledWith(WT, 169, 1);
     expect(ctx.order).toEqual(['take 1', 'run']);
-    expect(ctx.saved.get(KEY).checkpoints).toEqual({ 1: 'refs/vizor/tarefa/abc/169/1' });
+    expect(ctx.saved.get(KEY).checkpoints).toEqual({ 0: 'refs/vizor/tarefa/abc/169/0', 1: 'refs/vizor/tarefa/abc/169/1' });
     await ctx.service.bind('s1', WT, 169);
     expect(ctx.deps.checkpoints.take).toHaveBeenCalledTimes(1);
     expect(ctx.deps.verifier.run).toHaveBeenCalledTimes(1);
@@ -375,14 +379,18 @@ describe('the task service: going back', () => {
     expect(result).toEqual({ ok: true, restored: ['src/menu.js'], left: ['src/novo.js'], delivery: 'sent' });
     expect(ctx.deps.checkpoints.restore).toHaveBeenCalledWith(WT, 'refs/vizor/tarefa/abc/169/1');
     expect(ctx.deps.deliver).toHaveBeenLastCalledWith('s1', restoredPrompt(2, ['src/novo.js']));
-    expect(ctx.saved.get(KEY).checkpoints).toEqual({ 1: 'refs/vizor/tarefa/abc/169/1' });
+    expect(ctx.saved.get(KEY).checkpoints).toEqual({ 0: 'refs/vizor/tarefa/abc/169/0', 1: 'refs/vizor/tarefa/abc/169/1' });
   });
 
-  it('there is nothing saved before step 1, and a restore error comes back in words', async () => {
+  it('before step 1 is the baseline taken when the tests were approved; a restore error comes back in words', async () => {
     const ctx = await ticked();
-    expect(await ctx.service.restoreBefore('s1', 1)).toEqual({ error: expect.stringMatching(/passo 1/) });
+    expect(await ctx.service.restoreBefore('s1', 1)).toMatchObject({ ok: true });
+    expect(ctx.deps.checkpoints.restore).toHaveBeenLastCalledWith(WT, 'refs/vizor/tarefa/abc/169/0');
+    expect(ctx.saved.get(KEY).checkpoints).toEqual({ 0: 'refs/vizor/tarefa/abc/169/0' });
+    expect(await ctx.service.restoreBefore('s1', 0)).toEqual({ error: expect.any(String) });
     ctx.deps.checkpoints.restore.mockRejectedValueOnce(new Error('Ref inválido'));
-    expect(await ctx.service.restoreBefore('s1', 3)).toEqual({ error: 'Ref inválido' });
+    expect(await ctx.service.restoreBefore('s1', 1)).toEqual({ error: 'Ref inválido' });
+    expect(await ctx.service.restoreBefore('s1', 3)).toEqual({ error: expect.stringMatching(/antes do passo 3/) });
   });
 });
 
@@ -398,10 +406,26 @@ describe('the task service: the end of a task', () => {
     expect(ctx.service.hasActive()).toBe(false);
   });
 
+  it('a quick plan takes its baseline when the dev approves it, and a checkpoint per tick after that', async () => {
+    const ctx = setup({ plans: { [`${WT}#169`]: '- [x] ler\n- [ ] fazer\n' } });
+    await ctx.service.bind('s1', WT, 169);
+    expect(ctx.deps.checkpoints.take).not.toHaveBeenCalled();
+    expect(await ctx.service.approvePlan('s1')).toEqual({ ok: true });
+    expect(ctx.deps.checkpoints.take).toHaveBeenCalledWith(WT, 169, 0);
+    await ctx.service.approvePlan('s1');
+    expect(ctx.deps.checkpoints.take).toHaveBeenCalledTimes(1); // the baseline is taken once
+    ctx.plans[`${WT}#169`] = '- [x] ler\n- [x] fazer\n';
+    await ctx.service.bind('s1', WT, 169);
+    expect(ctx.order).toEqual(['take 0', 'take 1', 'take 2']);
+    expect(ctx.deps.verifier.run).not.toHaveBeenCalled();
+    expect(await ctx.service.approvePlan('nobody')).toEqual({ error: expect.any(String) });
+  });
+
   it('a quick task lifts the gates and gives the old ok', async () => {
     const ctx = setup();
     await ctx.service.bind('s1', WT, 169);
     expect(await ctx.service.quick('s1')).toMatchObject({ ok: true, delivery: 'sent' });
+    expect(ctx.deps.checkpoints.take).toHaveBeenCalledWith(WT, 169, 0);
     expect(ctx.deps.deliver).toHaveBeenLastCalledWith('s1', APPROVE_PROMPT);
     expect(ctx.rules.doc.sessions).toEqual({});
     expect((await ctx.service.state('s1')).phase).toBe('quick');
@@ -447,5 +471,31 @@ describe('the task service: the end of a task', () => {
     await ctx.service.start();
     expect(ctx.rules.doc.sessions.s1.phase).toBe('contract');
     expect(ctx.saved.has(taskKey('/x', 5))).toBe(false);
+  });
+});
+
+describe('the task service: opening the PR', () => {
+  it('is refused until the task reaches the pr phase, with the card\'s reason', async () => {
+    const ctx = setup();
+    await ctx.service.bind('s1', WT, 169);
+    expect(ctx.service.prRefusal('s1')).toBe('aprove o contrato');
+    await toSteps(ctx);
+    expect(ctx.service.prRefusal('s1')).toBe('3 passos por fazer');
+    ctx.plans[`${WT}#169`] = planText({ done: 3 });
+    await ctx.service.bind('s1', WT, 169);
+    await ctx.service.reviewStep('s1', 'Criar o menu');
+    expect(ctx.service.prRefusal('s1')).toBe('2 passos sem revisão — use abrir assim mesmo');
+    await ctx.service.openAnyway('s1');
+    expect(ctx.service.prRefusal('s1')).toBeNull();
+    ctx.hashes[TEST_FILE] = 'mexido';
+    await ctx.service.onStop('s1', WT);
+    expect(ctx.service.prRefusal('s1')).toBe('o teste do contrato mudou');
+  });
+
+  it('a quick task, or a chat with no task, opens it as before', async () => {
+    const ctx = setup({ plans: { [`${WT}#169`]: QUICK } });
+    await ctx.service.bind('s1', WT, 169);
+    expect(ctx.service.prRefusal('s1')).toBeNull();
+    expect(ctx.service.prRefusal('nobody')).toBeNull();
   });
 });

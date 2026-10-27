@@ -743,7 +743,8 @@ planCardEl.addEventListener('click', async (event) => {
   if (!button || !sessionId) return;
   button.disabled = true;
   const result = await window.vizor.planAction(sessionId, button.dataset.plan);
-  planNote = PLAN_NOTES[result] ? { sessionId, text: PLAN_NOTES[result] } : null;
+  const note = PLAN_NOTES[result] ?? result?.error;
+  planNote = note ? { sessionId, text: note } : null;
   renderPlanCard();
 });
 
@@ -1338,7 +1339,8 @@ async function runCommandItem(item) {
   }
   if (action.type === 'approve' || action.type === 'open-pr') {
     const result = await window.vizor.planAction(action.sessionId, action.type === 'approve' ? 'approve' : 'pr');
-    if (PLAN_NOTES[result]) toast(PLAN_NOTES[result]);
+    const note = PLAN_NOTES[result] ?? result?.error;
+    if (note) toast(note);
     return;
   }
   if (action.type === 'pick-issue') toast(`abrindo a #${action.number}…`);

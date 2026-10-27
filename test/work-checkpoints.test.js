@@ -31,6 +31,12 @@ describe('createCheckpoints (injected git)', () => {
     expect(rm).toHaveBeenCalledWith('/tmp/vz-x');
   });
 
+  it('takes the baseline checkpoint 0, the files before step 1', async () => {
+    const { cp } = setup((args) => (args[0] === 'write-tree' ? 'tree0\n' : args[0] === 'commit-tree' ? 'sha0\n' : 'headsha\n'));
+    expect(await cp.take('/w/app', 169, 0)).toEqual({ ref: `refs/vizor/tarefa/${wt}/169/0`, sha: 'sha0' });
+    await expect(cp.restore('/w/app', `refs/vizor/tarefa/${wt}/169/0`)).resolves.toEqual({ restored: [], left: [] });
+  });
+
   it('removes the temporary index even when git fails', async () => {
     const { cp, rm } = setup((args) => { if (args[0] === 'add') throw new Error('boom'); return 'x\n'; });
     await expect(cp.take('/w/app', 1, 1)).rejects.toThrow('boom');
@@ -43,9 +49,9 @@ describe('createCheckpoints (injected git)', () => {
     expect(mkTemp).not.toHaveBeenCalled();
   });
 
-  it('validates issue and n as positive integers', async () => {
+  it('validates the issue as a positive integer and n as a step (0 is the baseline before step 1)', async () => {
     const { cp, git } = setup();
-    for (const [i, n] of [[0, 1], [1, 0], [-1, 1], [1.5, 1], ['1/../x', 1], [1, 'a'], [NaN, 1]]) {
+    for (const [i, n] of [[0, 1], [1, -1], [-1, 1], [1.5, 1], [1, 0.5], ['1/../x', 1], [1, 'a'], [NaN, 1]]) {
       await expect(cp.take('/w/app', i, n)).rejects.toThrow(/inválid/);
     }
     await expect(cp.drop('/w/app', 'x')).rejects.toThrow(/inválid/);

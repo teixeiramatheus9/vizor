@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createPlanActions } from '../src/main/work/plans.js';
 
-function setup({ plan = { steps: [{ text: 'a', done: false }], approved: false }, result = 'sent' } = {}) {
+function setup({ plan = { steps: [{ text: 'a', done: false }], approved: false }, result = 'sent', refusePr = () => null } = {}) {
   const approved = [];
   const sent = [];
   let release;
@@ -9,6 +9,7 @@ function setup({ plan = { steps: [{ text: 'a', done: false }], approved: false }
   const actions = createPlanActions({
     planOf: () => plan,
     approve: (sessionId) => approved.push(sessionId),
+    refusePr,
     deliver: async (sessionId, text) => {
       sent.push([sessionId, text]);
       if (result === 'slow') return gate.then(() => 'sent');
@@ -50,5 +51,13 @@ describe('the plan card actions', () => {
     const { actions } = setup();
     expect(await actions.run(null, 'approve')).toBe('failed');
     expect(await actions.run('s1', 'merge')).toBe('failed');
+  });
+
+  it('the PR is refused, with the reason, while the task is not ready for it', async () => {
+    const { actions, sent } = setup({ refusePr: (sessionId) => (sessionId === 's1' ? 'o teste do contrato mudou' : null) });
+    expect(await actions.run('s1', 'pr')).toEqual({ error: 'o teste do contrato mudou' });
+    expect(sent).toEqual([]);
+    expect(await actions.run('s2', 'pr')).toBe('sent');
+    expect(await actions.run('s1', 'approve')).toBe('sent');
   });
 });

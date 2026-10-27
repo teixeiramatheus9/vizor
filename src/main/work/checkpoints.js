@@ -9,6 +9,8 @@ import { isAbsolute, join } from 'node:path';
 
 const bad = (what) => new Error(`${what} inválido`);
 const positive = (n) => Number.isInteger(n) && n > 0;
+// Step 0 is the baseline: the files before step 1.
+const stepNumber = (n) => Number.isInteger(n) && n >= 0;
 const lines = (text) => String(text).split('\n').filter(Boolean);
 // -z output: names come raw (no C-quoting of non-ASCII), split on NUL.
 const nuls = (text) => String(text).split('\0').filter(Boolean);
@@ -49,7 +51,7 @@ export function createCheckpoints({
   }
 
   async function take(worktree, issue, n) {
-    if (!positive(issue) || !positive(n)) throw bad('Número da tarefa ou do passo');
+    if (!positive(issue) || !stepNumber(n)) throw bad('Número da tarefa ou do passo');
     const { prefix } = await prepare(worktree);
     // No HEAD means no parent to build on: refuse instead of crashing half-way.
     try { await git(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], { cwd: worktree }); } catch {
