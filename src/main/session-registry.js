@@ -56,6 +56,7 @@ export class SessionRegistry extends EventEmitter {
       seenAlive: false,
       alias: null,
       needsPermission: false,
+      stoppedAt: null,
     };
     if (event.wave?.blockId) session.wave = event.wave;
     if (event.term && typeof event.term === 'object' && Object.keys(event.term).length) {
@@ -85,6 +86,7 @@ export class SessionRegistry extends EventEmitter {
       session.lastMessage = null;
       session.question = null;
       session.needsPermission = false;
+      session.stoppedAt = null;
       if (!session.promptPreview && typeof event.prompt === 'string' && event.prompt.trim()) {
         const preview = event.prompt.trim();
         session.promptPreview = preview.length > 60 ? `${preview.slice(0, 60)}…` : preview;
@@ -93,6 +95,9 @@ export class SessionRegistry extends EventEmitter {
       session.status = STATUS.DONE;
       session.unread = true;
       session.needsPermission = false;
+      // The idle Notification ~60 s later bumps updatedAt; the board times
+      // "Terminou" from this instead.
+      session.stoppedAt = session.updatedAt;
     } else {
       session.status = STATUS.WAITING;
       session.unread = true;
@@ -132,6 +137,7 @@ export class SessionRegistry extends EventEmitter {
     session.managerMessage = null;
     session.status = STATUS.WORKING;
     session.unread = false;
+    session.stoppedAt = null;
     session.updatedAt = this.now();
     this.emit('change');
   }

@@ -95,8 +95,11 @@ try {
   // ---- 1. Agentes: twenty chats, columns, tombstone, budget -----------------
   for (const item of chats) {
     emit(item.id, repo, { hook_event_name: 'UserPromptSubmit', prompt: `Tarefa ${item.index}` });
-    if (item.kind === 'waiting') emit(item.id, repo, { hook_event_name: 'Notification', message: 'Claude is waiting for your input' });
+    if (item.kind === 'waiting') emit(item.id, repo, { hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' });
     if (item.kind === 'done') emit(item.id, repo, { hook_event_name: 'Stop' });
+    // Claude Code's idle "waiting for your input" a minute after a Stop asks
+    // nothing: those chats must stay in Terminou.
+    if (item.kind === 'done' && item.index % 2) emit(item.id, repo, { hook_event_name: 'Notification', message: 'Claude is waiting for your input' });
   }
   await workspace.keyboard.press('Control+2');
   await workspace.waitForSelector('#view-agents:not([hidden]) .kb-board', { timeout: 10000 });
@@ -177,7 +180,7 @@ try {
   assert.ok(pulled, 'the pulled chat is the selected session');
 
   // ---- 4. A card of "Esperando" takes you to that chat in the Workspace -----
-  emit(pulled, null, { hook_event_name: 'Notification', message: 'Claude is waiting for your input' });
+  emit(pulled, null, { hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' });
   // Leave the Workspace in a state the click has to change: another chat
   // selected and the drawer closed (the Puxar step left both the other way).
   await workspace.click(`[data-session]:not([data-session="${pulled}"])`);
@@ -187,8 +190,9 @@ try {
   await workspace.keyboard.press('Control+2');
   await workspace.waitForSelector(`[data-card="${pulled}"][data-column="waiting"]`, { timeout: 15000 });
   assert.equal(await topTab(), 'agents');
-  // The chat was pulled inside the Vizor (no badge) and a waiting card offers one way to answer.
-  assert.equal(await workspace.locator(`[data-card="${pulled}"] [data-action="answer"]`).count(), 1);
+  // The chat was pulled inside the Vizor (no badge) and its permission ask is approved in the chat.
+  assert.equal(await workspace.locator(`[data-card="${pulled}"] [data-action="approve"]`).count(), 1);
+  assert.equal(await workspace.locator(`[data-card="${pulled}"] [data-action="answer"]`).count(), 0);
   assert.equal(await workspace.locator(`[data-card="${pulled}"] .kb-outside`).count(), 0);
   // Chats outside the Vizor wear the badge ("fora do Vizor").
   assert.match(await workspace.textContent(`[data-card="${chats[1].id}"] .kb-outside`), /fora do Vizor/);

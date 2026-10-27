@@ -200,6 +200,23 @@ describe('agents controller', () => {
     expect(api.agentsSeen).not.toHaveBeenCalled();
   });
 
+  it('marks a finished chat seen after its idle Notification too, once per Stop', () => {
+    const { api, controller } = setup();
+    const stop = NOW - 2 * MIN;
+    controller.setState({ sessions: [session({ status: 'waiting', stoppedAt: stop, updatedAt: stop + MIN })] });
+    controller.lookingAt('s1');
+    expect(api.agentsSeen).toHaveBeenCalledTimes(1);
+    controller.setState({ sessions: [session({ status: 'done', stoppedAt: stop, updatedAt: stop })] });
+    controller.lookingAt('s1');
+    expect(api.agentsSeen).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count the idle Notification after a Stop as waiting', () => {
+    const { controller } = setup();
+    controller.setState({ sessions: [session({ status: 'waiting', stoppedAt: NOW - 2 * MIN, updatedAt: NOW - MIN })] });
+    expect(controller.counts()).toEqual({ working: 0, waiting: 0 });
+  });
+
   it('counts the cards waiting on the user, hidden or not', () => {
     const { controller } = setup();
     controller.setState({ sessions: [session({ status: 'waiting', question: 'q' }), session({ id: 's2' })] });

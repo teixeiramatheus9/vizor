@@ -66,6 +66,44 @@ describe('columnOf', () => {
   });
 });
 
+describe('the idle Notification after a Stop', () => {
+  // Claude Code sends "waiting for your input" ~60 s after every Stop: it is
+  // the same finished chat, not a new ask.
+  const STOP = NOW - 2 * MIN;
+  const idleWait = (overrides = {}) => session({ status: STATUS.WAITING, stoppedAt: STOP, updatedAt: STOP + MIN, ...overrides });
+
+  it('keeps a finished chat in done after the idle Notification', () => {
+    expect(columnOf(idleWait(), { now: NOW })).toBe('done');
+  });
+
+  it('turns it idle once seen after the Stop', () => {
+    expect(columnOf(idleWait({ seenAt: STOP + 30 * 1000 }), { now: NOW })).toBe('idle');
+  });
+
+  it('turns it idle 30 min after the Stop, not after the Notification', () => {
+    expect(columnOf(idleWait(), { now: STOP + IDLE_AFTER_MS - 1 })).toBe('done');
+    expect(columnOf(idleWait(), { now: STOP + IDLE_AFTER_MS })).toBe('idle');
+    expect(nextBoundary([idleWait()], NOW)).toBe(STOP + IDLE_AFTER_MS);
+  });
+
+  it('times a plain done by its Stop too', () => {
+    expect(columnOf(session({ status: STATUS.DONE, stoppedAt: STOP, updatedAt: NOW }), { now: STOP + IDLE_AFTER_MS })).toBe('idle');
+  });
+
+  it('a real question, a permission ask or a guard ask still waits on the user', () => {
+    expect(columnOf(idleWait({ question: { text: 'q' } }), { now: NOW })).toBe('waiting');
+    expect(columnOf(idleWait({ needsPermission: true }), { now: NOW })).toBe('waiting');
+    expect(columnOf(idleWait(), { now: NOW, guardAsk: true })).toBe('waiting');
+  });
+
+  it('offers Abrir but no Responder, and shows the time of the Stop', () => {
+    const card = sessionCard(idleWait(), { now: NOW });
+    expect(card.actions).toContain('focus');
+    expect(card.actions).not.toContain('answer');
+    expect(card.since).toBe(STOP);
+  });
+});
+
 describe('nextBoundary', () => {
   it('is the earliest instant a fresh done card goes idle', () => {
     const a = session({ id: 'a', status: STATUS.DONE, updatedAt: NOW - 10 * MIN });
@@ -138,8 +176,8 @@ describe('sessionCard', () => {
     expect(sessionCard(session({ status: STATUS.DONE }), { now: NOW }).actions).not.toContain('interrupt');
   });
 
-  it('lets a plain waiting chat be answered too', () => {
-    expect(sessionCard(session({ status: STATUS.WAITING }), { now: NOW }).actions).toContain('answer');
+  it('does not offer Responder to a plain waiting chat with nothing asked', () => {
+    expect(sessionCard(session({ status: STATUS.WAITING }), { now: NOW }).actions).not.toContain('answer');
   });
 
   it('gives the guard buttons to a guard ask, and answer to a chat question', () => {

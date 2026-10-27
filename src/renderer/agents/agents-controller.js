@@ -1,7 +1,7 @@
 // The Agentes tab: turns the workspace state's flat session list into the
 // kanban and handles the cards' actions. No globals: the DOM root, the IPC
 // api and the clock come in, so vitest drives it with fakes.
-import { nextBoundary, sessionCard } from '../../main/agents/columns.js';
+import { columnOf, nextBoundary, sessionCard, stopTimeOf } from '../../main/agents/columns.js';
 import { OTHER_PROJECTS, renderFilters, renderKanban } from './kanban-view.js';
 
 // setTimeout takes a signed 32-bit delay; a longer one fires at once.
@@ -36,7 +36,7 @@ export function createAgentsController({
   let hasState = false; // until the first push the board is a skeleton, not "nenhum agente"
   const filter = { project: null, needsMe: false };
   const ui = { answering: null, confirming: null, error: null };
-  const marked = new Map(); // session id -> the updatedAt it was last marked seen at
+  const marked = new Map(); // session id -> the Stop time it was last marked seen at
 
   const guardOf = (sessionId) => guardAsks.find((ask) => ask.sessionId === sessionId) ?? null;
 
@@ -255,9 +255,10 @@ export function createAgentsController({
     // window): a finished turn counts as seen. Once per Stop.
     lookingAt(sessionId) {
       const session = sessions.find((item) => item.id === sessionId);
-      if (!session || session.status !== 'done' || session.seenAt > session.updatedAt) return;
-      if (marked.get(sessionId) === session.updatedAt) return;
-      marked.set(sessionId, session.updatedAt);
+      if (!session || columnOf(session, { now: now(), guardAsk: Boolean(guardOf(sessionId)) }) !== 'done') return;
+      const stop = stopTimeOf(session);
+      if (marked.get(sessionId) === stop) return;
+      marked.set(sessionId, stop);
       api.agentsSeen(sessionId);
     },
     // The avatars' accents arrive asynchronously: draw again with them.

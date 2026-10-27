@@ -630,3 +630,27 @@ describe('tombstones and seen marks', () => {
     });
   });
 });
+
+describe('the Stop time and the interrupt', () => {
+  it('records the Stop time and keeps it through the idle Notification', () => {
+    let t = 1000;
+    const registry = new SessionRegistry({ now: () => t });
+    registry.applyEvent(promptEvent());
+    expect(registry.list()[0].stoppedAt ?? null).toBeNull();
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    t = 61_000;
+    registry.applyEvent(promptEvent({ hook_event_name: 'Notification', message: 'Claude is waiting for your input' }));
+    const session = registry.list()[0];
+    expect(session.status).toBe(STATUS.WAITING);
+    expect(session.stoppedAt).toBe(1000);
+    expect(session.updatedAt).toBe(61_000);
+  });
+
+  it('a new prompt clears the Stop time', () => {
+    const registry = new SessionRegistry({ now: () => 1000 });
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    registry.applyEvent(promptEvent());
+    expect(registry.list()[0].stoppedAt).toBeNull();
+  });
+
+});

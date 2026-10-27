@@ -10,21 +10,27 @@ export const COLUMNS = ['waiting', 'working', 'done', 'idle', 'failed'];
 // reports is the instant the column really changes).
 export const IDLE_AFTER_MS = 30 * 60 * 1000;
 
-// The Stop is when a done chat was last updated, so "seen after the Stop" is
-// seenAt > updatedAt.
+// When the turn ended: the registry's Stop time, else (adopted or older
+// sessions) the last update. Never the idle Notification's later bump.
+export const stopTimeOf = (session) => session.stoppedAt ?? session.updatedAt;
+
 function isIdle(session, now) {
-  if (session.seenAt > session.updatedAt) return true;
-  return now - session.updatedAt >= IDLE_AFTER_MS;
+  const stop = stopTimeOf(session);
+  if (session.seenAt > stop) return true;
+  return now - stop >= IDLE_AFTER_MS;
 }
+
+// Claude Code's "waiting for your input" ~60 s after each Stop asks nothing:
+// only a question, a permission or a guard ask make a chat wait on the user.
+const asksTheUser = (session, guardAsk) => Boolean(session.question || session.needsPermission || guardAsk);
 
 // guardAsk: truthy when the rule guard has an ask pending for this session.
 export function columnOf(session, { now, guardAsk = false } = {}) {
   if (session.status === STATUS.FAILED) return 'failed';
-  if (session.question || session.needsPermission || guardAsk) return 'waiting';
+  if (asksTheUser(session, guardAsk)) return 'waiting';
   if (session.status === STATUS.WORKING) return 'working';
-  if (session.status === STATUS.DONE) return isIdle(session, now) ? 'idle' : 'done';
-  // A Notification with no question attached: it still waits on the user.
-  return 'waiting';
+  // Done, or a Notification with nothing asked: the chat is just finished.
+  return isIdle(session, now) ? 'idle' : 'done';
 }
 
 // The next instant a card changes column by itself (a fresh done going idle),
@@ -33,7 +39,7 @@ export function nextBoundary(sessions, now, guardAsks = new Set()) {
   let next = null;
   for (const session of sessions) {
     if (columnOf(session, { now, guardAsk: guardAsks.has(session.id) }) !== 'done') continue;
-    const at = session.updatedAt + IDLE_AFTER_MS;
+    const at = stopTimeOf(session) + IDLE_AFTER_MS;
     if (at > now && (next === null || at < next)) next = at;
   }
   return next;
@@ -54,8 +60,7 @@ export function sessionCard(session, { project = null, plan = null, guardAsk = n
     actions.push('focus');
     if (guardAsk) actions.push('guard');
     else if (session.needsPermission) actions.push('approve');
-    // A Notification with no question still waits on a reply, like the panel's quick reply.
-    else if (session.question || session.status === STATUS.WAITING) actions.push('answer');
+    else if (session.question) actions.push('answer');
     // Esc goes to the chat's own pty, which only Vizor's chats have.
     if (!outside && session.status === STATUS.WORKING) actions.push('interrupt');
   }
@@ -67,7 +72,7 @@ export function sessionCard(session, { project = null, plan = null, guardAsk = n
     projectRoot: project?.root ?? null,
     avatarKey: project?.root ?? session.cwd ?? null,
     planProgress: plan?.steps?.length ? `${plan.steps.filter((step) => step.done).length}/${plan.steps.length}` : null,
-    since: failed ? session.failedAt : session.updatedAt,
+    since: failed ? session.failedAt : column === 'done' || column === 'idle' ? stopTimeOf(session) : session.updatedAt,
     question: session.question ?? null,
     branch: project?.branch ?? null,
     outside,
