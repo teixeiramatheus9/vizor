@@ -19,6 +19,9 @@ describe('a text question', () => {
   it('does not block typing into the input box, unlike a chip question or a permission ask', () => {
     expect(blocksTyping({ question: { kind: 'text', text: 'Quer?' } })).toBe(false);
     expect(blocksTyping({ question: { questions: [{}] } })).toBe(true);
+    // Seen only through a Notification: the turn may not be over (an ask may follow).
+    expect(blocksTyping({ question: { kind: 'text', text: 'Quer?', unconfirmed: true } })).toBe(true);
+    expect(needsYou({ question: { kind: 'text', text: 'Quer?', unconfirmed: true } })).toBe(true);
     expect(blocksTyping({ needsPermission: true })).toBe(true);
     expect(blocksTyping({ question: null })).toBe(false);
   });

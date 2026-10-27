@@ -16,5 +16,10 @@ export const needsYou = (session, { guardAsk = false } = {}) =>
 
 // A text question ({ kind: 'text' }) leaves claude's input box free: only a
 // chip question or a permission ask is a dialog that typed text would hit.
+// One seen only by a Notification (unconfirmed) may be the prose before an ask
+// not flushed yet, so it blocks until a Stop confirms the turn ended.
 export const blocksTyping = (session) =>
-  Boolean(session?.needsPermission || (session?.question && session.question.kind !== 'text'));
+  Boolean(
+    session?.needsPermission ||
+      (session?.question && (session.question.kind !== 'text' || session.question.unconfirmed === true)),
+  );

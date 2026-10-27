@@ -59,6 +59,8 @@ import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
+import { blocksTyping } from './session-status.js';
+import { readSnapshotWithQuestionRetry } from './question-retry.js';
 import { runClaude } from './claude-cli.js';
 import { ASR_MODELS, KWS_MODEL, VAD_MODEL, installVoiceModels, missingVoiceModels, voiceModelPaths } from './voice/models.js';
 import { otherRecorders, parsePwDump } from './voice/meeting.js';
@@ -2213,38 +2215,27 @@ async function generateVoiceForStop(session) {
   });
 }
 
-// The Notification hook often fires BEFORE Claude Code flushes the ask entry
-// to the transcript — reading immediately misses the question and the card
-// shows no options. Retry a few times before giving up.
-const QUESTION_RETRY_DELAYS_MS = [0, 600, 1500];
-
-async function readSnapshotWithQuestionRetry(transcriptPath) {
-  let snapshot = { lastAssistantMessage: null, pendingQuestion: null };
-  for (const delayMs of QUESTION_RETRY_DELAYS_MS) {
-    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-    snapshot = await readTranscriptSnapshot(transcriptPath);
-    if (snapshot.pendingQuestion) return snapshot;
-  }
-  return snapshot;
-}
-
 async function enrichNotification(session) {
   const snapshot = session.transcriptPath
-    ? await readSnapshotWithQuestionRetry(session.transcriptPath)
+    ? await readSnapshotWithQuestionRetry(() => readTranscriptSnapshot(session.transcriptPath))
     : { pendingQuestion: null };
   // The Stop already announced a text question: the idle Notification that
   // follows must not repeat it, nor drop it.
-  if (snapshot.pendingQuestion?.kind === 'text' && session.question?.kind === 'text') {
+  if (snapshot.pendingQuestion?.kind === 'text' && session.question?.kind === 'text' && !session.question.unconfirmed) {
     registry.setManagerMessage(session.id, { message: session.question.text }); // the Notification overwrote it
     return;
   }
-  registry.setQuestion(session.id, snapshot.pendingQuestion);
-  const firstQuestion = snapshot.pendingQuestion?.questions?.[0];
+  // Only a Stop confirms a text question (the turn ended): from here it shows
+  // as "needs you" but keeps typing blocked.
+  const pending = snapshot.pendingQuestion;
+  registry.setQuestion(session.id, pending?.kind === 'text' ? { ...pending, unconfirmed: true } : pending);
+  const firstQuestion = pending?.questions?.[0];
   // The card shows exactly what the tooltip showed — one message per chat.
-  const text = firstQuestion?.question ?? session.managerMessage;
+  const asked = firstQuestion?.question ?? (pending?.kind === 'text' ? pending.text : null);
+  const text = asked ?? session.managerMessage;
   if (!text) return;
-  if (firstQuestion) registry.setManagerMessage(session.id, { message: text });
-  const kind = firstQuestion ? 'question' : 'waiting';
+  if (asked) registry.setManagerMessage(session.id, { message: text });
+  const kind = asked ? 'question' : 'waiting';
   await bark(session, kind, text, {
     projectName: displayNameOf(session),
     text,
@@ -5078,7 +5069,7 @@ function createVoiceSessionForApp() {
     // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
     startOrderNow: (sessionId) => {
       const session = registry.sessions.get(sessionId);
-      if (!session || session.question || session.needsPermission) return;
+      if (!session || blocksTyping(session)) return;
       if (session.status === 'done' || session.status === 'waiting') runConductor(maestroConductor.turnEnded(sessionId, { tests: null }));
     },
     linkedSessions: (number) => {

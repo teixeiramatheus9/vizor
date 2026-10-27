@@ -1,5 +1,6 @@
 import { bracketedPaste, flattenForTyping } from './comment-message.js';
 import { safeToTypeIdle } from './bubble-routing.js';
+import { blocksTyping } from './session-status.js';
 
 // Sends queued 💬 comments to their session (#95), one at a time, in order.
 //
@@ -15,7 +16,6 @@ import { safeToTypeIdle } from './bubble-routing.js';
 //      focus steal could land anywhere.
 // No channel while a turn runs → it waits for the turn to end. Otherwise the
 // comment fails and the user can copy it (no automatic clipboard writes).
-import { blocksTyping } from './session-status.js';
 const PASTE_ENTER_DELAY_MS = 150;
 const IDLE = ['done', 'waiting'];
 
