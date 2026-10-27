@@ -184,4 +184,38 @@ describe('coming back to a tab', () => {
     await flush();
     expect(draws).toBe(first);
   });
+
+  it('takes the reject prompt away after a failed reject, though the file data is the same', async () => {
+    globalThis.CSS ??= { escape: (value) => value };
+    const file = { path: 'a.js', status: 'modified', tscErrors: [], hunks: [{ id: 'h1', header: '@@ -1 +1 @@', newStart: 1, newLines: 1, lines: [{ kind: '+', text: 'x', oldNo: null, newNo: 1 }] }] };
+    const doc = fakeDoc();
+    const diff = doc.getElementById('changes-diff');
+    let html = '';
+    Object.defineProperty(diff, 'innerHTML', { get: () => html, set: (value) => { html = value; } });
+    diff.querySelector = (selector) => (selector.includes('.hunk-head') ? { insertAdjacentHTML: (_where, markup) => { html += markup; } } : null);
+    diff.querySelectorAll = () => [];
+    const clicks = [];
+    doc.getElementById('review-changes');
+    const panels = doc.querySelectorAll('[data-review-panel]');
+    const changes = panels.find((el) => el.dataset.reviewPanel === 'changes');
+    changes.addEventListener = (type, handler) => { if (type === 'click') clicks.push(handler); };
+    const api = {
+      reviewPrefs: async (worktree, set) => (set ? {} : { tab: 'changes', openFiles: ['a.js'] }),
+      reviewSummary: async () => ({ files: [{ path: 'a.js', status: 'modified' }], order: ['a.js'], verdict: [], contract: [] }),
+      reviewSlice: async () => ({ status: 'building', done: 0, total: 0 }),
+      reviewFile: async () => structuredClone(file),
+      reviewReject: async () => ({ ok: false, error: 'o arquivo mudou; atualize' }),
+      onReviewChanged() {},
+    };
+    createReviewController({ api, doc }).setContext({ worktree: '/a', sessions: [] });
+    await flush();
+    const click = (target) => clicks[0]({ target });
+    const hit = (match) => ({ closest: (sel) => (match(sel) ? { dataset: match(sel), disabled: false } : null) });
+    click(hit((sel) => (sel === '[data-hunk-action]' ? { hunkAction: 'reject', hunkId: 'h1' } : null)));
+    await flush();
+    expect(html).toContain('reject-confirm');
+    click(hit((sel) => (sel === '[data-review-action]' ? { reviewAction: 'reject-yes' } : null)));
+    await flush();
+    expect(html).not.toContain('reject-confirm');
+  });
 });

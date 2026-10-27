@@ -397,6 +397,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
   async function confirmReject() {
     const id = pendingReject;
     pendingReject = null;
+    fileDrawn = null; // the confirm prompt must go even when the answer is the same data
     const path = fileView?.path;
     if (!id || !path) return;
     const { sessionId } = composerTarget(sessions, composer.pickedId, agentId);

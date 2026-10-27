@@ -255,6 +255,14 @@ export function createReviewService({
     // A cold graph starts building only after the answer is worked out: its parsing
     // and file reads would compete with the first list for the main thread.
     const graph = readyGraph(wt, graphBuilt);
+    try {
+      return await finishSummary(wt, base, files, graph);
+    } finally {
+      if (!graph) readyGraph(wt); // even when the work above threw: the Impacto tab still needs the build
+    }
+  }
+
+  async function finishSummary(wt, base, files, graph) {
     const stamps = await stampsOf(wt, files);
     // Two independent git runs: the merge-base texts feed the analysis, the full patch feeds the hunk counts.
     const [analysed] = await Promise.all([
@@ -285,7 +293,6 @@ export function createReviewService({
       live.push(...ids);
     }
     s.store.prune?.(live);
-    if (!graph) readyGraph(wt);
     const order = readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path);
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,

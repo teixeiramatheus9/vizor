@@ -279,4 +279,17 @@ describe('review service', () => {
     await service.summary(WT);
     expect(order).toEqual([`graphFor after ${calls.length} git calls`]);
   });
+
+  it('still starts the cold graph when the summary work throws', async () => {
+    let started = 0;
+    const indexer = { graph: () => null, refresh: () => new Promise(() => {}) };
+    const { service } = setup({
+      git: { 'diff -U3 BASE': new Error('boom') },
+      files: { '/w/a.js': 'new' },
+      extra: { graphFor: () => { started++; return indexer; }, graphBuilt: () => null },
+    });
+    const s = await service.summary(WT);
+    expect(s.baseError).toMatch(/não deu pra ler/);
+    expect(started).toBe(1);
+  });
 });
