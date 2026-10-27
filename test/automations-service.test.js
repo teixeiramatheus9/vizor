@@ -1,0 +1,406 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as schedule from '../src/main/automations/schedule.js';
+import * as permissions from '../src/main/automations/permissions.js';
+import { createAutomationStore } from '../src/main/automations/store.js';
+import { createDailyBudget } from '../src/main/automations/budget.js';
+import { createAutomationService, automationRunCards } from '../src/main/automations/service.js';
+
+const MIN = 60000;
+const T0 = new Date(2026, 9, 27, 8, 0).getTime(); // a Tuesday, 08:00 local
+
+function memStore(initial = []) {
+  const files = new Map();
+  if (initial.length) files.set('/cfg/automacoes.json', JSON.stringify({ automations: initial }));
+  return createAutomationStore({
+    file: '/cfg/automacoes.json',
+    readFile: async (p) => { if (!files.has(p)) { const e = new Error('nope'); e.code = 'ENOENT'; throw e; } return files.get(p); },
+    writeFile: async (p, t) => { files.set(p, t); },
+    rename: async (a, b) => { files.set(b, files.get(a)); files.delete(a); },
+    mkdir: async () => {},
+  });
+}
+
+// Each run waits for the test to settle it: runs[i].resolve({ status, costUsd }).
+function fakeRunner() {
+  const runs = [];
+  const runner = {
+    runs,
+    run: vi.fn((opts) => new Promise((resolve) => { runs.push({ ...opts, resolve }); })),
+    cancel: vi.fn((id) => { const r = runs.find((x) => x.automation.id === id && !x.done); if (!r) return false; r.done = true; r.resolve({ status: 'cancelled', costUsd: 0 }); return true; }),
+    cancelAll: vi.fn(async () => { for (const r of runs) if (!r.done) { r.done = true; r.resolve({ status: 'cancelled', costUsd: 0 }); } }),
+    killAllNow: vi.fn(),
+  };
+  return runner;
+}
+
+function setup({ automations = [], guardEnabled = true, inflight = [], budgetFile = null, rulesFail = false, storeOverride = null } = {}) {
+  const store = storeOverride ?? memStore(automations);
+  const runner = fakeRunner();
+  let budgetText = budgetFile;
+  const budget = createDailyBudget({ file: 'b', readFile: () => { if (budgetText == null) throw new Error('none'); return budgetText; }, writeFile: (_f, t) => { budgetText = t; }, now: () => new Date() });
+  const entries = [];
+  const history = {
+    append: vi.fn(async (id, entry) => { const saved = { ...entry, at: new Date().toISOString(), report: 'r.md' }; entries.push({ id, ...saved }); return saved; }),
+    list: vi.fn(async (id, { limit = 20 } = {}) => entries.filter((e) => e.id === id).reverse().slice(0, limit)),
+    read: vi.fn(async () => null),
+  };
+  const skills = { write: vi.fn(async () => '/home/u/.claude/skills/x/SKILL.md'), remove: vi.fn(async () => ({ needsCommit: false })) };
+  const rulesDocs = [];
+  const order = [];
+  const writeGuardRules = vi.fn(async (doc) => { if (rulesFail) throw new Error('disk full'); order.push('rules'); rulesDocs.push(structuredClone(doc)); });
+  runner.run.mockImplementation((opts) => { order.push('run'); return new Promise((resolve) => { runner.runs.push({ ...opts, resolve }); }); });
+  let pending = structuredClone(inflight);
+  const inflightIo = { read: vi.fn(async () => structuredClone(pending)), write: vi.fn(async (list) => { pending = structuredClone(list); }) };
+  const worktree = { prepare: vi.fn(async (a) => ({ ok: true, path: `/work/${a.slug}-wt`, branch: `auto/${a.slug}/x` })) };
+  const mkdir = vi.fn(async () => {});
+  const notify = vi.fn();
+  const service = createAutomationService({
+    store, runner, budget, history, schedule, permissions, worktree, skills, writeGuardRules,
+    inflight: inflightIo, mkdir, notify,
+    commandsOf: async () => ({ testCmd: 'npm test', lintCmd: null }),
+    removeWorktree: vi.fn(async () => {}),
+    guardEnabled: () => guardEnabled,
+    baseEnv: () => ({ HOME: '/home/u', PATH: '/bin' }),
+    log: () => {},
+    now: Date.now, setTimer: setTimeout, clearTimer: clearTimeout,
+  });
+  return { service, store, runner, budget, history, entries, skills, rulesDocs, writeGuardRules, order, inflight: inflightIo, pending: () => pending, worktree, mkdir, notify };
+}
+
+const base = (over = {}) => ({ name: 'PRs da manhã', prompt: 'Resuma as PRs.', projectRoot: '/work/app', when: { kind: 'every', minutes: 15 }, ...over });
+const flush = () => vi.advanceTimersByTimeAsync(0);
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+  vi.setSystemTime(T0);
+});
+afterEach(() => { vi.useRealTimers(); });
+
+describe('automation service', () => {
+  it('schedules with one timer and runs when due, counting the cost', async () => {
+    const t = setup();
+    await t.service.start();
+    const saved = await t.service.save(base());
+    expect(saved.ok).toBe(true);
+    const id = saved.automation.id;
+    expect(vi.getTimerCount()).toBe(1);
+    expect(t.service.state().nextAt).toBe(T0 + 15 * MIN);
+    await vi.advanceTimersByTimeAsync(15 * MIN - 1);
+    expect(t.runner.run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.runner.run).toHaveBeenCalledOnce();
+    const call = t.runner.runs[0];
+    expect(call.cwd).toBe('/work/app');
+    expect(call.args.slice(0, 2)).toEqual(['-p', '/vizor-prs-da-manha']);
+    expect(call.env).toMatchObject({ VIZOR_AUTOMATION: id, VIZOR_INTERNAL: '1', PATH: '/bin' });
+    expect(call.timeoutMs).toBe(15 * MIN);
+    expect(t.service.state().list[0].running).toMatchObject({ startedAt: T0 + 15 * MIN, late: false });
+    call.resolve({ status: 'ok', result: 'feito', costUsd: 0.25, durationMs: 1000 });
+    await flush();
+    expect(t.entries).toEqual([expect.objectContaining({ id, status: 'ok', costUsd: 0.25, result: 'feito', late: false })]);
+    expect(t.budget.spent()).toBe(0.25);
+    expect(t.notify).toHaveBeenCalledWith(expect.objectContaining({ status: 'ok', text: 'a automação PRs da manhã terminou' }));
+    const st = t.service.state();
+    expect(st.list[0]).toMatchObject({ running: null, last: expect.objectContaining({ status: 'ok' }), next: T0 + 30 * MIN });
+    expect(st.budget).toMatchObject({ spent: 0.25, cap: 5, paused: false });
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('emits changed and recomputes the single timer on every change', async () => {
+    const t = setup();
+    await t.service.start();
+    const changed = vi.fn();
+    t.service.on('changed', changed);
+    for (let i = 0; i < 4; i++) await t.service.save(base({ name: `A ${i}`, projectRoot: `/work/p${i}` }));
+    expect(changed).toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    const [first] = t.service.state().list;
+    await t.service.pause(first.id, true);
+    expect(t.service.state().list[0]).toMatchObject({ paused: true, next: null });
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('a missed slot within 24 h runs once at start, marked late', async () => {
+    const created = T0 - 3 * 24 * 60 * MIN;
+    const t = setup({ automations: [{ ...base({ when: { kind: 'daily', at: '07:00' } }), id: 'd1', createdAt: created, lastRun: T0 - 25 * 60 * MIN }] });
+    await t.service.start();
+    await flush();
+    expect(t.runner.run).toHaveBeenCalledOnce();
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0.1 });
+    await flush();
+    expect(t.entries[0]).toMatchObject({ late: true, status: 'ok' });
+    // Next is tomorrow at 07:00, not another catch-up run.
+    expect(t.service.state().list[0].next).toBe(new Date(2026, 9, 28, 7, 0).getTime());
+    await vi.advanceTimersByTimeAsync(60 * MIN);
+    expect(t.runner.run).toHaveBeenCalledOnce();
+  });
+
+  it('a missed interval automação runs once, not once per missed slot', async () => {
+    const t = setup({ automations: [{ ...base(), id: 'e1', createdAt: T0 - 10 * 60 * MIN, lastRun: T0 - 5 * 60 * MIN }] });
+    await t.service.start();
+    await flush();
+    expect(t.runner.run).toHaveBeenCalledOnce();
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    expect(t.service.state().list[0].next).toBe(T0 + 15 * MIN);
+  });
+
+  it('skip, or a slot older than 24 h, does not run at start', async () => {
+    const t = setup({
+      automations: [
+        { ...base({ when: { kind: 'daily', at: '07:00' }, missed: 'skip' }), id: 's1', createdAt: T0 - 3 * 24 * 60 * MIN, lastRun: T0 - 25 * 60 * MIN },
+        { ...base({ name: 'Velha', projectRoot: '/work/b', when: { kind: 'days', days: [0], at: '07:00' } }), id: 's2', createdAt: T0 - 30 * 24 * 60 * MIN, lastRun: T0 - 9 * 24 * 60 * MIN },
+      ],
+    });
+    await t.service.start();
+    await flush();
+    expect(t.runner.run).not.toHaveBeenCalled();
+    expect(t.service.state().list.find((a) => a.id === 's1').next).toBe(new Date(2026, 9, 28, 7, 0).getTime());
+  });
+
+  it('the queue runs 1 per project and 2 in total, in order', async () => {
+    const t = setup();
+    await t.service.start();
+    const ids = [];
+    for (const [name, root] of [['A1', '/work/a'], ['A2', '/work/a'], ['B1', '/work/b'], ['C1', '/work/c']]) {
+      ids.push((await t.service.save(base({ name, projectRoot: root }))).automation.id);
+    }
+    await vi.advanceTimersByTimeAsync(15 * MIN);
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A1', 'B1']);
+    expect(t.service.state().list.filter((a) => a.queued).map((a) => a.name)).toEqual(['A2', 'C1']);
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A1', 'B1', 'A2']);
+    t.runner.runs[1].resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A1', 'B1', 'A2', 'C1']);
+  });
+
+  it('runNow queues behind the project already running and refuses a duplicate', async () => {
+    const t = setup();
+    await t.service.start();
+    const a = (await t.service.save(base({ name: 'A' }))).automation.id;
+    const b = (await t.service.save(base({ name: 'B' }))).automation.id;
+    expect(await t.service.runNow(a)).toMatchObject({ ok: true });
+    expect(await t.service.runNow(b)).toMatchObject({ ok: true, queued: true });
+    expect((await t.service.runNow(a)).ok).toBe(false);
+    await flush();
+    expect(t.runner.run).toHaveBeenCalledOnce();
+    expect(await t.service.cancel(b)).toBe(true);
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    expect(t.runner.run).toHaveBeenCalledOnce();
+  });
+
+  it('over-cap blocks the automação until confirm', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    t.runner.runs[0].resolve({ status: 'over-cap', costUsd: 1 });
+    await flush();
+    expect((await t.store.get(id)).blockedUntilConfirm).toBe(true);
+    expect(t.notify).toHaveBeenCalledWith(expect.objectContaining({ status: 'over-cap', text: 'a automação PRs da manhã passou do teto' }));
+    expect(t.service.state().list[0]).toMatchObject({ blockedUntilConfirm: true, next: null });
+    await vi.advanceTimersByTimeAsync(60 * MIN);
+    expect(t.runner.run).toHaveBeenCalledOnce();
+    expect((await t.service.runNow(id)).ok).toBe(false);
+    await t.service.confirm(id);
+    expect((await t.store.get(id)).blockedUntilConfirm).toBe(false);
+    await vi.advanceTimersByTimeAsync(15 * MIN);
+    expect(t.runner.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('a timeout blocks too, and a block survives a restart', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    t.runner.runs[0].resolve({ status: 'timeout', costUsd: 1 });
+    await flush();
+    expect(t.entries[0].status).toBe('timeout');
+    const again = setup({ storeOverride: t.store });
+    await again.service.start();
+    await vi.advanceTimersByTimeAsync(60 * MIN);
+    expect(again.runner.run).not.toHaveBeenCalled();
+  });
+
+  it('the day cap pauses every automação until the next day', async () => {
+    const day = `${new Date(T0).getFullYear()}-10-27`;
+    const t = setup({ budgetFile: JSON.stringify({ day, spent: 4.5 }) });
+    await t.service.start();
+    await t.service.save(base({ name: 'A', projectRoot: '/work/a' }));
+    await t.service.save(base({ name: 'B', projectRoot: '/work/b' }));
+    await vi.advanceTimersByTimeAsync(15 * MIN);
+    expect(t.runner.run).not.toHaveBeenCalled();
+    expect(t.service.state().budget).toMatchObject({ spent: 4.5, cap: 5, paused: true });
+    expect(t.notify).toHaveBeenCalledTimes(1);
+    expect(t.notify).toHaveBeenCalledWith(expect.objectContaining({ status: 'day-cap' }));
+    await vi.advanceTimersByTimeAsync(60 * MIN);
+    expect(t.notify).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    // Midnight: a fresh day, the queue drains.
+    await vi.advanceTimersByTimeAsync(new Date(2026, 9, 28, 0, 1).getTime() - Date.now());
+    expect(t.runner.runs.map((r) => r.automation.name)).toEqual(['A', 'B']);
+    expect(t.service.state().budget.paused).toBe(false);
+  });
+
+  it('quit cancels every run, stops the scheduler, and a crash leaves "cancelled" for the next start', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    expect(t.pending()).toEqual([expect.objectContaining({ id, name: 'PRs da manhã' })]);
+    // A hard exit: only the sync kill runs, the inflight record stays.
+    t.service.killAllNow();
+    expect(t.runner.killAllNow).toHaveBeenCalledOnce();
+    const next = setup({ storeOverride: t.store, inflight: t.pending() });
+    await next.service.start();
+    expect(next.entries).toEqual([expect.objectContaining({ id, status: 'cancelled' })]);
+    expect(next.pending()).toEqual([]);
+    // A clean quit: cancelAll settles the run as cancelled, and nothing else starts.
+    await next.service.runNow(id);
+    await flush();
+    await next.service.shutdown();
+    expect(next.runner.cancelAll).toHaveBeenCalledOnce();
+    await flush();
+    expect(next.entries.at(-1)).toMatchObject({ id, status: 'cancelled' });
+    expect(next.pending()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(120 * MIN);
+    expect(next.runner.run).toHaveBeenCalledOnce();
+    expect(next.notify).not.toHaveBeenCalled();
+  });
+
+  it('save writes the skill and the guard rules, and keeps the run state', async () => {
+    const t = setup();
+    await t.service.start();
+    const r = await t.service.save(base({ lastRun: 5, blockedUntilConfirm: true, paused: true }));
+    expect(r.ok).toBe(true);
+    expect(r.automation).toMatchObject({ slug: 'prs-da-manha', lastRun: null, blockedUntilConfirm: false, paused: false });
+    expect(t.skills.write).toHaveBeenCalledWith(expect.objectContaining({ slug: 'prs-da-manha', prompt: 'Resuma as PRs.' }));
+    const doc = t.rulesDocs.at(-1);
+    expect(doc.version).toBe(1);
+    expect(doc.automations[r.automation.id]).toMatchObject({ id: r.automation.id, level: 'read', denyEdits: true });
+    expect(doc.automations[r.automation.id].allowBash).toContainEqual({ program: 'npm', argsPrefix: ['test'], extra: 'none' });
+    const edited = await t.service.save({ ...r.automation, name: 'Outro nome', createdAt: 1 });
+    expect(edited.automation).toMatchObject({ id: r.automation.id, slug: 'prs-da-manha', name: 'Outro nome', createdAt: r.automation.createdAt });
+    expect(t.service.state().list).toHaveLength(1);
+  });
+
+  it('save refuses edit levels with the guard off, invalid input, and edits while running', async () => {
+    const off = setup({ guardEnabled: false });
+    await off.service.start();
+    expect((await off.service.save(base({ level: 'worktree' }))).error).toMatch(/trava/);
+    expect((await off.service.save(base({ level: 'read' }))).ok).toBe(true);
+    // An automação saved at an edit level while the guard was on cannot be edited (or run) with it off.
+    const onT = setup();
+    await onT.service.start();
+    const wt = (await onT.service.save(base({ level: 'project' }))).automation;
+    const offAgain = setup({ storeOverride: onT.store, guardEnabled: false });
+    await offAgain.service.start();
+    expect((await offAgain.service.save({ id: wt.id, name: 'Outro' })).error).toMatch(/trava/);
+    await offAgain.service.runNow(wt.id);
+    await flush();
+    expect(offAgain.runner.run).not.toHaveBeenCalled();
+    expect(offAgain.entries[0]).toMatchObject({ status: 'failed', reason: expect.stringMatching(/trava/) });
+    const t = setup();
+    await t.service.start();
+    expect((await t.service.save(base({ when: 'a cada 5 min' }))).ok).toBe(false);
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    expect((await t.service.save({ ...base(), id })).ok).toBe(false);
+  });
+
+  it('refuses to write anything when the store could not be read', async () => {
+    const store = memStore();
+    store.readError = async () => Object.assign(new Error('denied'), { code: 'EACCES' });
+    const t = setup({ storeOverride: store });
+    await t.service.start();
+    const r = await t.service.save(base());
+    expect(r).toEqual({ ok: false, error: 'não deu pra ler as automações; nada foi gravado pra não perder o que existe' });
+    expect(t.service.state().readError).toBe(r.error);
+    expect((await t.service.remove('x')).ok).toBe(false);
+  });
+
+  it('worktree level: prepares the worktree, writes its rules before the run, creates gh-empty', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base({ level: 'worktree' }))).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    expect(t.worktree.prepare).toHaveBeenCalledOnce();
+    const run = t.runner.runs[0];
+    expect(run.cwd).toBe('/work/prs-da-manha-wt');
+    expect(t.rulesDocs.at(-1).automations[id]).toMatchObject({ allowEditsUnder: '/work/prs-da-manha-wt', denyEdits: false });
+    expect(t.order.slice(-2)).toEqual(['rules', 'run']);
+    expect(t.mkdir).toHaveBeenCalledWith(`/home/u/.config/vizor/automacoes/${id}/gh-empty`, { recursive: true });
+    expect(run.env.GH_CONFIG_DIR).toBe(`/home/u/.config/vizor/automacoes/${id}/gh-empty`);
+    run.resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    expect(t.entries[0]).toMatchObject({ branch: 'auto/prs-da-manha/x' });
+  });
+
+  it('a failed worktree or rules write never spawns, and says why', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base({ level: 'worktree' }))).automation.id;
+    t.worktree.prepare.mockResolvedValueOnce({ status: 'failed', reason: 'A worktree tem mudanças.' });
+    await t.service.runNow(id);
+    await flush();
+    await flush();
+    expect(t.entries[0]).toMatchObject({ status: 'failed', reason: 'A worktree tem mudanças.' });
+    const bad = setup({ rulesFail: true });
+    await bad.service.start();
+    const id2 = (await bad.service.save(base())).automation.id;
+    await bad.service.runNow(id2);
+    await flush();
+    await flush();
+    expect(bad.runner.run).not.toHaveBeenCalled();
+    expect(bad.entries[0]).toMatchObject({ status: 'failed', reason: expect.stringMatching(/regras da trava/) });
+    expect(bad.notify).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', text: 'a automação PRs da manhã falhou' }));
+  });
+
+  it('a guard denial during the run marks it blocked', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    t.service.noteGuardDenial(id);
+    t.service.noteGuardDenial('someone-else');
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0.1 });
+    await flush();
+    expect(t.entries[0].status).toBe('blocked');
+  });
+
+  it('remove deletes the automação, its rules and, when asked, its skill', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    expect(await t.service.remove(id, { removeSkill: true })).toMatchObject({ ok: true });
+    expect(t.skills.remove).toHaveBeenCalledOnce();
+    expect(t.rulesDocs.at(-1).automations[id]).toBeUndefined();
+    expect(t.service.state().list).toEqual([]);
+    expect(t.service.state().nextAt).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('automationRunCards', () => {
+  it('turns running automações into working cards, waiting while a guard ask is open', () => {
+    const list = [
+      { id: 'a', name: 'PRs', projectRoot: '/work/a', running: { startedAt: 10, late: true } },
+      { id: 'b', name: 'Testes', projectRoot: '/work/b', running: { startedAt: 20, late: false } },
+      { id: 'c', name: 'Parada', projectRoot: '/work/c', running: null },
+    ];
+    const cards = automationRunCards(list, [{ id: 'q', automationId: 'b' }, { id: 'r', sessionId: 's' }]);
+    expect(cards).toEqual([
+      { id: 'automation:a', automationId: 'a', column: 'working', title: 'PRs', projectRoot: '/work/a', avatarKey: '/work/a', since: 10, late: true, waiting: false, badge: 'automação' },
+      { id: 'automation:b', automationId: 'b', column: 'waiting', title: 'Testes', projectRoot: '/work/b', avatarKey: '/work/b', since: 20, late: false, waiting: true, badge: 'automação' },
+    ]);
+  });
+});

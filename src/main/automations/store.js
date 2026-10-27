@@ -74,6 +74,7 @@ function uniqueSlug(slug, items) {
 
 export function createAutomationStore({ file, readFile, writeFile, rename, mkdir, log, onError, now = Date.now }) {
   let items = null; // loaded lazily, then the source of truth
+  let readError = null; // a non-ENOENT read failure: nothing may be written over the file
   let chain = Promise.resolve(); // every operation runs one at a time: they share the tmp file
 
   async function load() {
@@ -82,7 +83,10 @@ export function createAutomationStore({ file, readFile, writeFile, rename, mkdir
       text = await readFile(file, 'utf8');
     } catch (error) {
       items = [];
-      if (error?.code !== 'ENOENT') log?.(`automations: could not read ${file}, starting empty (${error.message})`);
+      if (error?.code !== 'ENOENT') {
+        readError = error;
+        log?.(`automations: could not read ${file}, starting empty (${error.message})`);
+      }
       return;
     }
     // A bad file is moved aside, never overwritten by the next save.
@@ -105,6 +109,8 @@ export function createAutomationStore({ file, readFile, writeFile, rename, mkdir
   }
 
   async function persist(next) {
+    // The file exists but could not be read: writing would erase what it holds.
+    if (readError) throw new Error(`automations: refusing to overwrite unreadable ${file}`);
     const tmp = `${file}.tmp`;
     try {
       await mkdir(dirname(file), { recursive: true });
@@ -138,6 +144,8 @@ export function createAutomationStore({ file, readFile, writeFile, rename, mkdir
   };
 
   return {
+    // The load's error when the file exists but could not be read, else null.
+    readError: () => run(() => readError),
     list: () => run(() => structuredClone(items)),
     get: (id) => run(() => structuredClone(items.find((x) => x.id === id) ?? null)),
     save: (a) => run(() => upsert(a)),

@@ -9,6 +9,7 @@ import {
   Notification,
   screen,
   session,
+  powerMonitor,
   shell,
   systemPreferences,
   Tray,
@@ -180,6 +181,17 @@ import { linuxFocusHint, win32FocusHint, hintAnnouncement } from './focus-hints.
 import { resolveWindowDriver } from './window-driver.js';
 import { shouldAnnounce as notifyPolicy } from './notify-policy.js';
 import { createNotifyBatch, summarizeBatch } from './notify-batch.js';
+import * as automationSchedule from './automations/schedule.js';
+import * as automationPermissions from './automations/permissions.js';
+import { createAutomationStore } from './automations/store.js';
+import { writeSkill, removeSkill } from './automations/skill.js';
+import { createRunner as createAutomationRunner } from './automations/runner.js';
+import { createDailyBudget } from './automations/budget.js';
+import { createHistory as createAutomationHistory } from './automations/history.js';
+import { prepareWorktree, worktreePathOf } from './automations/worktree.js';
+import { createAutomationService, automationRunCards } from './automations/service.js';
+import { parseProjectConfig } from './review/project-config.js';
+import { testCommand, lintCommand } from './review/verify.js';
 import { installBridge, uninstallBridge, bridgeStatus, autoSetupBridge } from './bridge-manager.js';
 import { sendUserMessage } from './cc-peer.js';
 
@@ -484,6 +496,214 @@ let guardOffline = false;
 let guardInstalled = false;
 let rulesUnreadable = false;
 
+// --- Automações ---------------------------------------------------------------
+// The scheduler lives in automations/service.js; this is only its IO. It runs
+// while the Vizor is open, workspace window shown or not.
+const automationsDir = path.join(configDir, 'automacoes');
+const automationRulesFile = path.join(automationsDir, 'regras.json');
+const automationInflightFile = path.join(automationsDir, 'em-andamento.json');
+
+let atomicWrites = 0;
+async function writeFileAtomic(file, text) {
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${++atomicWrites}`;
+  await fs.promises.writeFile(tmp, text);
+  await fs.promises.rename(tmp, file);
+}
+
+async function readTextOrNull(file) {
+  try {
+    return await fs.promises.readFile(file, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// git for the worktree level: { code, stdout }, never throws.
+function automationGit(args, { cwd }) {
+  return execFileAsync('git', args, { cwd, timeout: 60000, maxBuffer: 4 * 1024 * 1024 })
+    .then(({ stdout }) => ({ code: 0, stdout }))
+    .catch((error) => ({ code: typeof error.code === 'number' ? error.code : 1, stdout: error.stdout ?? '' }));
+}
+
+async function automationProjectConfig(root) {
+  return parseProjectConfig((await readTextOrNull(path.join(root, '.vizor', 'projeto.json'))) ?? '');
+}
+
+const automationBudget = createDailyBudget({
+  file: path.join(automationsDir, 'gasto-do-dia.json'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, text) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  },
+});
+const automationHistory = createAutomationHistory({ dir: automationsDir, fs: fs.promises });
+const automationRunner = createAutomationRunner({ spawn });
+
+function automationNotify({ status, text }) {
+  // Never urgent: ten automações finishing together make one balloon.
+  noticeBatch.push({
+    kind: 'done',
+    urgent: false,
+    sessionId: null,
+    tooltip: { projectName: 'Automações', text, kind: status === 'ok' ? 'done' : 'hint', sessionId: null, speech: `${text}.` },
+  });
+}
+
+const automations = createAutomationService({
+  store: createAutomationStore({
+    file: path.join(configDir, 'automacoes.json'),
+    readFile: fs.promises.readFile,
+    writeFile: fs.promises.writeFile,
+    rename: fs.promises.rename,
+    mkdir: fs.promises.mkdir,
+    log,
+  }),
+  runner: automationRunner,
+  budget: automationBudget,
+  history: automationHistory,
+  schedule: automationSchedule,
+  permissions: automationPermissions,
+  worktree: {
+    prepare: async (a) =>
+      prepareWorktree(a, {
+        git: automationGit,
+        exists: (dir) => fs.promises.access(dir).then(() => true, () => false),
+        repoRoot: a.projectRoot,
+        base: (await automationProjectConfig(a.projectRoot)).base,
+        home: os.homedir(),
+      }),
+  },
+  skills: {
+    write: (a) => writeSkill(a, { home: os.homedir(), mkdir: fs.promises.mkdir, writeFile: fs.promises.writeFile, rename: fs.promises.rename }),
+    remove: (a) =>
+      removeSkill(a, {
+        home: os.homedir(),
+        rm: fs.promises.rm,
+        gitLsFiles: (file, cwd) => execFileAsync('git', ['ls-files', '--', file], { cwd, timeout: 10000 }).then(({ stdout }) => stdout),
+      }),
+  },
+  // The guard fails closed without this file, so it is written before every spawn.
+  writeGuardRules: (doc) => writeFileAtomic(automationRulesFile, JSON.stringify(doc, null, 2)),
+  inflight: {
+    read: async () => {
+      const text = await readTextOrNull(automationInflightFile);
+      if (text === null) return [];
+      try {
+        const list = JSON.parse(text);
+        return Array.isArray(list) ? list : [];
+      } catch {
+        return [];
+      }
+    },
+    write: (list) => writeFileAtomic(automationInflightFile, JSON.stringify(list)),
+  },
+  mkdir: fs.promises.mkdir,
+  notify: automationNotify,
+  commandsOf: async (root) => {
+    const config = await automationProjectConfig(root);
+    const packageText = await readTextOrNull(path.join(root, 'package.json'));
+    return { testCmd: testCommand({ packageText, config }), lintCmd: lintCommand({ packageText, config }) };
+  },
+  removeWorktree: async (a) => {
+    const dir = worktreePathOf(a, a.projectRoot);
+    if (!fs.existsSync(dir)) return;
+    // No --force: a worktree with uncommitted work stays, and the user is told.
+    const result = await automationGit(['worktree', 'remove', dir], { cwd: a.projectRoot });
+    if (result.code !== 0) throw new Error(`git worktree remove exited ${result.code}`);
+  },
+  guardEnabled: () => managerConfig.guardEnabled !== false,
+  baseEnv: () => process.env,
+  log,
+});
+let markAutomationsReady;
+const automationsReady = new Promise((resolve) => {
+  markAutomationsReady = resolve;
+});
+let automationCountSynced = 0;
+automations.on('changed', () => {
+  // One automação is enough to need the guard hook installed.
+  if (automations.count() !== automationCountSynced) {
+    automationCountSynced = automations.count();
+    syncGuardHook();
+  }
+  pushWorkspaceState();
+  workspaceWindow?.send('automations:changed', automations.state());
+});
+// A hard exit skips before-quit: the runs' process groups must not outlive the app.
+process.on('exit', () => automations.killAllNow());
+
+const automationId = (id) => (typeof id === 'string' && /^[\w-]{1,64}$/.test(id) ? id : null);
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const IMPROVE_MAX_CHARS = 8000;
+
+ipcMain.handle('automations:state', async (event) => {
+  if (!fromWorkspace(event)) return null;
+  await automationsReady;
+  return automations.state();
+});
+ipcMain.handle('automations:save', async (event, automation) => {
+  if (!fromWorkspace(event) || !plainObject(automation)) return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.save(automation);
+});
+ipcMain.handle('automations:remove', async (event, { id, removeSkill: dropSkill, removeWorktree: dropWorktree } = {}) => {
+  if (!fromWorkspace(event) || !automationId(id)) return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.remove(id, { removeSkill: dropSkill === true, removeWorktree: dropWorktree === true });
+});
+ipcMain.handle('automations:run', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.runNow(id);
+});
+ipcMain.handle('automations:pause', async (event, { id, on } = {}) => {
+  if (!fromWorkspace(event) || !automationId(id) || typeof on !== 'boolean') return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.pause(id, on);
+});
+ipcMain.handle('automations:confirm', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.confirm(id);
+});
+ipcMain.handle('automations:cancel', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return false;
+  await automationsReady;
+  return automations.cancel(id);
+});
+ipcMain.handle('automations:history', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return [];
+  return automationHistory.list(id, { limit: 50 });
+});
+// Report text only: the renderer shows it through renderSafeMarkdown.
+ipcMain.handle('automations:report', async (event, { id, file } = {}) => {
+  if (!fromWorkspace(event) || !automationId(id) || typeof file !== 'string') return null;
+  return automationHistory.read(id, file);
+});
+// The gerente rewrites the request as a skill body, once: lean runClaude
+// (it executes nothing), Haiku, under the gerente's own token budget.
+ipcMain.handle('automations:improve', async (event, text) => {
+  if (!fromWorkspace(event) || typeof text !== 'string' || !text.trim()) return { ok: false, error: 'Escreva o pedido primeiro.' };
+  if (text.length > IMPROVE_MAX_CHARS) return { ok: false, error: 'O pedido está longo demais pra melhorar de uma vez.' };
+  if (isEconomyMode()) return { ok: false, error: 'O teto de tokens do gerente acabou hoje: suba o limite nas configurações pra melhorar o pedido.' };
+  const result = await runClaude({
+    prompt: [
+      'Você escreve skills do Claude Code. Reescreva o pedido abaixo como o corpo de uma skill, em markdown e em pt-BR, com três seções:',
+      '"## Objetivo" (uma frase), "## Passos" (lista numerada, curta e concreta) e "## Relatório" (o formato do relatório final, curto).',
+      'Não invente passos, ferramentas ou ações que o pedido não pede. Sem frontmatter. Responda só com o markdown.',
+      '',
+      'Pedido:',
+      text.trim(),
+    ].join('\n'),
+    timeoutMs: 30000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  const body = result?.text?.trim();
+  return body ? { ok: true, text: body } : { ok: false, error: 'O gerente não respondeu agora. Tente de novo.' };
+});
+
 function recordGuardOutcome(request, outcome) {
   try {
     rulesStore.addHistory({
@@ -512,6 +732,7 @@ function reviewerHint(ask) {
 
 function onGuardMessage(message, reply) {
   if (message.type === 'guard-event') {
+    if (message.automationId) automations.noteGuardDenial(String(message.automationId));
     recordGuardOutcome(message, message.outcome ?? 'barrado');
     return;
   }
@@ -2072,6 +2293,7 @@ function pushWorkspaceStateNow() {
       maestroNarrators.delete(sessionId);
       maestroPlans.delete(sessionId);
     }
+  const automationState = automations.state();
   workspaceWindow.send('workspace:state', {
     tree,
     terminals: (ptyHost?.list() ?? []).map((terminal) => ({ ...terminal, taskTitle: taskTitles.get(terminal.id) ?? null })),
@@ -2090,6 +2312,9 @@ function pushWorkspaceStateNow() {
     },
     plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
     tokens: { used: tokenBudget.usedToday(), cap: managerConfig.tokenBudgetDaily },
+    // Running automações as kanban cards of their own, and the status line's next run.
+    automationRuns: automationRunCards(automationState.list, guardAsks.pending()),
+    nextAutomationAt: automationState.nextAt,
     theme: managerConfig.theme,
     palette: managerConfig.palette,
     density: managerConfig.density,
@@ -3969,7 +4194,8 @@ function syncGuardHook() {
     const settings = readClaudeSettings();
     if (!settings) return;
     let next;
-    if (managerConfig.guardEnabled !== false && approvedRuleCount() > 0) {
+    // An automação's guard rules need the hook even with no rule of the user's.
+    if (managerConfig.guardEnabled !== false && (approvedRuleCount() > 0 || automations.count() > 0)) {
       const { command, offline, shim } = guardCommand({
         platform: process.platform,
         execPath: process.execPath,
@@ -5101,7 +5327,19 @@ app.whenReady().then(() => {
   renewMacosGrantAfterUpdate();
   ensureHooksInstalled();
   bootSyncRules();
-  syncGuardHook();
+  // The guard hook waits for the automações: one of them is enough to need it,
+  // and syncing before they load would remove it and add it back on every boot.
+  automations
+    .start()
+    .catch((error) => log(`automations start failed: ${error?.stack ?? error}`))
+    .finally(() => {
+      markAutomationsReady();
+      automationCountSynced = automations.count();
+      syncGuardHook();
+      sendState();
+    });
+  // The scheduler's timer does not run while the machine sleeps: recheck on wake.
+  powerMonitor.on('resume', () => automations.wake());
   autoSetupBridgeOnWayland();
   hydrateRegistry();
   reapDeadSessions();
@@ -5172,7 +5410,11 @@ app.on('before-quit', (event) => {
     reviewSaved = true;
     event.preventDefault();
     // A stalled disk must not hold a logout or SIGTERM hostage: give up after 1.5 s.
-    const saves = Promise.allSettled([...reviewStores.values()].map((entry) => Promise.resolve().then(() => entry.flush())))
+    // Running automações are cancelled here too, so their history says "cancelled".
+    const saves = Promise.allSettled([
+      ...[...reviewStores.values()].map((entry) => Promise.resolve().then(() => entry.flush())),
+      Promise.resolve().then(() => automations.shutdown()),
+    ])
       .then((results) => {
         for (const result of results) if (result.status === 'rejected') log(`review state flush on quit failed: ${result.reason}`);
       });
@@ -5193,6 +5435,9 @@ app.on('before-quit', (event) => {
   guardAsks.releaseAll('offline');
   tts.stopSpeaking();
   killPendingClaude();
+  // Whatever automação survived the cancel dies now; its inflight record
+  // becomes a "cancelled" entry on the next start.
+  automations.killAllNow();
   // verify.js runs detached process groups: they would outlive the app.
   for (const root of reviewRoots) reviewVerifier.cancelAll(root);
   stopSocketServer(socketServer, socketPath);

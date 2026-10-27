@@ -171,4 +171,14 @@ describe('createAutomationStore', () => {
     (await s.list())[0].name = 'mutated';
     expect((await s.get('id1')).name).toBe('Resumo do dia');
   });
+  it('an unreadable file (not ENOENT) is reported and never overwritten', async () => {
+    const fs = fakeFs('{"automations":[]}');
+    fs.readFile = async () => { const e = new Error('denied'); e.code = 'EACCES'; throw e; };
+    const s = mk(fs, { log: () => {} });
+    expect(await s.list()).toEqual([]);
+    expect((await s.readError())?.code).toBe('EACCES');
+    await expect(s.save(A())).rejects.toThrow(/refusing to overwrite/);
+    expect(fs.files.get('/cfg/automacoes.json')).toBe('{"automations":[]}');
+    expect(await mk(fakeFs()).readError()).toBeNull();
+  });
 });

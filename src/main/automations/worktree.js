@@ -7,10 +7,16 @@ const pad = (n) => String(n).padStart(2, '0');
 const branchStamp = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 const failed = (reason) => ({ status: 'failed', reason });
 
+// Where an automação's worktree lives: a sibling of the repo, `<repo>-auto-<slug>`.
+export const worktreePathOf = (a, repoRoot) => {
+  const root = resolve(repoRoot);
+  return join(dirname(root), `${basename(root)}-auto-${a.slug}`);
+};
+
 // git(args, { cwd }) → { code, stdout }; exists(path) → boolean.
 export async function prepareWorktree(a, { git, exists, repoRoot, base, home, now = () => new Date() }) {
   const root = resolve(repoRoot);
-  const path = join(dirname(root), `${basename(root)}-auto-${a.slug}`);
+  const path = worktreePathOf(a, root);
   // The guard refuses edits under .claude/, at / and in the home itself.
   if (!home) return failed('Não consegui descobrir a pasta pessoal para validar a worktree.');
   if (path === '/' || path === resolve(home) || path.split('/').includes('.claude')) {
