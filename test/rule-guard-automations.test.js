@@ -56,6 +56,19 @@ const PUSH_PROBES = [
   'gh api -X PUT repos/o/r/pulls/1//merge', 'gh api repos/o/r/issues -f title=t', 'gh api repos/o/r/issues --input b.json',
   'gh api -Ftitle=t repos/o/r/issues', 'gh pr update-branch 1', 'gh repo sync', 'gh project item-add 1', 'gh pr revert 1',
   'gh repo deploy-key add k', 'gh ssh-key add k', 'gh alias set m "pr merge"', 'gh pr review 1 --approve', 'gh -R o/r pr view 1',
+  // re-review: pflag short clusters, any option but --paginate/--jq/-q/-H Accept, graphql in any form
+  'gh api -ifbody=x repos/o/r/issues/1/comments', 'gh api -iXPUT repos/o/r/pulls/1/merge', 'gh api -iX DELETE repos/o/r/git/refs/heads/main',
+  'gh api -XPOST repos/o/r', 'gh api -X=POST repos/o/r', 'gh api repos/o/r/pulls/1/merge -iX PUT', 'gh api --method get repos/o/r',
+  'gh api -X GET repos/o/r/pulls', 'gh api --method GET repos/o/r', 'gh api graphql?x=1', 'gh api /graphql', 'gh api https://api.github.com/graphql',
+  'gh api -F x=1 repos', 'gh api -iF x=1 repos', 'gh api -i repos/o/r', 'gh api --include repos/o/r', 'gh api -H X-Evil:1 repos/o/r',
+  'gh api repos/o/r repos/o/s', 'gh api', 'gh api --jq', 'gh api --cache 1h repos/o/r', 'gh api --hostname evil.example repos/o/r',
+  // re-review: git long options abbreviate
+  'git log --outp=/tmp/x', 'git log --out=/tmp/x', 'git diff --outpu /tmp/x HEAD', 'git diff --ext-dif', 'git diff --ext',
+  'git show --textconv HEAD', 'git log -p --textconv', 'git log -p --textc',
+  // re-review: the test and lint commands run exactly as configured
+  'npm test -- --outputFile=/tmp/x --reporter=json', 'npm test --', 'npm test -- a.test.js', 'npx eslint . --fix', 'npx eslint . -o /tmp/x',
+  // re-review: nothing may follow a /dev sink in the same word
+  "echo hi >/dev/null'x'", 'echo hi >/dev/null"x"', 'echo hi >/dev/nullx',
 ];
 const WRITE_PROBES = [
   `ln -s ${claude}/settings.json x && echo pwn > x`, `ln -sf ${claude} d; cp /etc/hostname d/settings.json`, `ln ${claude}/settings.json h2`,
@@ -80,9 +93,10 @@ describe('automação: an allowlist, deny what the guard cannot read', () => {
   const reads = [
     'git status', 'git log --oneline -5', 'git diff HEAD~1', 'git show HEAD', "git log --format='%H %s' -3", 'git status 2>/dev/null',
     'git diff >/dev/null 2>&1', 'git log 2>&1 | head -5', 'git status && git diff', 'ls -la', 'ls ~', 'cat ~/notes.txt', 'cat a.txt',
-    'grep -rn "git push" .', 'rg x src', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'npm test', 'npm test -- a.test.js',
-    'npx eslint .', 'npx eslint . --fix', 'gh pr view 3', 'gh issue list', 'gh pr checks 3', 'gh repo view', 'gh api repos/o/r',
-    'gh api -X GET repos/o/r/pulls', 'gh api --method GET repos/o/r --jq .name',
+    'grep -rn "git push" .', 'rg x src', 'head -5 a.txt', 'tail a.txt', 'wc -l a.txt', 'pwd', 'npm test',
+    'npx eslint .', 'gh pr view 3', 'gh issue list', 'gh pr checks 3', 'gh repo view', 'gh api repos/o/r',
+    'gh api repos/o/r/pulls --paginate', 'gh api repos/o/r --jq .name', 'gh api repos/o/r -q .name', "gh api -H 'Accept: application/vnd.github.raw' repos/o/r/readme",
+    'git log --output-indicator-new=x -p', 'git diff --no-ext-diff', 'git diff --text',
     'echo hi', 'echo "feito: tudo certo"', 'echo ok >/dev/null', 'git status && echo ok', 'pwd',
   ];
   for (const command of reads) {
@@ -153,12 +167,23 @@ describe('automação: edit tools', () => {
     ['Write', path.join(root, '.git', 'hooks', 'pre-commit')],
     ['Write', path.join(root, '.claude', 'settings.json')],
     ['Edit', ''],
+    ['Write', path.join(root, '.husky', 'pre-commit')], // git hooks run on the allowed commit
+    ['Write', path.join(root, '.githooks', 'pre-commit')],
+    ['Write', path.join(root, 'sub', '.husky', '_', 'h')],
   ];
   for (const [tool, file] of escapes) {
     it(`denies at every level: ${tool} ${file}`, () => {
       expect(deniedEverywhere(edit(file, tool))).toBe(true);
     });
   }
+
+  it('a notebook edit names one path: notebook_path first, two different paths are denied', () => {
+    const inside = path.join(root, 'n.ipynb');
+    expect(verdict({ tool: 'NotebookEdit', input: { notebook_path: inside } })).toBeNull();
+    expect(verdict({ tool: 'NotebookEdit', input: { notebook_path: inside, file_path: inside } })).toBeNull();
+    expect(verdict({ tool: 'NotebookEdit', input: { notebook_path: path.join(outside, 'n.ipynb'), file_path: inside } })).not.toBeNull();
+    expect(verdict({ tool: 'Edit', input: { file_path: path.join(root, 'a.txt'), notebook_path: '/etc/x' } })).not.toBeNull();
+  });
 
   it('protected paths hold even when they are inside the root', () => {
     const rules = { ...rulesFor('worktree'), allowEditsUnder: home };
@@ -199,6 +224,12 @@ describe('loadAutomationRules', () => {
     expect(loadAutomationRules(read('null'), file, 'auto-1')).toBeNull();
     expect(loadAutomationRules(read(good), file, 'other')).toBeNull();
     expect(loadAutomationRules(read(good), file, '__proto__')).toBeNull();
+  });
+  it('the filesystem root or the home itself is never a worktree', () => {
+    for (const under of ['/', os.homedir()]) {
+      const raw = JSON.stringify({ version: 1, automations: { a: { level: 'worktree', denyEdits: false, allowEditsUnder: under, allowBash: [] } } });
+      expect(loadAutomationRules(read(raw), file, 'a'), under).toMatchObject({ denyEdits: true, allowEditsUnder: null });
+    }
   });
   it('a damaged entry fails closed: bad allowBash items dropped, a relative root means no edits', () => {
     const damaged = JSON.stringify({

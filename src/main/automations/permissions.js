@@ -65,15 +65,14 @@ export function cliArgs(a, { testCmd, lintCmd, prompt } = {}) {
   ];
 }
 
-// A test/lint command as the guard's allowlist entry: `npm test` → npm + test.
-// npm-like runners take their own options (--script-shell…) before `--`, so
-// extra words are only allowed after it.
-const OPTION_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+// A test/lint command as the guard's allowlist entry: `npm test` → npm +
+// test, run exactly as configured. Extra words could point a runner's output
+// anywhere (--outputFile), fix files (--fix) or run code (-exec), so none.
 function commandEntry(cmd) {
   const safe = safeCmd(cmd);
   if (!safe) return null;
   const [program, ...argsPrefix] = safe.split(/\s+/);
-  return { program, argsPrefix, extra: OPTION_RUNNERS.has(program) ? 'after-dashdash' : 'any' };
+  return { program, argsPrefix, extra: 'none' };
 }
 
 // Read-only helpers the guard lets through at every level.

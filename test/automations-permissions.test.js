@@ -141,10 +141,10 @@ describe('guardRules', () => {
     for (const c of ['gh issue create', 'gh issue comment', 'gh pr comment', 'gh pr create', 'gh pr review']) expect(programs(r)).toContain(c);
     expect(programs(r).some((p) => /merge|update-branch|sync/.test(p))).toBe(false);
   });
-  it('the test and lint commands become entries; unsafe ones are dropped', () => {
+  it('the test and lint commands become exact entries (no extra words); unsafe ones are dropped', () => {
     const r = guardRules({ ...base, level: 'read' }, { testCmd: 'npm test', lintCmd: 'npx eslint .' });
-    expect(r.allowBash).toContainEqual({ program: 'npm', argsPrefix: ['test'], extra: 'after-dashdash' });
-    expect(r.allowBash).toContainEqual({ program: 'npx', argsPrefix: ['eslint', '.'], extra: 'any' });
+    expect(r.allowBash).toContainEqual({ program: 'npm', argsPrefix: ['test'], extra: 'none' });
+    expect(r.allowBash).toContainEqual({ program: 'npx', argsPrefix: ['eslint', '.'], extra: 'none' });
     expect(guardRules({ ...base, level: 'read' }, { testCmd: 'npm test; git push' }).allowBash.some((e) => e.program === 'npm')).toBe(false);
   });
 });

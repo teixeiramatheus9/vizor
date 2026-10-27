@@ -502,6 +502,8 @@ function plainLine(command) {
       let end = at;
       while (end < command.length && WORD_CHAR.test(command[end])) end++;
       if (!DEVICE.test(command.slice(at, end))) return null;
+      // >/dev/null'x' writes to /dev/nullx: the sink must end the word.
+      if (end < command.length && !/[\s;|&]/.test(command[end])) return null;
       index = end - 1;
     } else if (WORD_CHAR.test(char)) {
       // A leading ~ only as ~ or ~/…; inside a word only where bash keeps it
@@ -519,27 +521,36 @@ function plainLine(command) {
 const isFlag = (arg, flag) =>
   arg === flag || arg.startsWith(`${flag}=`) || (/^-[A-Za-z]$/.test(flag) && /^-[A-Za-z]+$/.test(arg) && arg.includes(flag[1]));
 
-const GH_API_VALUES = new Set(['-H', '--header', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
-
-// gh api: a plain GET of a REST path, nothing sent.
+// gh api: only `gh api <endpoint>` plus --paginate, --jq/-q <expr> and
+// -H 'Accept: …', each as its own word. pflag reads short clusters
+// (-iXPUT, -ifbody=x), so any other option is denied, not parsed.
 function ghApiReads(args) {
   let endpoint = null;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (arg === '-X' || arg === '--method') {
-      if (String(args[++index]).toUpperCase() !== 'GET') return false;
-    } else if (/^(?:-X|--method=)/.test(arg)) {
-      if (arg.replace(/^(?:-X|--method=)/, '').toUpperCase() !== 'GET') return false;
-    } else if (/^(?:-[fF]|--field|--raw-field|--input)/.test(arg)) return false;
-    else if (GH_API_VALUES.has(arg)) index++;
-    else if (!arg.startsWith('-') && endpoint === null) endpoint = arg;
+    if (arg === '--paginate') continue;
+    if (arg === '--jq' || arg === '-q') {
+      if (args[++index] === undefined) return false;
+    } else if (arg === '-H') {
+      if (!/^accept:/i.test(args[++index] ?? '')) return false;
+    } else if (arg.startsWith('-') || endpoint !== null) return false;
+    else endpoint = arg;
   }
-  return endpoint !== null && !/(?:^|\/)graphql$/.test(endpoint);
+  return endpoint !== null && !/graphql/i.test(endpoint);
+}
+
+// git takes any unambiguous prefix of a long option (--outp = --output).
+const GIT_BANNED_OPTIONS = ['--output', '--ext-diff', '--textconv'];
+const GIT_KEPT_OPTIONS = new Set(['--text']); // an exact option of its own
+function gitOptionBanned(arg) {
+  const name = arg.split('=')[0];
+  if (!name.startsWith('--') || name.length < 3 || GIT_KEPT_OPTIONS.has(name)) return false;
+  return GIT_BANNED_OPTIONS.some((full) => full.startsWith(name));
 }
 
 // Options of an allowed program that would run or write something.
 function argsSafe(program, args) {
-  if (program === 'git') return !args.some((arg) => arg === '--output' || arg.startsWith('--output=') || arg === '--ext-diff');
+  if (program === 'git') return !args.some(gitOptionBanned);
   if (program === 'rg') return !args.some((arg) => arg.startsWith('--pre') || arg.startsWith('--hostname-bin'));
   if (program === 'gh' && args[0] === 'api') return ghApiReads(args.slice(1));
   return true;
@@ -603,7 +614,8 @@ function within(root, file) {
 // Where a hook, a permission, a git hook or an alias could be rewritten.
 function isProtected(file, home) {
   const parts = file.split(path.sep);
-  if (parts.includes('.claude') || parts.includes('.git')) return true;
+  // Git hooks (.git/hooks, husky, .githooks) run on the allowed commit.
+  if (['.claude', '.git', '.husky', '.githooks'].some((name) => parts.includes(name))) return true;
   const roots = [
     path.join(home, '.config', 'vizor'),
     path.join(home, '.gitconfig'),
@@ -616,7 +628,11 @@ function isProtected(file, home) {
 
 function editReason(rules, call, home) {
   if (rules.denyEdits || !rules.allowEditsUnder) return 'editar arquivos não é permitido neste nível';
-  const file = editPath(call.input);
+  // One path per edit: a notebook's notebook_path, else file_path; two
+  // different ones are refused rather than guessed.
+  const named = [call.input?.notebook_path, call.input?.file_path].filter((value) => value !== undefined);
+  if (named.length === 2 && named[0] !== named[1]) return 'edição com dois caminhos diferentes';
+  const file = call.tool === 'NotebookEdit' ? (named[0] ?? '') : (call.input?.file_path ?? named[0] ?? '');
   // A path ending in / names a directory, never a file to write.
   const real = typeof file === 'string' && path.isAbsolute(file) && !/[\\/]$/.test(file) ? realTarget(path.resolve(file)) : null;
   if (real === null) return `edição fora do permitido para esta automação (${file})`;
@@ -691,7 +707,9 @@ export function loadAutomationRules(readFile, file, id) {
     if (!all || typeof all !== 'object' || Array.isArray(all) || !Object.hasOwn(all, id)) return null;
     const entry = all[id];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const under = typeof entry.allowEditsUnder === 'string' && path.isAbsolute(entry.allowEditsUnder) ? path.resolve(entry.allowEditsUnder) : null;
+    let under = typeof entry.allowEditsUnder === 'string' && path.isAbsolute(entry.allowEditsUnder) ? path.resolve(entry.allowEditsUnder) : null;
+    // The filesystem root or the home itself is never a worktree.
+    if (under !== null && (path.parse(under).root === under || under === path.resolve(os.homedir()))) under = null;
     return {
       id,
       level: typeof entry.level === 'string' ? entry.level : '?',
