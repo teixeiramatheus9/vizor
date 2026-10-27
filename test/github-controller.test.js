@@ -178,4 +178,32 @@ describe('github controller', () => {
     expect(t.el.innerHTML).toContain('Hello');
     expect(t.el.innerHTML).toContain('sem rede');
   });
+
+  it('reads the project list again on each show, so a project added meanwhile appears', async () => {
+    const t = setup();
+    t.controller.setVisible(true);
+    await t.flush();
+    expect(t.el.innerHTML).not.toContain('o/c');
+    t.controller.setVisible(false);
+    t.api.githubRepos.mockResolvedValue({ '/p/a': 'o/a', '/p/b': 'o/b', '/p/c': 'o/c' });
+    t.controller.setVisible(true);
+    await t.flush();
+    expect(t.api.githubRepos).toHaveBeenCalledTimes(2);
+    expect(t.el.innerHTML).toContain('data-gh-project="/p/c"');
+  });
+
+  it('a whole failed call keeps the "mine" list too', async () => {
+    const t = setup();
+    t.api.githubList.mockResolvedValueOnce({ data: { ...t.data, mine: [{ number: 7, title: 'Hello', labels: [], assignees: [] }] }, chats: {} });
+    t.controller.setVisible(true);
+    await t.flush();
+    t.api.githubList.mockResolvedValue({ error: 'sem rede' });
+    t.clock.now += REFRESH_MS;
+    const fired = t.live()[0];
+    fired.cleared = true;
+    fired.fn();
+    await t.flush();
+    t.listeners.click({ target: t.target({ 'button[data-gh-filter]': { dataset: { ghFilter: 'mine' } } }) });
+    expect(t.el.innerHTML).toContain('Hello');
+  });
 });

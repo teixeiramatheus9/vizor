@@ -84,7 +84,8 @@ export function createGithubController({
   // (with when that list was read); only a key that never loaded shows the error alone.
   function merge(previous, data, message) {
     const old = previous?.data;
-    const next = data ?? { at: now(), issues: { error: message }, mine: [], prs: { error: message } };
+    // A whole failed call says nothing about "mine": keep what was read.
+    const next = data ?? { at: now(), issues: { error: message }, mine: Array.isArray(old?.mine) ? old.mine : [], prs: { error: message } };
     const stale = {};
     const out = { ...next };
     for (const key of ['issues', 'prs', 'mine']) {
@@ -112,12 +113,26 @@ export function createGithubController({
     schedule();
   }
 
+  // Asked on every show: a project added to the workspace meanwhile appears.
+  // The first show waits for it; later ones draw from the known list at once.
   async function start() {
     render();
+    const reading = Promise.resolve(api.githubRepos()).catch(() => null);
     if (!repos) {
-      const found = await Promise.resolve(api.githubRepos()).catch(() => ({}));
+      const found = await reading;
       if (!visible) return;
       repos = found ?? {};
+    } else {
+      reading.then((found) => {
+        if (!visible || !found || JSON.stringify(found) === JSON.stringify(repos)) return;
+        repos = found;
+        if (project in repos) return render();
+        project = Object.keys(repos)[0] ?? null;
+        selected = null;
+        body = null;
+        render();
+        read({ force: !loaded.has(project) || now() - loaded.get(project).data.at >= REFRESH_MS });
+      });
     }
     if (!project || !(project in repos)) project = Object.keys(repos)[0] ?? null;
     if (!project) return render();
