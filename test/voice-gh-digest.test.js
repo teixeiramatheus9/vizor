@@ -125,3 +125,27 @@ describe('managerContext: what the gerente reads (it reads, the músicos act)', 
     expect(managerContext(many).match(/^issue #/gm)).toHaveLength(40);
   });
 });
+
+describe('a digest with one key in error', () => {
+  const partial = { prs: { error: 'boom' }, issues: [{ number: 5, title: 'x' }], openIssues: [{ number: 5, title: 'x', labels: [], assignees: [] }], reviewRequested: [], runs: [] };
+
+  it('buildDigest skips the key and says it could not read the PRs', () => {
+    const digest = buildDigest(partial);
+    expect(digest.speech).toContain('Não consegui ler as PRs');
+    expect(digest.speech).toContain('1 issue');
+    expect(digest.lines).toContain('issue #5 x');
+    expect(digest.lines).toContain('não consegui ler as PRs');
+    expect(buildDigest(partial, 'en').speech).toContain("I couldn't read the PRs");
+  });
+
+  it('is never "all clear" when something could not be read', () => {
+    const digest = buildDigest({ prs: { error: 'x' }, issues: [], reviewRequested: [], runs: [] });
+    expect(digest.speech).toBe('Não consegui ler as PRs.');
+  });
+
+  it('managerContext keeps the rest and flags the gap', () => {
+    const text = managerContext(partial);
+    expect(text).toContain('issue #5 x');
+    expect(text).toContain('não consegui ler as PRs');
+  });
+});

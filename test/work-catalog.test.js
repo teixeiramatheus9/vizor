@@ -23,3 +23,18 @@ describe('the Ctrl+K catalog', () => {
     expect(catalogStale({ resultsRoot: '/a', root: '/b', at: 1000, now: 2000, maxAge: 5000 })).toBe(true);
   });
 });
+
+describe('the Ctrl+K catalog with a failed query', () => {
+  it('still lists the issues when the PRs errored', () => {
+    const partial = { openIssues: results.openIssues, prs: { error: 'boom' } };
+    expect(catalogFrom({ results: partial, resultsRoot: '/a', root: '/a' })).toEqual({
+      issues: [{ number: 12, title: 'do A' }],
+      prs: [],
+      error: false,
+    });
+  });
+  it('is an error only when both lists were lost', () => {
+    const lost = { openIssues: { error: 'x' }, prs: { error: 'y' } };
+    expect(catalogFrom({ results: lost, resultsRoot: '/a', root: '/a' }).error).toBe(true);
+  });
+});

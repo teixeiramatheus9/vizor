@@ -2856,7 +2856,7 @@ function reviewRequestOf(worktree) {
   const project = [...worktreeCache].find(([, trees]) => (trees ?? []).some((tree) => tree.path === worktree))?.[0] ?? worktree;
   for (const session of sessions) {
     const number = taskLinks.numberOf(project, session.id);
-    const issue = number && lastGhResultsRoot === project ? lastGhResults?.openIssues?.find((item) => item.number === number) : null;
+    const issue = number && lastGhResultsRoot === project && Array.isArray(lastGhResults?.openIssues) ? lastGhResults.openIssues.find((item) => item.number === number) : null;
     if (issue) return { kind: 'issue', number, title: issue.title ?? '', body: issueBodyFor(project, number, worktree) };
   }
   const session = sessions.find((item) => item.id === workspaceSelectedSession && item.transcriptPath) ?? sessions.find((item) => item.transcriptPath);
@@ -4273,12 +4273,14 @@ async function voiceGhDigest() {
     } catch {
       // no origin/HEAD: main
     }
+    // allSettled: one failing query becomes `{ error }` for its key, the rest still arrive.
     const results = {};
-    await Promise.all(
-      Object.entries(ghQueries(repo, defaultBranch)).map(async ([key, args]) => {
-        results[key] = JSON.parse(await runText('gh', args, { cwd: root }));
-      }),
-    );
+    const entries = Object.entries(ghQueries(repo, defaultBranch));
+    const settled = await Promise.allSettled(entries.map(async ([, args]) => JSON.parse(await runText('gh', args, { cwd: root }))));
+    settled.forEach((outcome, index) => {
+      results[entries[index][0]] = outcome.status === 'fulfilled' ? outcome.value : { error: String(outcome.reason) };
+    });
+    if (settled.every((outcome) => outcome.status === 'rejected')) throw settled[0].reason;
     lastGhDigest = buildDigest(results, spokenLang());
     lastGhContext = managerContext(results);
     lastGhResults = results;
