@@ -149,4 +149,33 @@ describe('github controller', () => {
     await t.flush();
     expect(t.el.innerHTML).toContain('sem rede');
   });
+
+  it('a failed refresh keeps the last good list and says so', async () => {
+    const t = setup();
+    t.controller.setVisible(true);
+    await t.flush();
+    t.api.githubList.mockResolvedValue({ data: { at: NOW + 1, issues: t.data.issues, mine: [], prs: { error: 'rate limit' } }, chats: {} });
+    t.clock.now += REFRESH_MS;
+    const fired = t.live()[0];
+    fired.cleared = true;
+    fired.fn();
+    await t.flush();
+    expect(t.el.innerHTML).toContain('Pr'); // the old PR is still listed
+    expect(t.el.innerHTML).toContain('não deu pra atualizar as PRs: rate limit');
+    expect(t.el.innerHTML).toContain('há 5 min');
+  });
+
+  it('a whole failed call keeps what was loaded', async () => {
+    const t = setup();
+    t.controller.setVisible(true);
+    await t.flush();
+    t.api.githubList.mockResolvedValue({ error: 'sem rede' });
+    t.clock.now += REFRESH_MS;
+    const fired = t.live()[0];
+    fired.cleared = true;
+    fired.fn();
+    await t.flush();
+    expect(t.el.innerHTML).toContain('Hello');
+    expect(t.el.innerHTML).toContain('sem rede');
+  });
 });

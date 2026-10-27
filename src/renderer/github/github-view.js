@@ -91,12 +91,16 @@ function listError(what, result) {
   return `<div class="gh-error">não deu pra ler ${what}: ${escapeHtml(result.error)}</div>`;
 }
 
-function section(title, result, render, emptyText) {
+function section(title, result, render, emptyText, stale = null, now = Date.now()) {
   let inner;
   if (result && !Array.isArray(result) && result.error != null) inner = listError(title === 'Issues' ? 'as issues' : 'as PRs', result);
   else {
     const items = Array.isArray(result) ? result : [];
     inner = items.length ? `<ul class="gh-list">${items.map(render).join('')}</ul>` : `<div class="empty-state">${emptyText}</div>`;
+  }
+  if (stale) {
+    const minutes = Math.max(1, Math.round((now - stale.at) / 60000));
+    inner = `<div class="gh-error">não deu pra atualizar ${title === 'Issues' ? 'as issues' : 'as PRs'}: ${escapeHtml(stale.error)}, mostrando a última leitura de há ${minutes} min</div>${inner}`;
   }
   const count = Array.isArray(result) ? `<span class="gh-count">${result.length}</span>` : '';
   return `<section class="gh-section" data-gh-section="${title === 'Issues' ? 'issues' : 'prs'}"><header class="gh-section-head"><span>${title}</span>${count}</header>${inner}</section>`;
@@ -154,8 +158,8 @@ export function renderGithub({ project, projects = [], data, filter = {}, select
     `<div class="gh-top">${head}${updated}</div>`,
     filters(filter, Array.isArray(data.issues) ? data.issues : []),
     '<div class="gh-columns">',
-    section('Issues', issues, (issue) => renderIssue(issue, chats, selected), 'nenhuma issue aberta por aqui'),
-    section('PRs', prs, (pr) => renderPr(pr, selected), 'nenhuma PR aberta por aqui'),
+    section('Issues', issues, (issue) => renderIssue(issue, chats, selected), 'nenhuma issue aberta por aqui', data.stale?.issues, now),
+    section('PRs', prs, (pr) => renderPr(pr, selected), 'nenhuma PR aberta por aqui', data.stale?.prs, now),
     bodyPanel(selected, body),
     '</div></div>',
   ].join('');

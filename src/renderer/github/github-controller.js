@@ -80,14 +80,34 @@ export function createGithubController({
     }, REFRESH_MS);
   }
 
+  // A failed key keeps the last good list and carries its error as `stale`
+  // (with when that list was read); only a key that never loaded shows the error alone.
+  function merge(previous, data, message) {
+    const old = previous?.data;
+    const next = data ?? { at: now(), issues: { error: message }, mine: [], prs: { error: message } };
+    const stale = {};
+    const out = { ...next };
+    for (const key of ['issues', 'prs', 'mine']) {
+      const failed = next[key] && !Array.isArray(next[key]) && next[key].error != null;
+      if (!failed || !Array.isArray(old?.[key])) continue;
+      stale[key] = { error: next[key].error, at: old.stale?.[key]?.at ?? old.at };
+      out[key] = old[key];
+    }
+    if (Object.keys(stale).length) {
+      out.stale = stale;
+      out.at = Math.min(...Object.values(stale).map((item) => item.at)); // not fresh: the next open reads again
+    }
+    return out;
+  }
+
   async function read({ force = false } = {}) {
     if (!visible || !project) return;
     const mine = ++seq;
     const root = project;
     const result = await Promise.resolve(api.githubList(root, force)).catch((error) => ({ error: String(error?.message ?? error) }));
     if (mine !== seq || !visible) return;
-    if (result?.data) loaded.set(root, { data: result.data, chats: result.chats ?? {} });
-    else loaded.set(root, { data: { at: now(), issues: { error: result?.error ?? 'sem resposta' }, mine: [], prs: { error: result?.error ?? 'sem resposta' } }, chats: {} });
+    const message = result?.data ? null : result?.error ?? 'sem resposta';
+    loaded.set(root, { data: merge(loaded.get(root), result?.data ?? null, message), chats: result?.chats ?? loaded.get(root)?.chats ?? {} });
     render();
     schedule();
   }

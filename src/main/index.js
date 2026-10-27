@@ -3701,7 +3701,9 @@ async function githubRepoFor(root) {
   if (typeof root !== 'string' || !workspaceProjects().includes(root)) return null;
   if (githubRepos.has(root)) return githubRepos.get(root);
   const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
-  const repo = avatarOwnerOf(remote) ? githubRepoOf(remote) : null;
+  const found = avatarOwnerOf(remote) ? githubRepoOf(remote) : null;
+  // The repo name reaches gh -R too: same alphabet as the owner.
+  const repo = found && /^[A-Za-z0-9._-]+$/.test(found.split('/')[1]) ? found : null;
   if (repo) githubRepos.set(root, repo);
   return repo;
 }
@@ -3756,9 +3758,7 @@ ipcMain.handle('github:body', async (event, root, kind, number) => {
 // A chat for the issue in the tab's own project (not the voice's).
 ipcMain.handle('github:pull', async (event, root, number) => {
   if (!fromWorkspace(event) || !Number.isInteger(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
-  const cached = await githubFetcher.list(await githubRepoFor(root)).catch(() => null);
-  const title = Array.isArray(cached?.issues) ? cached.issues.find((item) => item.number === number)?.title : null;
-  return startIssue(number, { root, title }).catch((error) => ({ error: String(error?.message ?? error) }));
+  return startIssue(number, { root }).catch((error) => ({ error: String(error?.message ?? error) }));
 });
 
 ipcMain.handle('github:review', async (event, root, number) => {
