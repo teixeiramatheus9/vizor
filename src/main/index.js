@@ -4928,7 +4928,7 @@ app.on('before-quit', (event) => {
     reviewSaved = true;
     event.preventDefault();
     // A stalled disk must not hold a logout or SIGTERM hostage: give up after 1.5 s.
-    const saves = Promise.allSettled([...reviewStores.values()].map((entry) => entry.flush()))
+    const saves = Promise.allSettled([...reviewStores.values()].map((entry) => Promise.resolve().then(() => entry.flush())))
       .then((results) => {
         for (const result of results) if (result.status === 'rejected') log(`review state flush on quit failed: ${result.reason}`);
       });
