@@ -312,4 +312,40 @@ describe('one step at a time', () => {
     await flush();
     expect(asked).toEqual([]);
   });
+
+  it('a file load finishing late never paints over the step view', async () => {
+    globalThis.CSS ??= { escape: (value) => value };
+    const doc = fakeDoc();
+    let html = '';
+    Object.defineProperty(doc.getElementById('changes-diff'), 'innerHTML', { get: () => html, set: (v) => { html = v; } });
+    let release;
+    const late = new Promise((resolve) => { release = resolve; });
+    const whole = { path: 'a.js', status: 'modified', tscErrors: [], hunks: [{ id: 'w1', header: '@@ -1 +1 @@', newStart: 1, newLines: 1, lines: [{ kind: '+', text: 'x', oldNo: null, newNo: 1 }] }] };
+    const api = {
+      reviewPrefs: async (worktree, set) => (set ? {} : { tab: 'changes', openFiles: ['a.js'] }),
+      reviewSummary: async () => ({ files: [{ path: 'a.js', status: 'modified' }], order: ['a.js'], verdict: [], contract: [] }),
+      reviewSlice: async () => ({ status: 'building', done: 0, total: 0 }),
+      reviewFile: () => late,
+      reviewStepDiff: async () => ({ n: 1, files: [added], together: false }),
+      onReviewChanged() {},
+    };
+    const review = createReviewController({ api, doc });
+    review.setContext({ worktree: '/a', sessions: [] });
+    await flush();
+    review.openStep(1, { issue: 7, worktree: '/a', total: 2 });
+    await flush();
+    release(whole);
+    await flush();
+    expect(html).toContain('data-hunk-id="h1"');
+    expect(html).not.toContain('w1');
+    expect(html).not.toContain('data-hunk-action');
+  });
+
+  it('disables the next step past the last one the task has', async () => {
+    const { review, out } = stepSetup({ n: 2, files: [added], together: false });
+    await flush();
+    review.openStep(2, { issue: 7, worktree: '/a', total: 2 });
+    await flush();
+    expect(out.files).toMatch(/step-next"[^>]*disabled/);
+  });
 });

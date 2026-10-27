@@ -329,7 +329,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
   function drawStep() {
     const { n, data, path } = stepView;
     nodeFilterEl.innerHTML = '';
-    const bar = renderStepBar(n);
+    const bar = renderStepBar(n, stepView.total);
     if (!data) {
       filesEl.innerHTML = `${bar}<div class="review-empty">carregando…</div>`;
       diffEl.innerHTML = '';
@@ -361,10 +361,13 @@ export function createReviewController({ api, doc = document, notify = () => {},
     drawStep();
   }
 
-  function openStep(n, { issue, worktree: wt } = {}) {
+  function openStep(n, { issue, worktree: wt, total = null } = {}) {
     const root = wt ?? worktree;
     if (!root || !Number.isInteger(issue) || !Number.isInteger(n) || n < 1) return;
-    stepView = { n, issue, wt: root, data: null, path: null };
+    serial.file++; // a file load still in flight must not paint over the step
+    pendingReject = null;
+    selectedHunk = null;
+    stepView = { n, issue, wt: root, total, data: null, path: null };
     setTab('changes');
     drawStep();
     loadStep();
@@ -383,7 +386,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     const wt = worktree;
     const path = selectedPath;
     const result = await api.reviewFile(wt, path, forceOpen.has(path));
-    if (mine !== serial.file || wt !== worktree || path !== selectedPath) return;
+    if (mine !== serial.file || wt !== worktree || path !== selectedPath || stepView) return;
     fileView = result;
     if (result?.hunks?.length) progress[path] = { approved: result.hunks.filter((h) => h.approved).length, total: result.hunks.length };
     // Coming back to the tab asks again; rebuilding a long diff for the same
@@ -395,6 +398,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
   }
 
   function drawFile({ keepScroll = true } = {}) {
+    if (stepView) return;
     const top = keepScroll ? diffEl.scrollTop : 0;
     if (!fileView) {
       diffEl.innerHTML = '<div class="review-empty">não deu pra ler este arquivo</div>';
@@ -648,7 +652,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
       if (stepAction === 'whole-diff') return void leaveStep();
       if (stepAction === 'step-prev' || stepAction === 'step-next') {
         const next = stepView.n + (stepAction === 'step-next' ? 1 : -1);
-        return void (next >= 1 && openStep(next, { issue: stepView.issue, worktree: stepView.wt }));
+        return void (next >= 1 && openStep(next, { issue: stepView.issue, worktree: stepView.wt, total: stepView.total }));
       }
       const stepRow = target.closest('.review-file[data-path]');
       if (stepRow) {

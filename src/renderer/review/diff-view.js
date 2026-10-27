@@ -78,12 +78,12 @@ export function renderFileDiff(file, { highlight, selectedHunk, forceOpen, readO
 }
 
 // The bar on top of a step's file list: which step, and the way back to the whole diff.
-export function renderStepBar(n) {
+export function renderStepBar(n, total = null) {
   const step = escapeHtml(n);
   return '<div class="step-bar">'
     + `<button class="hunk-btn" data-review-action="step-prev" title="Passo anterior"${n <= 1 ? ' disabled' : ''}>‹</button>`
     + `<span class="step-label">passo ${step}</span>`
-    + '<button class="hunk-btn" data-review-action="step-next" title="Próximo passo">›</button>'
+    + `<button class="hunk-btn" data-review-action="step-next" title="Próximo passo"${total != null && n >= total ? ' disabled' : ''}>›</button>`
     + '<button class="hunk-btn" data-review-action="whole-diff">ver o diff inteiro</button></div>';
 }
 

@@ -94,7 +94,7 @@ export function createPlanController({ el, api, sessionId, getSession = () => nu
     if (name === 'confirm') ui = { ...ui, confirming: { kind: node.dataset.kind, n: Number.isFinite(n) ? n : null } };
     else if (name === 'cancel') ui = { ...ui, confirming: null };
     else if (name === 'comment') ui = { ...ui, commenting: ui.commenting === n ? null : n };
-    else if (name === 'step-diff') return onStepDiff(n, { issue: tasks.get(id)?.issue ?? null, worktree: tasks.get(id)?.worktree ?? null });
+    else if (name === 'step-diff') return onStepDiff(n, { issue: tasks.get(id)?.issue ?? null, worktree: tasks.get(id)?.worktree ?? null, total: tasks.get(id)?.steps?.length ?? null });
     else if (name === 'open-file') return onOpenFile(node.dataset.file, Number(node.dataset.line));
     else if (name === 'answer') {
       // Asked again now: the question may have turned into a dialog since the card was drawn.
