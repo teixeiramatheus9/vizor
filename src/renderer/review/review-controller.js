@@ -5,7 +5,7 @@
 import { escapeHtml } from '../workspace-view.js';
 import { REVIEW_TABS, renderReviewTabs } from './tabs-view.js';
 import { renderSummary } from './summary-view.js';
-import { renderFileDiff, renderFileList } from './diff-view.js';
+import { STEP_TOGETHER_NOTE, renderFileDiff, renderFileList, renderStepBar } from './diff-view.js';
 import { layoutSlice, renderSlice, renderSliceStatus } from './slice-view.js';
 import { renderComposer } from './composer-view.js';
 
@@ -124,6 +124,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
   let showHidden = false;
   let composer = { context: null, draft: '', error: '', pickedId: null, sending: false };
   let composerSignature = null;
+  let stepView = null; // { n, issue, wt, data, path }: one task step's read-only diff instead of the whole one
 
   const persist = (set) => {
     if (worktree) api.reviewPrefs(worktree, set).catch(() => {});
@@ -153,7 +154,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
       return;
     }
     if (tab === 'summary' || tab === 'changes') loadSummary();
-    if (tab === 'changes' && selectedPath) loadFile();
+    if (tab === 'changes' && selectedPath && !stepView) loadFile();
     if (tab === 'impact') loadSlice();
   }
 
@@ -220,6 +221,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
     fileDrawn = null;
     selectedHunk = null;
     pendingReject = null;
+    stepView = null;
     forceOpen.clear();
     for (const key of Object.keys(progress)) delete progress[key];
     filter = '';
@@ -309,6 +311,7 @@ export function createReviewController({ api, doc = document, notify = () => {},
 
   function drawList() {
     if (tab !== 'changes') return;
+    if (stepView) return void drawStep();
     const files = nodeFilter ? (summary?.files ?? []).filter((f) => nodeFilter.files.includes(f.path)) : summary?.files ?? [];
     const top = filesEl.scrollTop;
     filesEl.innerHTML = summary?.baseError ? `<div class="review-empty">${escapeHtml(summary.baseError)}</div>` : renderFileList(files, summary?.order, { selectedPath, approvedByFile: progress, filter, loading: summaryLoading });
@@ -319,6 +322,59 @@ export function createReviewController({ api, doc = document, notify = () => {},
     // The node filter opens its file at once: that is where the reader wants to go.
     if (nodeFilter && !selectedPath && files.length) openFile(files[0].path, { context: false });
     if (!selectedPath) diffEl.innerHTML = '<div class="review-empty">escolha um arquivo</div>';
+  }
+
+  // --- one step's diff (read only) ----------------------------------------------
+  // Computed in main only when the step is picked, never with the summary.
+  function drawStep() {
+    const { n, data, path } = stepView;
+    nodeFilterEl.innerHTML = '';
+    const bar = renderStepBar(n);
+    if (!data) {
+      filesEl.innerHTML = `${bar}<div class="review-empty">carregando…</div>`;
+      diffEl.innerHTML = '';
+      return;
+    }
+    if (data.error) {
+      filesEl.innerHTML = bar;
+      diffEl.innerHTML = `<div class="review-empty">${escapeHtml(data.error)}</div>`;
+      return;
+    }
+    if (data.together) {
+      filesEl.innerHTML = bar;
+      diffEl.innerHTML = `<div class="review-empty">${escapeHtml(STEP_TOGETHER_NOTE)}</div>`;
+      return;
+    }
+    const files = data.files;
+    filesEl.innerHTML = bar + renderFileList(files, files.map((f) => f.path), { selectedPath: path });
+    const file = files.find((f) => f.path === path);
+    diffEl.innerHTML = file ? renderFileDiff(file, { readOnly: true, forceOpen: true }) : '<div class="review-empty">escolha um arquivo</div>';
+  }
+
+  async function loadStep() {
+    const view = stepView;
+    const data = await api.reviewStepDiff(view.wt, view.issue, view.n).catch(() => ({ error: 'não deu pra ler o diff deste passo' }));
+    if (stepView !== view) return;
+    view.data = data ?? { error: 'não deu pra ler o diff deste passo' };
+    view.path = view.data.files?.[0]?.path ?? null;
+    diffEl.scrollTop = 0;
+    drawStep();
+  }
+
+  function openStep(n, { issue, worktree: wt } = {}) {
+    const root = wt ?? worktree;
+    if (!root || !Number.isInteger(issue) || !Number.isInteger(n) || n < 1) return;
+    stepView = { n, issue, wt: root, data: null, path: null };
+    setTab('changes');
+    drawStep();
+    loadStep();
+  }
+
+  function leaveStep() {
+    stepView = null;
+    fileDrawn = null;
+    diffEl.innerHTML = '';
+    refreshVisible();
   }
 
   // --- one file's diff -------------------------------------------------------
@@ -390,6 +446,11 @@ export function createReviewController({ api, doc = document, notify = () => {},
   diffEl.addEventListener('scroll', rememberScroll);
 
   function openFile(path, { context = true } = {}) {
+    if (stepView) {
+      stepView = null;
+      fileDrawn = null;
+      fileView = null;
+    }
     const changed = path !== selectedPath;
     selectedPath = path;
     if (changed) {
@@ -582,6 +643,21 @@ export function createReviewController({ api, doc = document, notify = () => {},
 
   panels.changes.addEventListener('click', (event) => {
     const target = event.target;
+    if (stepView) {
+      const stepAction = target.closest('[data-review-action]')?.dataset.reviewAction;
+      if (stepAction === 'whole-diff') return void leaveStep();
+      if (stepAction === 'step-prev' || stepAction === 'step-next') {
+        const next = stepView.n + (stepAction === 'step-next' ? 1 : -1);
+        return void (next >= 1 && openStep(next, { issue: stepView.issue, worktree: stepView.wt }));
+      }
+      const stepRow = target.closest('.review-file[data-path]');
+      if (stepRow) {
+        stepView.path = stepRow.dataset.path;
+        diffEl.scrollTop = 0;
+        drawStep();
+      }
+      return;
+    }
     const hunkButton = target.closest('[data-hunk-action]');
     if (hunkButton) {
       if (!hunkButton.disabled) hunkAction(hunkButton.dataset.hunkAction, hunkButton.dataset.hunkId);
@@ -650,6 +726,13 @@ export function createReviewController({ api, doc = document, notify = () => {},
   return {
     setContext,
     setTab,
+    openStep,
+    // A file of the whole diff, from outside (the plan card's TODO).
+    showFile(path) {
+      if (!worktree || typeof path !== 'string' || !path) return;
+      setTab('changes');
+      openFile(path);
+    },
     tab: () => tab,
     setDrawer,
     toggleDrawer: () => setDrawer(!drawer.open),

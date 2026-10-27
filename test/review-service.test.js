@@ -635,3 +635,36 @@ describe('review service', () => {
     expect(started).toBe(1);
   });
 });
+
+describe('a task step\'s diff', () => {
+  const NEW_FILE = ['diff --git a/n.js b/n.js', 'new file mode 100644', '--- /dev/null', '+++ b/n.js', '@@ -0,0 +1,2 @@', '+a', '+b', ''].join('\n');
+  const withSteps = (diff, refs = { 0: 'r/0', 1: 'r/1' }) => {
+    const diffs = [];
+    const { service, calls } = setup({
+      extra: { checkpoints: { diff: async (...args) => { diffs.push(args); return diff; } }, stepRefsOf: () => refs },
+    });
+    return { service, calls, diffs };
+  };
+
+  it('reads checkpoint n-1 against n, parsed, with a new file', async () => {
+    const { service, diffs } = withSteps(NEW_FILE);
+    const out = await service.stepDiff(WT, 5, 1);
+    expect(diffs).toEqual([[WT, 'r/0', 'r/1']]);
+    expect(out.together).toBe(false);
+    expect(out.files[0]).toMatchObject({ path: 'n.js', status: 'added', added: 2, removed: 0 });
+  });
+
+  it('an empty step is flagged as ticked together', async () => {
+    const { service } = withSteps('');
+    expect(await service.stepDiff(WT, 5, 1)).toEqual({ n: 1, files: [], together: true });
+  });
+
+  it('says so when the step has no checkpoint, and never runs git on the summary path', async () => {
+    const { service, calls, diffs } = withSteps(NEW_FILE, { 0: 'r/0' });
+    expect(await service.stepDiff(WT, 5, 1)).toEqual({ error: 'esse passo ainda não tem ponto de controle' });
+    expect(await service.stepDiff(WT, 5, 0)).toEqual({ error: 'passo inválido' });
+    await service.summary(WT);
+    expect(diffs).toEqual([]);
+    expect(calls.length).toBeGreaterThan(0);
+  });
+});

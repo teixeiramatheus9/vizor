@@ -50,6 +50,7 @@ export function createReviewService({
   setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout,
   cacheDir = path.join(os.homedir(), '.cache', 'vizor', 'tsc'),
   startPaused = false, now = Date.now, log = () => {},
+  checkpoints = null, stepRefsOf = () => ({}),
 }) {
   const service = new EventEmitter();
   const states = new Map();
@@ -612,7 +613,28 @@ export function createReviewService({
     schedule(wt);
   }
 
+  // One task step's own diff: checkpoint n-1 against n, read only when the step
+  // is picked (never on the summary path). An empty diff means the agent ticked
+  // several steps at once: the earlier ones own nothing.
+  async function stepDiff(wt, issue, n) {
+    if (!Number.isInteger(issue) || issue < 1 || !Number.isInteger(n) || n < 1) return { error: 'passo inválido' };
+    const refs = stepRefsOf(wt, issue) ?? {};
+    if (!checkpoints || !refs[n]) return { error: 'esse passo ainda não tem ponto de controle' };
+    if (!refs[n - 1]) return { error: 'falta o ponto de partida deste passo' };
+    try {
+      const files = parseUnifiedDiff(await checkpoints.diff(wt, refs[n - 1], refs[n])).map((file) => {
+        const lines = file.hunks.flatMap((h) => h.lines);
+        return { ...file, added: lines.filter((l) => l.kind === '+').length, removed: lines.filter((l) => l.kind === '-').length };
+      });
+      return { n, files, together: files.length === 0 };
+    } catch (error) {
+      log(`review: step diff failed: ${error?.message ?? error}`);
+      return { error: 'não deu pra ler o diff deste passo' };
+    }
+  }
+
   Object.assign(service, {
+    stepDiff,
     setRequestSource(fn) { requestSource = typeof fn === 'function' ? fn : () => null; },
     summary, file, approve, reject, slice, verify, invalidate,
     // A notice from outside (a graph batch, an issue body) that joins the debounce.

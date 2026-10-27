@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('vizor', {
   reportSelection: (sessionId) => ipcRenderer.send('workspace:selected', sessionId ?? null),
   // The review screen: every call names the worktree it is about.
   reviewSummary: (worktree) => ipcRenderer.invoke('review:summary', { worktree }),
+  reviewStepDiff: (worktree, issue, n) => ipcRenderer.invoke('review:step-diff', { worktree, issue, n }),
   reviewFile: (worktree, path, force = false) => ipcRenderer.invoke('review:file', { worktree, path, force }),
   reviewApprove: (worktree, hunkId, on) => ipcRenderer.invoke('review:approve', { worktree, hunkId, on }),
   reviewReject: (worktree, path, hunkId, sessionId) => ipcRenderer.invoke('review:reject', { worktree, path, hunkId, sessionId }),

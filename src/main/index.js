@@ -3192,6 +3192,8 @@ function reviewStoreFor(worktree) {
 const reviewSessionsIn = (worktree) => registry.list().filter((session) => sessionWorktree(session.id) === worktree);
 
 const reviewService = createReviewService({
+  checkpoints: createCheckpoints({ git: execGit }),
+  stepRefsOf: (worktree, issue) => taskService.checkpointsOf(worktree, issue),
   git: reviewGit,
   readFile: (file, encoding) => fs.promises.readFile(file, encoding),
   stat: (file) => fs.promises.stat(file),
@@ -3310,6 +3312,8 @@ reviewHandle('review:summary', () => null, ({ worktree }) => (reviewWorktreeOk(w
 // force: the dev clicked "abrir mesmo assim" on a diff over 3,000 lines.
 reviewHandle('review:file', () => null, ({ worktree, path: rel, force }) =>
   reviewWorktreeOk(worktree) && safeRelPath(rel) ? reviewService.file(worktree, rel, { force: force === true }) : null);
+reviewHandle('review:step-diff', (reason) => ({ error: reason }), ({ worktree, issue, n }) =>
+  reviewWorktreeOk(worktree) ? reviewService.stepDiff(worktree, Number(issue), Number(n)) : { error: BAD_REVIEW_REQUEST });
 reviewHandle('review:approve', reviewFail, async ({ worktree, hunkId, on }) => {
   if (!reviewWorktreeOk(worktree) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
   await reviewService.approve(worktree, hunkId, Boolean(on));

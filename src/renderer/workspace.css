@@ -1634,6 +1634,19 @@ svg.graph line.call.picked {
   background: var(--ws-bg);
   overflow: auto;
 }
+.step-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--ws-line);
+}
+.step-bar .step-label {
+  color: var(--text-2);
+}
+.step-bar [data-review-action="whole-diff"] {
+  margin-left: auto;
+}
 .diff-file-head {
   position: sticky;
   top: 0;

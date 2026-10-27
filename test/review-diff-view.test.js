@@ -104,3 +104,14 @@ describe('the review file list', () => {
     expect(html).not.toContain('src/a.js');
   });
 });
+
+describe('read-only step view', () => {
+  const file = { path: 'a.js', hunks: [{ id: 'h1', header: '@@ -0,0 +1 @@', newStart: 1, newLines: 1, lines: [{ kind: '+', text: 'x', oldNo: null, newNo: 1 }] }] };
+  it('drops the hunk action buttons', async () => {
+    const { renderFileDiff } = await import('../src/renderer/review/diff-view.js');
+    expect(renderFileDiff(file)).toContain('data-hunk-action="approve"');
+    const html = renderFileDiff(file, { readOnly: true });
+    expect(html).not.toContain('data-hunk-action');
+    expect(html).toContain('data-hunk-id="h1"');
+  });
+});

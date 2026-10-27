@@ -212,7 +212,7 @@ describe('the plan controller', () => {
     await flush();
     click('ui=step-diff');
     click('ui=open-file');
-    expect(onStepDiff).toHaveBeenCalledWith(1);
+    expect(onStepDiff).toHaveBeenCalledWith(1, expect.objectContaining({ issue: expect.anything() }));
     expect(onOpenFile).toHaveBeenCalledWith('a.js', 3);
   });
 

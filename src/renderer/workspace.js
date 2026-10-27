@@ -732,8 +732,9 @@ const planCard = createPlanController({
   sessionId: planSessionId,
   getSession: (id) => agentSessionList.find((session) => session.id === id) ?? null,
   plans: () => plans,
-  onStepDiff: () => review.setTab('changes'),
-  onOpenFile: (file, line) => toast(`${file}:${line}`),
+  onStepDiff: (n, task) => review.openStep(n, task ?? {}),
+  // The review opens the file at its diff; the line is not scrolled to yet.
+  onOpenFile: (file) => review.showFile(file),
 });
 const renderPlanCard = () => planCard.render();
 window.vizor.onTaskChanged(() => planCard.refresh());

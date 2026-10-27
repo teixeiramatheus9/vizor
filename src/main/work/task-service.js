@@ -680,5 +680,7 @@ export function createTaskService({
     // The IPC's door: only the card's actions, by name.
     run: (sessionId, action, arg) => (Object.hasOwn(ACTIONS, action) ? ACTIONS[action](sessionId, arg) : Promise.resolve(failed('Ação desconhecida.'))),
     sessionsOf: () => [...bySession.keys()],
+    // The checkpoint refs of a task (step → ref), for the review's per-step diff.
+    checkpointsOf: (worktree, issue) => tasks.get(T.taskKey(worktree, issue))?.state.checkpoints ?? {},
   };
 }
