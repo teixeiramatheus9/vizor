@@ -26,7 +26,7 @@ function testsItem(tests) {
   return { key: 'tests', text: 'testes: não rodados', tone: 'muted' };
 }
 
-export function buildVerdict({ files = [], tsc, tests, untestedChanged = 0, contract = 0, contractPending = false, approved = 0, totalHunks = 0 }) {
+export function buildVerdict({ files = [], tsc, tests, untestedChanged = 0, contract = 0, contractPending = false, contractFailed = null, approved = 0, totalHunks = 0 }) {
   const added = files.reduce((sum, f) => sum + (f.added || 0), 0);
   const removed = files.reduce((sum, f) => sum + (f.removed || 0), 0);
   const items = [
@@ -42,6 +42,7 @@ export function buildVerdict({ files = [], tsc, tests, untestedChanged = 0, cont
   } else if (contract > 0) {
     items.push({ key: 'contract', text: plural(contract, 'mudança de contrato', 'mudanças de contrato'), tone: 'warn' });
   }
+  if (!contractPending && contractFailed) items.push({ key: 'contract-failed', text: `contrato: não verificado (${contractFailed})`, tone: 'muted' });
   items.push({ key: 'review', text: `revisado ${approved}/${totalHunks} hunks`, tone: totalHunks > 0 && approved >= totalHunks ? 'ok' : 'muted' });
   return items;
 }

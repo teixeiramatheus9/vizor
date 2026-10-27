@@ -61,7 +61,7 @@ export function createReviewService({
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, openRun: null, refreshing: null, order: null, analysing: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, openRun: null, refreshing: null, order: null, analysing: null, landedAt: null });
     }
     return states.get(wt);
   };
@@ -195,13 +195,23 @@ export function createReviewService({
       }
       s.files.set(`a\0${key}`, entry);
     }
-    // The diff of the two texts against the graph is the dear part and repeats
-    // on every summary and slice: keep it for as long as this graph object lives.
+    return { changes: entry.changes, functions: functionsOf(entry, file, graph) };
+  }
+
+  // The diff of the two texts against the graph is the dear part and repeats
+  // on every summary and slice: keep it for as long as this graph object lives.
+  // Only this part depends on the graph; the contract changes never do.
+  function functionsOf(entry, file, graph) {
     if (entry.graph !== graph) {
       entry.graph = graph;
-      entry.functions = graph && entry.after !== undefined && SOURCE.test(file.path) ? touchedFunctions(graph, file.path, entry.before ?? null, entry.after ?? '') : [];
+      try {
+        entry.functions = graph && entry.after !== undefined && SOURCE.test(file.path) ? touchedFunctions(graph, file.path, entry.before ?? null, entry.after ?? '') : [];
+      } catch (error) {
+        log(`review changed functions of ${file.path} failed: ${error?.message ?? error}`); // the contract part stays valid
+        entry.functions = [];
+      }
     }
-    return { changes: entry.changes, functions: entry.functions };
+    return entry.functions;
   }
 
   // graphFor starts the build when there is none; graphBuilt only looks.
@@ -301,11 +311,16 @@ export function createReviewService({
     return Boolean(patch?.hunks.some((h) => h.lines.some((l) => (l.kind === '+' || l.kind === '-') && EXPORT_LINE.test(l.text))));
   }
 
-  // The analysis of a file only when it is already worked out for this graph:
-  // the summary never waits for it.
+  // The analysis of a file only when it is already worked out: the summary never
+  // waits for it. A file whose analysis failed is answered as "failed" (once per
+  // file version) instead of pending, so the verdict never says "analisando…" forever.
   function cachedAnalysis(wt, sha, file, graph, stamp) {
-    const entry = stateOf(wt).files.get(`a\0${suffix(sha, file.path, stamp)}`);
-    return entry && entry.graph === graph ? { changes: entry.changes, functions: entry.functions } : null;
+    const s = stateOf(wt);
+    const key = suffix(sha, file.path, stamp);
+    const entry = s.files.get(`a\0${key}`);
+    if (entry) return { changes: entry.changes, functions: functionsOf(entry, file, graph) };
+    const failure = s.files.get(`f\0${key}`);
+    return failure ? { changes: [], functions: [], failed: failure.reason } : null;
   }
 
   // The contract analysis, started after the answer went out and announced when
@@ -314,11 +329,27 @@ export function createReviewService({
   function analyseLater(wt, sha, files, graph, stamps) {
     const s = stateOf(wt);
     if (paused || s.analysing) return;
-    s.analysing = prefetchBase(wt, sha, files)
-      .then(() => chunked(files, (f) => analyse(wt, sha, f, graph, stamps.get(f.path))))
-      .then(() => announce(wt))
-      .catch((error) => log(`review contract analysis of ${wt} failed: ${error?.stack ?? error}`))
-      .finally(() => { s.analysing = null; });
+    s.analysing = (async () => {
+      try {
+        await prefetchBase(wt, sha, files);
+        await chunked(files, async (f) => {
+          const stamp = stamps.get(f.path);
+          try {
+            await analyse(wt, sha, f, graph, stamp);
+          } catch (error) {
+            log(`review contract analysis of ${wt}/${f.path} failed: ${error?.stack ?? error}`);
+            s.files.set(`f\0${suffix(sha, f.path, stamp)}`, { reason: String(error?.message ?? error).split('\n')[0].slice(0, 80) });
+          }
+        });
+      } catch (error) {
+        log(`review contract analysis of ${wt} failed: ${error?.stack ?? error}`);
+        const reason = String(error?.message ?? error).split('\n')[0].slice(0, 80);
+        for (const f of files) if (!s.files.has(`a\0${suffix(sha, f.path, stamps.get(f.path))}`)) s.files.set(`f\0${suffix(sha, f.path, stamps.get(f.path))}`, { reason });
+      }
+      s.analysing = null; // before the announce: the summary it triggers may start the next run
+      s.landedAt = now();
+      if (states.get(wt) === s) announce(wt);
+    })();
   }
 
   async function summarise(wt) {
@@ -347,6 +378,7 @@ export function createReviewService({
     evict(wt, base.sha, files, stamps);
     const analysed = files.map((f) => cachedAnalysis(wt, base.sha, f, graph, stamps.get(f.path)));
     const pending = analysed.some((a) => !a);
+    const failures = analysed.filter((a) => a?.failed);
     if (pending) analyseLater(wt, base.sha, files, graph, stamps);
     const contract = [];
     analysed.forEach((a, i) => {
@@ -382,16 +414,19 @@ export function createReviewService({
     // Files not analysed yet count as contract when they look like it.
     const contractPaths = [...new Set([...contract.map((c) => c.path), ...files.filter((f, i) => !analysed[i] && likelyContract(wt, base.sha, f, stamps.get(f.path))).map((f) => f.path)])];
     const set = files.map((f) => f.path).sort().join('\0');
+    const order_ = () => readingOrder(files, { graph, contractPaths }).map((f) => f.path);
     if (s.order?.set !== set) {
-      s.order = { set, provisional: pending, at: now(), paths: readingOrder(files, { graph, contractPaths }).map((f) => f.path) };
-    } else if (s.order.provisional) {
-      if (now() - s.order.at <= SETTLE_MS) s.order = { set, provisional: pending, at: s.order.at, paths: readingOrder(files, { graph, contractPaths }).map((f) => f.path) };
+      s.landedAt = null;
+      s.order = { set, provisional: pending, at: now(), paths: order_() };
+    } else if (s.order.provisional && !pending) {
+      // Judged by when the analysis landed, not by when this summary was asked.
+      if ((s.landedAt ?? now()) - s.order.at <= SETTLE_MS) s.order = { ...s.order, provisional: false, paths: order_() };
       else s.order.provisional = false;
     }
     const order = s.order.paths;
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,
-      contract: contract.reduce((n, c) => n + c.changes.length, 0), contractPending: pending, approved: approvedCount, totalHunks,
+      contract: contract.reduce((n, c) => n + c.changes.length, 0), contractPending: pending, contractFailed: failures.length ? failures[0].failed : null, approved: approvedCount, totalHunks,
     });
     return { base: base.sha, baseError: null, files, order, verdict, contract, request: requestSource(wt) ?? null };
   }
