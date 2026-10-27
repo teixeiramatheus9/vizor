@@ -550,3 +550,11 @@ describe('renderSidebar project avatars', () => {
     expect(html).toMatch(/--project-accent:#[0-9a-f]{6}/);
   });
 });
+
+describe('a failed tombstone in the sidebar', () => {
+  it('is never drawn as running', async () => {
+    const { statusIcon, ICONS, STATUS_LABEL } = await import('../src/renderer/workspace-view.js');
+    expect(statusIcon({ status: 'failed' })).toBe(ICONS.failed);
+    expect(STATUS_LABEL.failed).toBe('falhou');
+  });
+});

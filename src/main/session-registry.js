@@ -1,12 +1,9 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 
-export const STATUS = {
-  WORKING: 'working',
-  DONE: 'done',
-  WAITING: 'waiting',
-  FAILED: 'failed',
-};
+import { STATUS } from './session-status.js';
+
+export { STATUS };
 
 const HANDLED_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification'];
 const DEFAULT_MAX_AGE_MS = 12 * 60 * 60 * 1000;

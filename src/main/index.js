@@ -58,6 +58,7 @@ import { otherRecorders, parsePwDump } from './voice/meeting.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, editProblem, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
+import { buildAgentSessions } from './agents/sessions-list.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
   readAiTitle,
@@ -2009,9 +2010,10 @@ function pushWorkspaceStateNow() {
     worktrees: worktreeCache.get(root) ?? [],
   }));
   for (const { root } of projects) resolveProjectAvatar(root);
+  const linked = linkedSessions(listWithDisplayNames());
   const tree = buildWorkspaceTree({
     projects,
-    sessions: linkedSessions(listWithDisplayNames()),
+    sessions: linked,
     taskOf: (sessionId) => editTracker.currentTask(sessionId),
   });
   maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
@@ -2040,6 +2042,8 @@ function pushWorkspaceStateNow() {
     terminals: (ptyHost?.list() ?? []).map((terminal) => ({ ...terminal, taskTitle: taskTitles.get(terminal.id) ?? null })),
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
+    // The Agentes tab's flat list: every chat the registry knows, tombstones included.
+    sessions: buildAgentSessions({ sessions: linked, tree, issueOf: (sessionId, root) => taskLinks.numberOf(root, sessionId) }),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
     maestro: {
       on: maestroOn(),
@@ -3634,7 +3638,8 @@ async function typeIntoTerminal(session, text) {
   });
 }
 
-ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
+// The quick reply of the bubble's panel and of the Agentes cards: one delivery.
+async function quickReply(sessionId, text) {
   const session = linkedSession(sessionId);
   const reply = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!reply) return 'failed';
@@ -3650,6 +3655,28 @@ ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
     return 'pasted';
   }
   return replyToSession(session, reply);
+}
+ipcMain.handle('warp:reply', (_event, { sessionId, text }) => quickReply(sessionId, text));
+
+// The Agentes tab's card actions. Approving a plan and answering the rule
+// guard reuse workspace:plan and guard:answer.
+ipcMain.on('agents:seen', (event, sessionId) => {
+  if (fromWorkspace(event) && typeof sessionId === 'string') registry.markSeen(sessionId);
+});
+ipcMain.on('agents:dismiss', (event, sessionId) => {
+  if (fromWorkspace(event) && typeof sessionId === 'string') registry.dismiss(sessionId);
+});
+// Esc into the chat's own pty; a chat outside the Vizor has none to write to.
+ipcMain.handle('agents:interrupt', (event, sessionId) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
+  const ptyId = linkedSession(sessionId)?.term?.VIZOR_PTY_ID;
+  return ptyId && maestroInterrupt(ptyId) ? 'interrupted' : 'failed';
+});
+ipcMain.handle('agents:answer', async (event, sessionId, text) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
+  const outcome = await quickReply(sessionId, text);
+  if (outcome === 'sent' || outcome === 'pasted') registry.markSeen(sessionId);
+  return outcome;
 });
 
 // Manual drag (managed/X11 mode only): the renderer reports press/release on

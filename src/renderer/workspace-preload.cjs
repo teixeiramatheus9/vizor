@@ -49,6 +49,11 @@ contextBridge.exposeInMainWorld('vizor', {
   focusMusician: (sessionId) => ipcRenderer.send('maestro:focus', sessionId),
   // The core flow: the músico's plan and the Ctrl+K bar.
   planAction: (sessionId, action) => ipcRenderer.invoke('workspace:plan', { sessionId, action }),
+  // The Agentes tab's cards.
+  agentsSeen: (sessionId) => ipcRenderer.send('agents:seen', sessionId),
+  agentsDismiss: (sessionId) => ipcRenderer.send('agents:dismiss', sessionId),
+  agentsInterrupt: (sessionId) => ipcRenderer.invoke('agents:interrupt', sessionId),
+  agentsAnswer: (sessionId, text) => ipcRenderer.invoke('agents:answer', sessionId, text),
   commandCatalog: () => ipcRenderer.invoke('workspace:catalog'),
   runCommand: (action) => ipcRenderer.invoke('workspace:command', action),
 });

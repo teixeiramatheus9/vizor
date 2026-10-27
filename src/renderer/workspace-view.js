@@ -22,6 +22,7 @@ export const ICONS = {
   waiting: svg('<circle cx="6" cy="6" r="4.5"/><path d="M5 4.2v3.6M7 4.2v3.6"/>'),
   permission: svg('<rect x="2.5" y="5.5" width="7" height="5" rx="1"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5"/>'),
   done: svg('<path d="M2.5 6.3l2.3 2.2 4.7-5"/>'),
+  failed: svg('<circle cx="6" cy="6" r="4.5"/><path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8"/>'),
   inside: svg('<rect x="1.5" y="2" width="9" height="8" rx="1"/><path d="M3.5 5l1.5 1.2L3.5 7.4M6 7.5h2.5"/>'),
   outside: svg('<path d="M5 2.5H2.5v7h7V7M7 2.5h2.5V5M9.5 2.5L5.5 6.5"/>'),
   branch: svg('<circle cx="3.5" cy="3" r="1.2"/><circle cx="3.5" cy="9" r="1.2"/><circle cx="8.5" cy="4.5" r="1.2"/><path d="M3.5 4.2v3.6M8.5 5.7c0 1.8-2.5 1.6-4.4 2.6"/>'),
@@ -45,12 +46,15 @@ export const STATUS_LABEL = {
   waiting: 'esperando você',
   done: 'pronto',
   working: 'rodando',
+  failed: 'falhou',
 };
 
 function statusKey(session) {
   if (session.needsPermission) return 'permission';
   if (session.status === 'waiting') return 'waiting';
   if (session.status === 'done') return 'done';
+  // A tombstone (the chat died mid-turn) is not running, whatever its last state said.
+  if (session.status === 'failed') return 'failed';
   return 'working';
 }
 

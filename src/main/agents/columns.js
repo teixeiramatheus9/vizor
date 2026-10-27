@@ -1,5 +1,5 @@
-import { STATUS } from '../session-registry.js';
-import { planProgress } from '../work/plan.js';
+// Loaded by the renderer too: no node: imports here, directly or through a dependency.
+import { STATUS } from '../session-status.js';
 
 // The kanban's columns, in display order. Pure: the clock and the guard's
 // pending asks come in as arguments.
@@ -54,7 +54,8 @@ export function sessionCard(session, { project = null, plan = null, guardAsk = n
     actions.push('focus');
     if (guardAsk) actions.push('guard');
     else if (session.needsPermission) actions.push('approve');
-    else if (session.question) actions.push('answer');
+    // A Notification with no question still waits on a reply, like the panel's quick reply.
+    else if (session.question || session.status === STATUS.WAITING) actions.push('answer');
     // Esc goes to the chat's own pty, which only Vizor's chats have.
     if (!outside && session.status === STATUS.WORKING) actions.push('interrupt');
   }
@@ -65,7 +66,7 @@ export function sessionCard(session, { project = null, plan = null, guardAsk = n
     title: session.alias ?? session.title ?? session.promptPreview ?? session.projectName,
     projectRoot: project?.root ?? null,
     avatarKey: project?.root ?? session.cwd ?? null,
-    planProgress: plan?.steps?.length ? planProgress(plan.steps) : null,
+    planProgress: plan?.steps?.length ? `${plan.steps.filter((step) => step.done).length}/${plan.steps.length}` : null,
     since: failed ? session.failedAt : session.updatedAt,
     question: session.question ?? null,
     branch: project?.branch ?? null,

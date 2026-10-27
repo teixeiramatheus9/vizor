@@ -33,6 +33,7 @@ import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from 
 import { createReviewController } from './review/review-controller.js';
 import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
 import { keyAction, renderShortcuts } from './shell/shortcuts.js';
+import { createAgentsController } from './agents/agents-controller.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -340,6 +341,7 @@ function accentOf(uri) {
       if (average) {
         accents.set(uri, nudgeColor(...average));
         renderSidebarOnly();
+        agents.refresh();
       }
     } catch {
       // no canvas readback: the monogram colour stays
@@ -347,6 +349,16 @@ function accentOf(uri) {
   };
   image.src = uri;
   return null;
+}
+
+// The Agentes tab: what each project looks like on its cards and filter chips.
+function agentProjects() {
+  return Object.fromEntries(
+    (lastTree?.projects ?? []).map((project) => {
+      const uri = avatarUris[project.root] ?? null;
+      return [project.root, { name: project.name, uri, accent: uri ? accentOf(uri) : null }];
+    }),
+  );
 }
 
 function avatarMarks() {
@@ -361,7 +373,7 @@ function renderSidebarOnly() {
 
 const topTabsEl = document.getElementById('top-tabs');
 function drawTopTabs() {
-  const html = renderTopTabs(topTab, { waiting: lastTree?.counts?.waiting ?? 0 });
+  const html = renderTopTabs(topTab, { waiting: agents.waitingCount() });
   if (topTabsEl.innerHTML !== html) topTabsEl.innerHTML = html;
 }
 
@@ -374,12 +386,28 @@ function setTopTab(next, { save = true } = {}) {
   topTab = next;
   for (const tab of TOP_TABS) document.getElementById(`view-${tab.id}`).hidden = tab.id !== next;
   drawTopTabs();
+  syncAgentsVisibility();
   if (save) window.vizor.setPrefs({ topTab: next }).catch(() => {});
   if (next === 'workspace') {
     fitActive();
+    markLooking();
     if (!commandBarOpen() && drawerShown() && !typingElsewhere()) views.get(activeTab)?.term.focus();
   }
 }
+// The kanban draws and schedules its 30-min cut only while it is on screen.
+const agents = createAgentsController({
+  el: document.getElementById('view-agents'),
+  api: window.vizor,
+  projects: agentProjects,
+  // A card click: the Workspace tab, the chat selected, the drawer open, the terminal focused.
+  openSession: (sessionId) => {
+    setTopTab('workspace');
+    selectSession(sessionId);
+  },
+});
+const syncAgentsVisibility = () => agents.setVisible(topTab === 'agents' && !document.hidden);
+document.addEventListener('visibilitychange', syncAgentsVisibility);
+
 topTabsEl.addEventListener('click', (event) => {
   const button = event.target.closest('[data-top-tab]');
   if (button) setTopTab(button.dataset.topTab);
@@ -697,7 +725,7 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState, avatars }) => {
+window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState, avatars }) => {
   if (avatars) avatarUris = avatars;
   plans = planState ?? {};
   renderGuardAsks(guardAsks);
@@ -705,6 +733,7 @@ window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, g
   if (theme) document.body.dataset.theme = theme;
   if (palette) document.body.dataset.palette = palette;
   lastTree = tree;
+  agents.setState({ sessions: agentSessions, plans, guardAsks });
   terminals = list ?? [];
   // First state of this page: open on the tab that was in front (#155).
   if (!adoptedActive) {
@@ -736,6 +765,7 @@ window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, g
     views.delete(id);
   }
   render();
+  markLooking();
   applyMaestro(stage);
   renderPlanCard();
 });
@@ -1093,17 +1123,28 @@ function selectSession(sessionId, { openDrawer = true } = {}) {
 // Main mutes notices for the session this focused window is showing — which
 // is the one whose terminal tab is active when a tab was picked by hand
 // (#96 review: a stale selection muted a session nobody was looking at).
-function reportSelection() {
+function shownSessionId() {
   const selected = selectedId ? findSession(selectedId)?.session : null;
   if (activeTab && selected?.ptyId !== activeTab) {
     let owner = null;
     for (const project of lastTree?.projects ?? [])
       for (const worktree of project.worktrees)
         for (const session of worktree.sessions) if (session.ptyId === activeTab) owner = session.id;
-    window.vizor.reportSelection(owner);
-    return;
+    return owner;
   }
-  window.vizor.reportSelection(selectedId);
+  return selectedId;
+}
+
+// A finished turn counts as seen once its terminal is in front in a focused window.
+function markLooking() {
+  if (topTab !== 'workspace' || !document.hasFocus() || !drawerShown()) return;
+  const sessionId = shownSessionId();
+  if (sessionId) agents.lookingAt(sessionId);
+}
+
+function reportSelection() {
+  window.vizor.reportSelection(shownSessionId());
+  markLooking();
 }
 
 window.addEventListener('focus', reportSelection);

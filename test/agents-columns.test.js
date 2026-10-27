@@ -108,7 +108,7 @@ describe('sessionCard', () => {
       title: 'Corrigir bug',
       projectRoot: '/home/u/proj',
       avatarKey: '/home/u/proj',
-      planProgress: { done: 3, total: 6, current: 3 },
+      planProgress: '3/6',
       since: NOW - MIN,
       question: null,
       branch: 'feat/x',
@@ -136,6 +136,10 @@ describe('sessionCard', () => {
     expect(outside.outside).toBe(true);
     expect(outside.actions).not.toContain('interrupt');
     expect(sessionCard(session({ status: STATUS.DONE }), { now: NOW }).actions).not.toContain('interrupt');
+  });
+
+  it('lets a plain waiting chat be answered too', () => {
+    expect(sessionCard(session({ status: STATUS.WAITING }), { now: NOW }).actions).toContain('answer');
   });
 
   it('gives the guard buttons to a guard ask, and answer to a chat question', () => {

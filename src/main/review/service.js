@@ -432,7 +432,7 @@ export function createReviewService({
     if (!hunk) return { ok: false, error: ERR_CHANGED };
     if (view.untracked) return { ok: false, error: ERR_NEW_FILE };
     if (hunk.committed) return { ok: false, error: ERR_COMMITTED };
-    if (sessionsOf(wt).some((s) => s.status !== 'done' && s.status !== 'waiting')) return { ok: false, error: ERR_BUSY };
+    if (sessionsOf(wt).some((s) => s.status === 'working')) return { ok: false, error: ERR_BUSY };
     // The marker after a line is what keeps `git apply` from demanding a final newline there.
     const body = hunk.lines.map((l) => `${l.kind}${l.text}\n${l.noNewline ? '\\ No newline at end of file\n' : ''}`).join('');
     const patch = `diff --git a/${rel} b/${rel}\n--- a/${rel}\n+++ b/${rel}\n${hunk.header}\n${body}`;

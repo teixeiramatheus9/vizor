@@ -33,6 +33,7 @@ const STATUS_LABEL = {
   done: 'concluído',
   waiting: 'esperando você',
   question: 'pergunta',
+  failed: 'falhou',
 };
 
 // Fliperama wording for the arcade skin — same states, another language.
@@ -1277,7 +1278,8 @@ function replyElement(session) {
 
 // Appends the quick-reply UI (when applicable) and returns the finished card.
 function finishCard(card, session) {
-  if (session.status !== 'working') {
+  // A dead chat has nobody to read a quick reply.
+  if (session.status !== 'working' && session.status !== 'failed') {
     const { wrapper, input } = replyElement(session);
     card.append(wrapper);
     if (focusedReplySessionId === session.id) {

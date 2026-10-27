@@ -72,3 +72,20 @@ describe('skeleton', () => {
     expect(skeleton('list', 3).match(/skeleton-row/g)).toHaveLength(3);
   });
 });
+
+describe('kanban inline states', () => {
+  it('draws the reply box and the interrupt confirmation from ui', () => {
+    const waiting = card({ id: 'w', column: 'waiting', actions: ['focus', 'answer'], question: 'Qual?' });
+    const reply = renderKanban([waiting], { projects, now: NOW, ui: { answering: 'w', error: { id: 'w', text: 'não consegui enviar' } } });
+    expect(reply).toContain('class="kb-reply"');
+    expect(reply).toContain('não consegui enviar');
+    const confirm = renderKanban([card({ actions: ['focus', 'interrupt'] })], { projects, now: NOW, ui: { confirming: 's1' } });
+    expect(confirm).toContain('data-action="interrupt-confirm"');
+    expect(confirm).not.toContain('data-action="interrupt" ');
+  });
+  it('keeps "outros" for chats outside every project', () => {
+    const html = renderKanban([card(), card({ id: 'o', projectRoot: null, avatarKey: '/x/y', title: 'Solta' })], { filter: { project: '__other__' }, projects, now: NOW });
+    expect(html).toContain('Solta');
+    expect(html).not.toContain('>Tarefa<');
+  });
+});

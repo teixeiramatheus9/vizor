@@ -1925,3 +1925,268 @@ select.composer-target {
 .composer-send {
   align-self: flex-end;
 }
+
+/* --- Agentes tab (kanban) ---------------------------------------------------
+   Cards move with transform/opacity only; everything is quiet under
+   prefers-reduced-motion. */
+#view-agents {
+  padding: 10px 14px 14px;
+  gap: 10px;
+  overflow: hidden;
+  background: var(--ws-bg);
+}
+
+.kb-filters {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.kb-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.kb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.kb-chip:hover {
+  background: var(--ws-hover);
+}
+
+.kb-chip.on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.kb-chip .kb-avatar {
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+}
+
+.kb-board {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(190px, 1fr));
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.kb-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+}
+
+.kb-column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ws-line);
+}
+
+.kb-column-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.kb-column[data-column='waiting'] .kb-column-title {
+  color: var(--warn);
+}
+
+.kb-column[data-column='failed'] .kb-column-title {
+  color: var(--danger, #e5534b);
+}
+
+.kb-count {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  background: var(--ws-raised);
+  border-radius: 999px;
+  padding: 0 7px;
+}
+
+.kb-cards {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.kb-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--ws-raised);
+  border: 1px solid var(--ws-line);
+  border-left: 3px solid var(--project-accent, var(--ws-border));
+  border-radius: 6px;
+  cursor: pointer;
+  will-change: transform;
+}
+
+.kb-card:hover {
+  border-color: var(--ws-border);
+  border-left-color: var(--project-accent, var(--ws-border));
+}
+
+.kb-card[data-column='failed'] {
+  cursor: default;
+}
+
+.kb-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.kb-avatar {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.kb-avatar.mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.kb-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.kb-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.kb-badge {
+  padding: 0 6px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+}
+
+.kb-plan {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.kb-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.kb-question {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.kb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.kb-actions:empty {
+  display: none;
+}
+
+.kb-action {
+  padding: 2px 9px;
+  font-size: var(--fs-xs);
+}
+
+.kb-confirm {
+  font-size: var(--fs-xs);
+  color: var(--warn);
+}
+
+.kb-reply {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.kb-reply-input {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--ws-bg);
+  border: 1px solid var(--ws-border);
+  border-radius: 4px;
+}
+
+.kb-error {
+  font-size: var(--fs-xs);
+  color: var(--danger, #e5534b);
+}
+
+.kb-card .guard-card {
+  margin: 0;
+}
+
+.kb-empty {
+  margin: auto;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kb-card {
+    transition: none !important;
+  }
+}
