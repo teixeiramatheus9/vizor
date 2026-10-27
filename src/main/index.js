@@ -679,13 +679,15 @@ function graphFor(root) {
 }
 
 // The graphs outlive the Maestro (the review screen reads them too): they are
-// dropped only after the workspace window stayed hidden or minimized this long.
+// dropped only after the workspace window stayed hidden or minimized this long,
+// and never while the Maestro is on (it reads them with the window hidden).
 const GRAPH_DISCARD_MS = 10 * 60 * 1000;
 let graphDiscardTimer = null;
 function armGraphDiscard() {
   clearTimeout(graphDiscardTimer);
   graphDiscardTimer = setTimeout(() => {
     graphDiscardTimer = null;
+    if (maestroOn()) return;
     for (const timer of graphRefreshTimers.values()) clearTimeout(timer);
     graphRefreshTimers.clear();
     graphIndexers.clear();
