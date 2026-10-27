@@ -49,7 +49,8 @@ import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
 import { testOutcomeOf } from './voice/narration.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
-import { avatarCheckDue, avatarOwnerOf, createAvatarService, nextAvatarCheck } from './project-avatar.js';
+import { avatarCheckDue, avatarOwnerOf, createAvatarService, nextAvatarCheck, openGraphArgs, OG_MAX_BYTES, parseOpenGraph, resolveLogo } from './project-avatar.js';
+import { findLocalLogo } from './local-logo.js';
 import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
@@ -1996,9 +1997,14 @@ async function refreshWorkspace() {
   pushWorkspaceStateNow();
 }
 
-// Project avatars (root -> data: URI | null). Resolved off the push path: the
+// Project logos (root -> data: URI | null): the project's own file, else the repo's custom social preview. Resolved off the push path: the
 // state goes out at once (monogram), the avatar joins when it is read/downloaded.
-const avatarService = createAvatarService({ dir: path.join(configDir, 'avatars'), fetchImage: fetchAvatarImage, fsp: fs.promises });
+const avatarService = createAvatarService({
+  dir: path.join(configDir, 'avatars'),
+  fetchImage: (url) => fetchAvatarImage(url, { maxBytes: OG_MAX_BYTES }),
+  queryOpenGraph: async (ref) => parseOpenGraph(await runText('gh', openGraphArgs(ref), { timeout: 10000 })),
+  fsp: fs.promises,
+});
 const projectAvatars = new Map(); // root -> { uri, busy, nextCheck }
 let avatarsSent = null; // JSON of what the page last got; null = send again
 // Looked at again every AVATAR_CHECK_EVERY_MS (never per push): the remote may
@@ -2013,15 +2019,16 @@ function resolveProjectAvatar(root) {
     entry.uri = uri;
     pushWorkspaceState();
   };
-  (async () => {
-    const owner = avatarOwnerOf(await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => ''));
-    if (!owner) return show(null);
-    const cached = await avatarService.load(owner);
-    show(cached.uri);
-    if (cached.fresh) return;
-    const uri = await avatarService.refresh(owner);
-    if (uri) show(uri);
-  })()
+  resolveLogo({
+    findLocal: () =>
+      findLocalLogo({
+        root,
+        listTracked: async (paths) => new Set((await runText('git', ['--literal-pathspecs', 'ls-files', '-z', '--', ...paths], { cwd: root })).split('\0').filter(Boolean)),
+      }),
+    getRemote: () => runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => ''),
+    service: avatarService,
+    show,
+  })
     .catch((error) => log(`avatar: ${root}: ${error}`))
     .finally(() => {
       entry.busy = false;
