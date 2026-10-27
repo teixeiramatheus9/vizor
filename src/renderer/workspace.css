@@ -3036,3 +3036,34 @@ body[data-palette='giz'] #view-automations {
   align-items: center;
   gap: 6px;
 }
+
+/* The card of a task with a contract */
+.task-card .plan-section { margin-top: 8px; }
+.task-card h4 { margin: 0 0 4px; font-size: 0.9em; color: var(--text-2); }
+.plan-phase { color: var(--muted); font-size: 0.9em; }
+.plan-command {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-surface);
+}
+.plan-command span { display: block; color: var(--muted); font-size: 0.8em; }
+.plan-command code { font-size: 1.05em; font-weight: 600; white-space: pre-wrap; word-break: break-all; }
+.plan-tail pre { max-height: 180px; overflow: auto; margin: 4px 0; padding: 6px; background: var(--bg-surface); white-space: pre-wrap; word-break: break-all; }
+.plan-run.ok, .plan-ok { color: var(--ok, var(--accent)); }
+.plan-run.bad, .plan-bad { color: var(--warn); }
+.plan-warn, .plan-confirm { color: var(--warn); margin: 4px 0; }
+.plan-hint, .plan-why { color: var(--muted); font-size: 0.9em; }
+.plan-why { display: block; }
+.plan-cases, .plan-files, .plan-todos { margin: 4px 0; padding-left: 18px; }
+.plan-input { font: inherit; color: var(--text); background: var(--bg-surface); border: 1px solid var(--ws-border); border-radius: 4px; padding: 2px 6px; }
+.plan-cases .plan-input { width: 70%; }
+.plan-row { display: flex; gap: 6px; margin: 4px 0; }
+.plan-row .plan-input { flex: 1; }
+.plan-link { font: inherit; font-size: 0.9em; color: var(--accent); background: none; border: none; padding: 0 4px; cursor: pointer; }
+.plan-link:disabled { color: var(--muted); cursor: default; }
+.plan-link.on { font-weight: 700; text-decoration: underline; }
+.plan-tools { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.plan-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--ws-border); }
+.plan-pr { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

@@ -26,7 +26,7 @@ import {
   onTask,
   stillWanted,
 } from './inspector-state.js';
-import { renderPlan } from './plan-view.js';
+import { createPlanController } from './work/plan-controller.js';
 import { averageColor, nudgeColor } from './project-accent.js';
 import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
@@ -58,7 +58,7 @@ function commandBarOpen() {
   return document.getElementById('command-bar')?.hidden === false;
 }
 let plans = {}; // sessionId → { steps, approved }
-let planNote = null; // { sessionId, text } after a button that did not land
+let agentSessionList = []; // the registry's sessions, for the card's pending question
 const planCardEl = document.getElementById('plan-card');
 let selectedWorktree = null;
 let activeTab = null;
@@ -726,27 +726,17 @@ const planSessionId = () => {
   if (!activeTab) return null;
   return treeSessions().find((session) => session.ptyId === activeTab)?.id ?? null;
 };
-function renderPlanCard() {
-  const sessionId = planSessionId();
-  const note = planNote?.sessionId === sessionId ? `<div class="plan-note">${planNote.text}</div>` : '';
-  planCardEl.innerHTML = sessionId ? renderPlan(plans[sessionId]) + (plans[sessionId] ? note : '') : '';
-}
-const PLAN_NOTES = {
-  failed: 'não achei a aba desse chat',
-  timeout: 'o chat não ficou livre em 1 minuto; tente de novo quando ele parar',
-  busy: 'já estou esperando o chat ficar livre pra mandar',
-  'no-plan': 'esse chat não tem plano',
-};
-planCardEl.addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-plan]');
-  const sessionId = planSessionId();
-  if (!button || !sessionId) return;
-  button.disabled = true;
-  const result = await window.vizor.planAction(sessionId, button.dataset.plan);
-  const note = PLAN_NOTES[result] ?? result?.error;
-  planNote = note ? { sessionId, text: note } : null;
-  renderPlanCard();
+const planCard = createPlanController({
+  el: planCardEl,
+  api: window.vizor,
+  sessionId: planSessionId,
+  getSession: (id) => agentSessionList.find((session) => session.id === id) ?? null,
+  plans: () => plans,
+  onStepDiff: () => review.setTab('changes'),
+  onOpenFile: (file, line) => toast(`${file}:${line}`),
 });
+const renderPlanCard = () => planCard.render();
+window.vizor.onTaskChanged(() => planCard.refresh());
 
 async function savePrefs(change) {
   Object.assign(prefs, change);
@@ -807,6 +797,7 @@ guardHost.addEventListener('click', (event) => {
 window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars, tokens, automationRuns, nextAutomationAt: nextAt }) => {
   if (avatars) avatarUris = avatars;
   plans = planState ?? {};
+  agentSessionList = agentSessions ?? [];
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;

@@ -49,6 +49,10 @@ contextBridge.exposeInMainWorld('vizor', {
   focusMusician: (sessionId) => ipcRenderer.send('maestro:focus', sessionId),
   // The core flow: the músico's plan and the Ctrl+K bar.
   planAction: (sessionId, action) => ipcRenderer.invoke('workspace:plan', { sessionId, action }),
+  // The task card: its state and its buttons.
+  task: (sessionId, action, arg) => ipcRenderer.invoke('workspace:task', { sessionId, action, arg }),
+  taskState: (sessionId) => ipcRenderer.invoke('workspace:task-state', sessionId),
+  onTaskChanged: (callback) => ipcRenderer.on('task:changed', () => callback()),
   // The Agentes tab's cards.
   agentsSeen: (sessionId) => ipcRenderer.send('agents:seen', sessionId),
   agentsDismiss: (sessionId) => ipcRenderer.send('agents:dismiss', sessionId),
