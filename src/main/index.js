@@ -669,7 +669,6 @@ function graphFor(root) {
     indexer.on('graph', (graph) => {
       if (graphIndexers.get(root) !== indexer) return; // dropped while it was parsing
       touchCache.clear();
-      workspaceWindow?.send('maestro:graph', { root, graph });
       notifyReview(root); // the Impacto tab polls again: the indexer reports no progress
       pushWorkspaceState();
     });
@@ -734,8 +733,6 @@ function maestroImpacts() {
   }
   return impacts;
 }
-
-ipcMain.handle('maestro:graph', (_event, root) => (typeof root === 'string' ? graphFor(root)?.graph() ?? null : null));
 
 // --- the conducting gerente (#162): your orders, kept until a músico's turn ends
 const maestroConductor = createConductor({ lang: () => spokenLang() });
