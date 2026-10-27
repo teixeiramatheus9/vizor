@@ -128,6 +128,43 @@ describe('createAutomationStore', () => {
     expect(list.map((x) => x.id).sort()).toEqual(['a', 'b']);
     expect(list.find((x) => x.id === 'a').paused).toBe(true);
   });
+  it('a second automação with the same name gets a suffixed slug; renames never change a slug', async () => {
+    const s = mk(fakeFs());
+    const a = (await s.save(A({ id: 'a' }))).automation;
+    const b = (await s.save(A({ id: 'b' }))).automation;
+    const c = (await s.save(A({ id: 'c' }))).automation;
+    expect([a.slug, b.slug, c.slug]).toEqual(['resumo-do-dia', 'resumo-do-dia-2', 'resumo-do-dia-3']);
+    const renamed = (await s.patch('b', { name: 'Novo nome' })).automation;
+    expect(renamed.slug).toBe('resumo-do-dia-2');
+    expect((await s.save({ ...b, name: 'Outro', slug: 'zzz' })).automation.slug).toBe('resumo-do-dia-2');
+  });
+  it('the suffix still fits in 40 chars', async () => {
+    const s = mk(fakeFs());
+    const long = 'x'.repeat(50);
+    await s.save(A({ id: 'a', name: long }));
+    expect((await s.save(A({ id: 'b', name: long }))).automation.slug).toHaveLength(40);
+  });
+  it('a corrupt file is moved aside before the next save can overwrite it', async () => {
+    const fs = fakeFs('{nope');
+    const s = mk(fs, { now: () => 99 });
+    expect(await s.list()).toEqual([]);
+    expect(fs.files.get('/cfg/automacoes.json.corrupt-99')).toBe('{nope');
+    expect(fs.files.has('/cfg/automacoes.json')).toBe(false);
+  });
+  it('dropped invalid entries are backed up once, the rest kept', async () => {
+    const good = A();
+    const text = JSON.stringify({ automations: [good, { name: '' }] });
+    const fs = fakeFs(text);
+    const s = mk(fs, { now: () => 7 });
+    expect(await s.list()).toEqual([good]);
+    await s.save(A({ id: 'z', name: 'Z' }));
+    expect(fs.files.get('/cfg/automacoes.json.corrupt-7')).toBe(text);
+    expect(fs.ops.filter((o) => o[1] === '/cfg/automacoes.json.corrupt-7')).toHaveLength(1);
+  });
+  it('projectRoot is normalized and `..` is refused', () => {
+    expect(ok({ ...base, projectRoot: '/work//app/' }).automation.projectRoot).toBe('/work/app');
+    expect(ok({ ...base, projectRoot: '/work/../etc' }).ok).toBe(false);
+  });
   it('list returns copies, not the cached objects', async () => {
     const s = mk(fakeFs());
     await s.save(A());

@@ -1,6 +1,7 @@
 // The automações themselves: field validation plus a small JSON store
 // (~/.config/vizor/automacoes.json) written atomically. IO is injected.
 import { randomUUID } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
 import { parseWhen } from './schedule.js';
 
 const LEVELS = ['read', 'worktree', 'project'];
@@ -29,7 +30,8 @@ export function validateAutomation(raw, { now = Date.now, newId = randomUUID } =
   const name = typeof raw.name === 'string' ? raw.name.replace(/\s+/g, ' ').trim() : '';
   if (!name) return fail('Dê um nome à automação.');
   if (typeof raw.prompt !== 'string' || !raw.prompt.trim()) return fail('Escreva o que a automação deve fazer.');
-  if (typeof raw.projectRoot !== 'string' || !raw.projectRoot.startsWith('/')) return fail('Escolha a pasta do projeto.');
+  if (typeof raw.projectRoot !== 'string' || !raw.projectRoot.startsWith('/') || raw.projectRoot.split('/').includes('..')) return fail('Escolha a pasta do projeto.');
+  const projectRoot = resolve(raw.projectRoot);
   const when = parseWhen(raw.when);
   if (when.error) return fail(when.error);
   const slug = raw.slug === undefined ? slugify(name) : raw.slug;
@@ -55,7 +57,7 @@ export function validateAutomation(raw, { now = Date.now, newId = randomUUID } =
   return {
     ok: true,
     automation: {
-      id, name, slug, prompt: raw.prompt, projectRoot: raw.projectRoot, when,
+      id, name, slug, prompt: raw.prompt, projectRoot, when,
       level, model, capUsd, timeoutMin, missed, skillScope,
       paused: raw.paused === true, blockedUntilConfirm: raw.blockedUntilConfirm === true,
       createdAt, lastRun,
@@ -63,29 +65,49 @@ export function validateAutomation(raw, { now = Date.now, newId = randomUUID } =
   };
 }
 
-export function createAutomationStore({ file, readFile, writeFile, rename, mkdir, log, onError }) {
+function uniqueSlug(slug, items) {
+  const taken = new Set(items.map((x) => x.slug));
+  let out = slug;
+  for (let n = 2; taken.has(out); n++) out = `${slug.slice(0, MAX_SLUG - String(n).length - 1).replace(/-+$/, '')}-${n}`;
+  return out;
+}
+
+export function createAutomationStore({ file, readFile, writeFile, rename, mkdir, log, onError, now = Date.now }) {
   let items = null; // loaded lazily, then the source of truth
   let chain = Promise.resolve(); // every operation runs one at a time: they share the tmp file
 
   async function load() {
+    let text;
     try {
-      const data = JSON.parse(await readFile(file, 'utf8'));
-      if (!Array.isArray(data?.automations)) throw new Error('unexpected shape');
-      items = [];
-      for (const raw of data.automations) {
-        const r = validateAutomation(raw);
-        if (r.ok) items.push(r.automation); else log?.(`automations: dropped an invalid entry (${r.error})`);
-      }
+      text = await readFile(file, 'utf8');
     } catch (error) {
       items = [];
       if (error?.code !== 'ENOENT') log?.(`automations: could not read ${file}, starting empty (${error.message})`);
+      return;
+    }
+    // A bad file is moved aside, never overwritten by the next save.
+    const backup = `${file}.corrupt-${now()}`;
+    try {
+      const data = JSON.parse(text);
+      if (!Array.isArray(data?.automations)) throw new Error('unexpected shape');
+      items = [];
+      let dropped = 0;
+      for (const raw of data.automations) {
+        const r = validateAutomation(raw);
+        if (r.ok) items.push(r.automation); else { dropped++; log?.(`automations: dropped an invalid entry (${r.error})`); }
+      }
+      if (dropped) await writeFile(backup, text).catch((e) => log?.(`automations: could not back up ${file} (${e.message})`));
+    } catch (error) {
+      items = [];
+      log?.(`automations: ${file} is corrupt, moved to ${backup} (${error.message})`);
+      await rename(file, backup).catch((e) => log?.(`automations: could not back up ${file} (${e.message})`));
     }
   }
 
   async function persist(next) {
     const tmp = `${file}.tmp`;
     try {
-      await mkdir(file.slice(0, file.lastIndexOf('/')) || '/', { recursive: true });
+      await mkdir(dirname(file), { recursive: true });
       await writeFile(tmp, JSON.stringify({ automations: next }, null, 2));
       await rename(tmp, file);
     } catch (error) {
@@ -105,10 +127,14 @@ export function createAutomationStore({ file, readFile, writeFile, rename, mkdir
     const r = validateAutomation(a);
     if (!r.ok) return r;
     const i = items.findIndex((x) => x.id === r.automation.id);
+    // The slug names the skill folder (and removeSkill deletes it), so it is
+    // unique across automações and never changes once assigned.
+    const slug = i >= 0 ? items[i].slug : uniqueSlug(r.automation.slug, items);
+    const automation = { ...r.automation, slug };
     const next = [...items];
-    if (i >= 0) next[i] = r.automation; else next.push(r.automation);
+    if (i >= 0) next[i] = automation; else next.push(automation);
     await persist(next);
-    return { ok: true, automation: structuredClone(r.automation) };
+    return { ok: true, automation: structuredClone(automation) };
   };
 
   return {

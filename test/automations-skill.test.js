@@ -44,6 +44,12 @@ describe('writeSkill', () => {
 });
 
 describe('removeSkill', () => {
+  it('refuses an unsafe slug before touching the disk', async () => {
+    const rm = vi.fn();
+    await expect(removeSkill({ ...auto, slug: '../..' }, { home: '/h', rm })).rejects.toThrow(/slug/);
+    await expect(removeSkill({ ...auto, slug: '' }, { home: '/h', rm })).rejects.toThrow(/slug/);
+    expect(rm).not.toHaveBeenCalled();
+  });
   it('removes the skill folder; personal skills are never checked against git', async () => {
     const rm = vi.fn(async () => {});
     const gitLsFiles = vi.fn(async () => 'x');

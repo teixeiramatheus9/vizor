@@ -110,18 +110,21 @@ export function nextRun(when, { from, lastRun } = {}) {
   return null;
 }
 
-export function missedRun(when, { lastRun, now, graceMs = DAY_MS } = {}) {
-  if (lastRun == null) return null; // never ran: nothing to catch up on
+// createdAt is the baseline for an automação that never ran, so a first slot
+// that passed while the app was closed still counts as missed.
+export function missedRun(when, { lastRun, createdAt, now, graceMs = DAY_MS } = {}) {
+  const base = lastRun ?? createdAt;
+  if (base == null) return null;
   let latest = null;
   if (when.kind === 'every') {
     const step = when.minutes * 60000;
-    const k = Math.floor((now - lastRun) / step);
-    if (k >= 1) latest = lastRun + k * step;
+    const k = Math.floor((now - base) / step);
+    if (k >= 1) latest = base + k * step;
   } else {
     const back = Math.ceil(graceMs / DAY_MS) + 1;
     for (let offset = 0; offset >= -back; offset--) {
       const slot = slotOn(now, offset, when.at);
-      if (slot.ms <= now && slot.ms > lastRun && runsOn(when, slot.day)) { latest = slot.ms; break; }
+      if (slot.ms <= now && slot.ms > base && runsOn(when, slot.day)) { latest = slot.ms; break; }
     }
   }
   return latest != null && now - latest <= graceMs ? latest : null;

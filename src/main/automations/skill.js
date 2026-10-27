@@ -10,7 +10,13 @@ export function renderSkill(a) {
   return `---\nname: vizor-${a.slug}\ndescription: ${description}\n---\n\n${a.prompt.replace(/\n+$/, '')}\n`;
 }
 
-const skillDir = (a, home) => join(a.skillScope === 'project' ? a.projectRoot : home, '.claude', 'skills', `vizor-${a.slug}`);
+const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+// The slug is re-checked here because removeSkill deletes this folder recursively.
+function skillDir(a, home) {
+  if (typeof a.slug !== 'string' || !SLUG.test(a.slug)) throw new Error('invalid skill slug');
+  return join(a.skillScope === 'project' ? a.projectRoot : home, '.claude', 'skills', `vizor-${a.slug}`);
+}
 
 export const skillPath = (a, { home }) => join(skillDir(a, home), 'SKILL.md');
 

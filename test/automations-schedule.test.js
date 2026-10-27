@@ -81,7 +81,7 @@ describe('nextRun', () => {
     const prev = process.env.TZ;
     process.env.TZ = 'America/New_York';
     try {
-      if (new Date(2026, 2, 8, 12).getTimezoneOffset() !== 240) return; // TZ switch not honoured here
+      expect(new Date(2026, 2, 8, 12).getTimezoneOffset()).toBe(240); // the TZ switch must take effect
       const from = new Date(2026, 2, 7, 10).getTime();
       const next = nextRun({ kind: 'daily', at: '09:00' }, { from });
       expect(next).toBe(new Date(2026, 2, 8, 9).getTime());
@@ -120,7 +120,12 @@ describe('missedRun', () => {
     // Fri 09:00 ran; Sunday evening open: nothing missed
     expect(missedRun(wk, { lastRun: at(2026, 10, 30, 9), now: at(2026, 11, 1, 20) })).toBeNull();
   });
-  it('never ran: nothing missed', () => {
+  it('a never-run automação counts from its creation', () => {
+    const base = { now: at(2026, 10, 27, 10), createdAt: at(2026, 10, 27, 8) };
+    expect(missedRun(w, { lastRun: null, ...base })).toBe(at(2026, 10, 27, 9));
+    expect(missedRun(w, { lastRun: null, now: at(2026, 10, 27, 8, 30), createdAt: base.createdAt })).toBeNull();
+  });
+  it('no lastRun and no createdAt: nothing missed', () => {
     expect(missedRun(w, { lastRun: null, now: at(2026, 10, 27, 10) })).toBeNull();
   });
 });
