@@ -69,6 +69,16 @@ export function createAutomationService({
     return schedule.nextRun(a.when, { from: f, lastRun: f });
   }
   const schedulable = (a) => !a.paused && !a.blockedUntilConfirm && !running.has(a.id) && !isQueued(a.id);
+  // The one way into the queue: an automação already queued or running is
+  // refused, so no entry point can start one slot twice.
+  function enqueue(entry) {
+    if (running.has(entry.id) || isQueued(entry.id)) {
+      log(`automations: refused to queue ${entry.id} twice`);
+      return false;
+    }
+    queue.push(entry);
+    return true;
+  }
 
   // What to do about `a` at `at`: nothing yet, run on time, run late (a missed
   // slot within the grace), or skip the missed slot.
@@ -109,8 +119,8 @@ export function createAutomationService({
       if (!schedulable(a)) continue;
       const action = dueAction(a, at);
       if (action === 'skip') floor.set(a.id, at);
-      else if (action === 'late') queue.push({ id: a.id, late: true, slot: lateSlot(a, at) ?? at });
-      else if (action) queue.push({ id: a.id, late: false, slot: nextOf(a) });
+      else if (action === 'late') enqueue({ id: a.id, late: true, slot: lateSlot(a, at) ?? at });
+      else if (action) enqueue({ id: a.id, late: false, slot: nextOf(a) });
     }
   }
 
@@ -416,7 +426,7 @@ export function createAutomationService({
       if (a.blockedUntilConfirm) return fail('Esta automação passou do teto ou do tempo: confirme antes de rodar de novo.');
       if (running.has(id)) return fail('Ela já está rodando.');
       if (isQueued(id)) return fail('Ela já está na fila.');
-      queue.push({ id, late: false, slot: now(), manual: true });
+      enqueue({ id, late: false, slot: now(), manual: true });
       drain();
       arm();
       emit();
@@ -467,7 +477,9 @@ export function createAutomationService({
     async cancel(id) {
       const index = queue.findIndex((q) => q.id === id);
       if (index >= 0) {
-        queue.splice(index, 1);
+        const [entry] = queue.splice(index, 1);
+        // A cancelled slot is handled: the next tick must not queue it again.
+        if (!entry.manual) floor.set(id, now());
         arm();
         emit();
         return true;

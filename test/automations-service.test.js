@@ -528,6 +528,119 @@ describe('automation service: review fixes', () => {
     await vi.advanceTimersByTimeAsync(15 * MIN);
     expect(t.runner.run).toHaveBeenCalledOnce();
   });
+
+  describe('one slot starts once', () => {
+    // The E2E's scenario 6: due a minute before the start, every entry point fired at once.
+    const due = () => ({ ...base(), id: 'e6', createdAt: T0 - 60 * MIN, lastRun: T0 - 16 * MIN });
+
+    it('start, wake, resume, runNow, setDayCap and the timer together start it once', async () => {
+      const t = setup({ automations: [due()] });
+      const changed = [];
+      t.service.on('changed', () => changed.push(t.service.state().list[0]));
+      const starting = t.service.start();
+      t.service.wake();
+      t.service.resume();
+      await starting;
+      t.service.wake();
+      t.service.wake();
+      expect((await t.service.runNow('e6')).ok).toBe(false);
+      await t.service.setDayCap(8.5);
+      t.service.resume();
+      await flush();
+      expect(t.runner.run).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
+      await vi.advanceTimersByTimeAsync(9000);
+      t.runner.runs[0].resolve({ status: 'ok', costUsd: 0.1 });
+      await flush();
+      t.service.wake();
+      await vi.advanceTimersByTimeAsync(14 * MIN);
+      t.service.wake();
+      expect(t.runner.run).toHaveBeenCalledOnce();
+      expect(t.budget.spent()).toBe(0.1);
+      expect(t.entries).toHaveLength(1);
+      expect(changed.every((a) => !(a.running && a.queued))).toBe(true);
+      // The next slot is 15 min after the start, and it runs once too.
+      await vi.advanceTimersByTimeAsync(MIN);
+      expect(t.runner.run).toHaveBeenCalledTimes(2);
+      expect(t.runner.runs[1].automation.id).toBe('e6');
+    });
+
+    it('a lastRun that could not be saved still leaves the slot handled', async () => {
+      const store = memStore([due()]);
+      const patch = store.patch;
+      store.patch = (id, partial) => ('lastRun' in partial ? Promise.reject(new Error('disk full')) : patch(id, partial));
+      const t = setup({ storeOverride: store });
+      await t.service.start();
+      await flush();
+      t.runner.runs[0].resolve({ status: 'ok', costUsd: 0.1 });
+      await flush();
+      t.service.wake();
+      await vi.advanceTimersByTimeAsync(14 * MIN);
+      expect(t.runner.run).toHaveBeenCalledOnce();
+    });
+
+    it('the queue never holds an automação twice, nor one that is running', async () => {
+      const t = setup({ automations: [due(), { ...base({ name: 'Outra' }), id: 'o1', createdAt: T0 - 60 * MIN, lastRun: T0 - 16 * MIN }] });
+      await t.service.start();
+      await flush();
+      // e6 runs, o1 waits behind it (same project).
+      expect(t.service.state().list.map((a) => [a.id, Boolean(a.running), a.queued])).toEqual([['e6', true, false], ['o1', false, true]]);
+      for (let i = 0; i < 3; i++) t.service.wake();
+      expect((await t.service.runNow('o1')).ok).toBe(false);
+      expect((await t.service.runNow('e6')).ok).toBe(false);
+      t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+      await flush();
+      t.runner.runs[1].resolve({ status: 'ok', costUsd: 0 });
+      await flush();
+      expect(t.runner.runs.map((r) => r.automation.id)).toEqual(['e6', 'o1']);
+    });
+
+    it('a cancelled scheduled slot is not queued again by the next tick', async () => {
+      const t = setup({ automations: [due(), { ...base({ name: 'Outra' }), id: 'o1', createdAt: T0 - 60 * MIN, lastRun: T0 - 16 * MIN }] });
+      await t.service.start();
+      await flush();
+      expect(await t.service.cancel('o1')).toBe(true);
+      await flush();
+      t.service.wake();
+      t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+      await flush();
+      expect(t.runner.runs.map((r) => r.automation.id)).toEqual(['e6']);
+      // Its next slot still comes, 15 min after the cancel (behind e6's, same project).
+      await vi.advanceTimersByTimeAsync(15 * MIN);
+      expect(t.runner.runs.map((r) => r.automation.id)).toEqual(['e6', 'e6']);
+      expect(t.service.state().list.find((a) => a.id === 'o1').queued).toBe(true);
+    });
+
+    // What the E2E saw: "Resumo do dia" (todo dia às 9h, missed: run) is created
+    // a little before 09:00; its slot comes due in the middle of a later scenario
+    // and runs once, charged at whatever that scenario's fake cost is.
+    it('a daily 09:00 slot crossed during the session runs once, as its own run', async () => {
+      vi.setSystemTime(new Date(2026, 9, 27, 8, 58).getTime());
+      const t = setup();
+      await t.service.start();
+      const daily = (await t.service.save(base({ name: 'Resumo do dia', when: { kind: 'daily', at: '09:00' } }))).automation.id;
+      await vi.advanceTimersByTimeAsync(2 * MIN);
+      expect(t.runner.runs.map((r) => r.automation.id)).toEqual([daily]);
+      t.runner.runs[0].resolve({ status: 'ok', costUsd: 0.1 });
+      await flush();
+      await vi.advanceTimersByTimeAsync(60 * MIN);
+      expect(t.runner.run).toHaveBeenCalledOnce();
+    });
+
+    it('and if the app was closed at 09:00, it runs once, late, at the next start', async () => {
+      const created = new Date(2026, 9, 27, 8, 58).getTime();
+      vi.setSystemTime(new Date(2026, 9, 27, 9, 1).getTime());
+      const t = setup({ automations: [{ ...base({ name: 'Resumo do dia', when: { kind: 'daily', at: '09:00' } }), id: 'r1', createdAt: created, lastRun: null }] });
+      await t.service.start();
+      await flush();
+      expect(t.runner.run).toHaveBeenCalledOnce();
+      t.runner.runs[0].resolve({ status: 'ok', costUsd: 0.1 });
+      await flush();
+      expect(t.entries[0]).toMatchObject({ id: 'r1', late: false });
+      await vi.advanceTimersByTimeAsync(60 * MIN);
+      expect(t.runner.run).toHaveBeenCalledOnce();
+    });
+  });
 });
 
 describe('automationRunCards', () => {
