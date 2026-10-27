@@ -201,6 +201,7 @@ try {
   const idle = gitCalls().slice(before);
   console.log(`perf: parado ${idle.length} chamadas de git em 5s`);
 
+  assert.ok(coldOpenings[0] < BUDGET.listMs, `primeira abertura a frio da lista de Mudanças ${Math.round(coldOpenings[0])}ms (limite ${BUDGET.listMs}ms)`);
   assert.ok(list < BUDGET.listMs, `lista de Mudanças, mediana de 3 aberturas a frio ${Math.round(list)}ms (limite ${BUDGET.listMs}ms)`);
   assert.ok(bigFile < BUDGET.fileMs, `arquivo grande ${Math.round(bigFile)}ms (limite ${BUDGET.fileMs}ms)`);
   assert.ok(impact < BUDGET.impactMs, `Impacto ${Math.round(impact)}ms (limite ${BUDGET.impactMs}ms)`);

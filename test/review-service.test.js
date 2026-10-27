@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as contractModule from '../src/main/review/contract.js';
 import { linkGraph } from '../src/main/graph/link.js';
 import { createReviewService } from '../src/main/review/service.js';
 
@@ -57,6 +58,10 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
   return { service, calls, fire, approvals, gitMap };
 }
 
+vi.mock('../src/main/review/contract.js', async (original) => {
+  const actual = await original();
+  return { ...actual, contractChanges: vi.fn(actual.contractChanges) };
+});
 const landed = (service) => new Promise((resolve) => service.once('changed', resolve));
 const API = 'export function f(a) { return a; }\n';
 const API_BEFORE = 'export function f(a, b) { return a + b; }\n';
@@ -99,6 +104,52 @@ describe('review service', () => {
       files: { '/w/a.js': 'y', '/w/b.js': 'z' },
     });
     expect((await service.summary(WT)).order).toEqual(['b.js', 'a.js']);
+  });
+
+  it('keeps the contract data when the graph arrives after a cold analysis, with no second analysis', async () => {
+    let built = null;
+    const { service, calls } = setup({
+      git: { 'cat-file --batch': `o blob ${API_BEFORE.length}\n${API_BEFORE}\n` },
+      files: { '/w/a.js': API },
+      extra: { graphFor: () => ({ graph: () => built }), graphBuilt: () => built },
+    });
+    const done = landed(service);
+    await service.summary(WT);
+    await done;
+    built = { modules: [{ id: 'a.js', functions: [] }], functions: [], imports: [], calls: [], edges: [], moduleEdges: [], callEdges: [] };
+    const next = await service.summary(WT);
+    expect(next.contract.map((c) => c.path)).toEqual(['a.js']);
+    expect(next.verdict.find((v) => v.key === 'contract').text).toMatch(/mudança de contrato/);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(calls.filter((c) => c.key === 'cat-file --batch')).toHaveLength(1);
+  });
+
+  it('shows a failed analysis as not verified, announces it, and does not retry the same file version', async () => {
+    contractModule.contractChanges.mockImplementationOnce(() => { throw new Error('parser exploded'); });
+    const { service } = setup({ files: { '/w/a.js': API } });
+    const done = landed(service);
+    await service.summary(WT);
+    await done;
+    const next = await service.summary(WT);
+    const texts = next.verdict.map((v) => v.text);
+    expect(texts).toContain('contrato: não verificado (parser exploded)');
+    expect(texts.some((x) => /analisando/.test(x))).toBe(false);
+    contractModule.contractChanges.mockClear();
+    await service.summary(WT);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(contractModule.contractChanges).not.toHaveBeenCalled();
+  });
+
+  it('does not reorder on an unrelated summary while the analysis is still pending', async () => {
+    const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
+    let release;
+    const { service } = setup({
+      git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': '', 'cat-file --batch': () => new Promise((resolve) => { release = () => resolve(`o blob 1\nx\no blob ${API_BEFORE.length}\n${API_BEFORE}\n`); }) },
+      files: { '/w/a.js': 'y', '/w/b.js': API },
+    });
+    const first = (await service.summary(WT)).order;
+    expect((await service.summary(WT)).order).toEqual(first);
+    release();
   });
 
   it.each([[300, ['b.js', 'a.js']], [1500, ['a.js', 'b.js']]])('settles the provisional order only when the analysis lands within 1 s (at %i ms)', async (lateness, expected) => {

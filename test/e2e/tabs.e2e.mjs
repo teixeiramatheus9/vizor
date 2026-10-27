@@ -178,9 +178,20 @@ try {
 
   // ---- 4. A card of "Esperando" takes you to that chat in the Workspace -----
   emit(pulled, null, { hook_event_name: 'Notification', message: 'Claude is waiting for your input' });
+  // Leave the Workspace in a state the click has to change: another chat
+  // selected and the drawer closed (the Puxar step left both the other way).
+  await workspace.click(`[data-session]:not([data-session="${pulled}"])`);
+  await workspace.keyboard.press('Control+`');
+  await workspace.waitForFunction(() => !document.querySelector('#terminal-drawer.open'), null, { timeout: 5000 });
+  assert.equal(await workspace.getAttribute(`[data-session="${pulled}"]`, 'aria-selected'), 'false');
   await workspace.keyboard.press('Control+2');
   await workspace.waitForSelector(`[data-card="${pulled}"][data-column="waiting"]`, { timeout: 15000 });
   assert.equal(await topTab(), 'agents');
+  // The chat was pulled inside the Vizor (no badge) and a waiting card offers one way to answer.
+  assert.equal(await workspace.locator(`[data-card="${pulled}"] [data-action="answer"]`).count(), 1);
+  assert.equal(await workspace.locator(`[data-card="${pulled}"] .kb-outside`).count(), 0);
+  // Chats outside the Vizor wear the badge ("fora do Vizor").
+  assert.match(await workspace.textContent(`[data-card="${chats[1].id}"] .kb-outside`), /fora do Vizor/);
   await workspace.click(`[data-card="${pulled}"] .kb-title`);
   await workspace.waitForSelector('#terminal-drawer.open', { timeout: 10000 });
   assert.equal(await topTab(), 'workspace');
@@ -220,6 +231,7 @@ try {
   assert.deepEqual(notices, ['3 chats terminaram'], `three Stops in a burst gave ${JSON.stringify(notices)}`);
 
   // ---- 7. Minimized window: no gh call in five seconds ----------------------
+  assert.ok(ghCalls().length >= 1, 'the gh wrapper saw calls earlier, so a count of 0 below means something');
   await workspace.keyboard.press('Control+3');
   await workspace.waitForSelector('#view-github:not([hidden]) .gh-item', { timeout: 15000 });
   await sleep(1500); // whatever the visit started has answered
