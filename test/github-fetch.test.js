@@ -61,6 +61,19 @@ describe('createGithubFetcher', () => {
     expect(result.prs).toEqual([]);
   });
 
+  it('finds an issue in what was already read, without calling gh', async () => {
+    const gh = vi.fn(async (args) => (args.includes('@me') ? json([{ number: 4, title: 'minha' }]) : args[0] === 'issue' ? json([{ number: 7, title: 'Hello' }]) : '[]'));
+    const fetcher = createGithubFetcher({ gh });
+    expect(fetcher.cachedIssue('a/b', 7)).toBeNull();
+    await fetcher.list('a/b');
+    const calls = gh.mock.calls.length;
+    expect(fetcher.cachedIssue('a/b', 7)).toMatchObject({ number: 7, title: 'Hello' });
+    expect(fetcher.cachedIssue('a/b', 4)).toMatchObject({ title: 'minha' });
+    expect(fetcher.cachedIssue('a/b', 99)).toBeNull();
+    expect(fetcher.cachedIssue('c/d', 7)).toBeNull();
+    expect(gh).toHaveBeenCalledTimes(calls);
+  });
+
   it('caches the list per repo', async () => {
     const gh = vi.fn(async () => '[]');
     const fetcher = createGithubFetcher({ gh });

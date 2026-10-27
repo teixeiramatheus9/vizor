@@ -59,5 +59,15 @@ export function createGithubFetcher({ gh, now = Date.now }) {
     return text;
   }
 
-  return { list, body };
+  // An issue from the last good read (all open, or mine), or null. Never calls gh.
+  function cachedIssue(repo, number) {
+    const keys = lists.get(repo)?.keys ?? {};
+    for (const key of ['issues', 'mine']) {
+      const found = Array.isArray(keys[key]) ? keys[key].find((issue) => issue.number === number) : null;
+      if (found) return found;
+    }
+    return null;
+  }
+
+  return { list, body, cachedIssue };
 }

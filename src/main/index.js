@@ -2900,7 +2900,9 @@ function reviewRequestOf(worktree) {
   const project = [...worktreeCache].find(([, trees]) => (trees ?? []).some((tree) => tree.path === worktree))?.[0] ?? worktree;
   for (const session of sessions) {
     const number = taskLinks.numberOf(project, session.id);
-    const issue = number && lastGhResultsRoot === project && Array.isArray(lastGhResults?.openIssues) ? lastGhResults.openIssues.find((item) => item.number === number) : null;
+    const voiceIssue = number && lastGhResultsRoot === project && Array.isArray(lastGhResults?.openIssues) ? lastGhResults.openIssues.find((item) => item.number === number) : null;
+    // A project that is not the voice's: what its GitHub tab read.
+    const issue = voiceIssue ?? (number && githubRepos.has(project) ? githubFetcher.cachedIssue(githubRepos.get(project), number) : null);
     if (issue) return { kind: 'issue', number, title: issue.title ?? '', body: issueBodyFor(project, number, worktree) };
   }
   const session = sessions.find((item) => item.id === workspaceSelectedSession && item.transcriptPath) ?? sessions.find((item) => item.transcriptPath);
@@ -3788,13 +3790,18 @@ ipcMain.handle('github:body', async (event, root, kind, number) => {
 });
 
 // A chat for the issue in the tab's own project (not the voice's).
+const isIssueNumber = (number) => Number.isInteger(number) && number > 0;
+
 ipcMain.handle('github:pull', async (event, root, number) => {
-  if (!fromWorkspace(event) || !Number.isInteger(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
-  return startIssue(number, { root }).catch((error) => ({ error: String(error?.message ?? error) }));
+  const repo = fromWorkspace(event) && isIssueNumber(number) ? await githubRepoFor(root) : null;
+  if (!repo) return { error: 'Ação desconhecida.' };
+  // The title the tab already read names the chat's tab (no new gh call).
+  const title = githubFetcher.cachedIssue(repo, number)?.title ?? null;
+  return startIssue(number, { root, title }).catch((error) => ({ error: String(error?.message ?? error) }));
 });
 
 ipcMain.handle('github:review', async (event, root, number) => {
-  if (!fromWorkspace(event) || !Number.isInteger(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
+  if (!fromWorkspace(event) || !isIssueNumber(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
   return reviewPr(number, { root }).catch((error) => ({ error: String(error?.message ?? error) }));
 });
 
