@@ -5,6 +5,7 @@ import {
   avatarOwnerOf,
   createAvatarService,
   nextAvatarCheck,
+  avatarCheckDue,
   AVATAR_CHECK_EVERY_MS,
   isAvatarFresh,
   AVATAR_MAX_AGE_MS,
@@ -26,6 +27,19 @@ describe('avatarOwnerOf', () => {
     expect(avatarOwnerOf('https://github.com/acme/app/')).toBe('acme');
     expect(avatarOwnerOf('')).toBeNull();
     expect(avatarOwnerOf(null)).toBeNull();
+  });
+});
+
+describe('avatarCheckDue', () => {
+  const entry = (over = {}) => ({ busy: false, nextCheck: 0, ...over });
+  it('reads a project the first time even with the window hidden', () => {
+    expect(avatarCheckDue(entry(), { now: 5, hidden: true })).toBe(true);
+  });
+  it('re-checks only when due, not busy and with the window on screen', () => {
+    expect(avatarCheckDue(entry({ nextCheck: 10 }), { now: 20, hidden: false })).toBe(true);
+    expect(avatarCheckDue(entry({ nextCheck: 10 }), { now: 20, hidden: true })).toBe(false);
+    expect(avatarCheckDue(entry({ nextCheck: 30 }), { now: 20, hidden: false })).toBe(false);
+    expect(avatarCheckDue(entry({ busy: true }), { now: 20, hidden: false })).toBe(false);
   });
 });
 

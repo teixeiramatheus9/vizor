@@ -49,7 +49,7 @@ import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
 import { testOutcomeOf } from './voice/narration.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
-import { avatarOwnerOf, createAvatarService, nextAvatarCheck } from './project-avatar.js';
+import { avatarCheckDue, avatarOwnerOf, createAvatarService, nextAvatarCheck } from './project-avatar.js';
 import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
@@ -2006,7 +2006,7 @@ let avatarsSent = null; // JSON of what the page last got; null = send again
 function resolveProjectAvatar(root) {
   const entry = projectAvatars.get(root) ?? { uri: null, busy: false, nextCheck: 0 };
   projectAvatars.set(root, entry);
-  if (entry.busy || Date.now() < entry.nextCheck) return;
+  if (!avatarCheckDue(entry, { now: Date.now(), hidden: reviewWindowHidden })) return;
   entry.busy = true;
   const show = (uri) => {
     if (uri === entry.uri) return;

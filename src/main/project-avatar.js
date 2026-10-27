@@ -29,6 +29,10 @@ export function avatarOwnerOf(remoteUrl) {
 export const AVATAR_CHECK_EVERY_MS = 10 * 60 * 1000;
 export const nextAvatarCheck = (now) => now + AVATAR_CHECK_EVERY_MS;
 
+// entry: { busy, nextCheck } (nextCheck 0 = never read). The first read always
+// runs, so the avatar shows; the periodic re-checks wait for the window.
+export const avatarCheckDue = (entry, { now, hidden }) => !entry.busy && now >= entry.nextCheck && !(entry.nextCheck && hidden);
+
 // A cached file is trusted for a week; a future mtime (clock skew) is not.
 export function isAvatarFresh(mtimeMs, now, maxAge = AVATAR_MAX_AGE_MS) {
   if (!Number.isFinite(mtimeMs)) return false;
