@@ -29,6 +29,9 @@ const PROTECTED_PATHS = ['~/.claude/**', '~/.config/vizor/**'];
 const SECRET_DIRS = ['~/.ssh', '~/.gnupg', '~/.config/gh', '~/.aws', '~/.config/gcloud', '~/.kube'];
 const SECRET_FILES = ['~/.claude/.credentials.json', '~/.git-credentials', '~/.netrc', '~/.docker/config.json', '~/.npmrc', '~/.pypirc'];
 const SECRET_READS = [...SECRET_DIRS.map((d) => `Read(${d}/**)`), ...SECRET_FILES.map((f) => `Read(${f})`), 'Read(**/.env)', 'Read(**/.env.*)'];
+// No level reaches the web or starts a subagent; listed as denies because a
+// deny beats an allow in the user's or the project's settings.
+const NO_TOOLS = ['WebFetch', 'WebSearch', 'Task', 'Agent'];
 const GIT_OUTPUT = ['git diff', 'git log', 'git show'].map((c) => `${c} *--output*`);
 
 // `cmd` alone and `cmd *`: the separator keeps `git logx` / `npm test-x` from matching.
@@ -54,6 +57,7 @@ export function cliArgs(a, { testCmd, lintCmd, prompt } = {}) {
     ...(a.level === 'project' ? bash(GH_WRITE_PROJECT) : []),
   ];
   const denied = [
+    ...NO_TOOLS,
     ...(edits ? [] : [...EDIT_TOOLS, ...bash(GIT_WRITE)]),
     ...(a.level === 'project' ? [] : bash(GH_WRITE_ALL)),
     ...bash(NEVER),

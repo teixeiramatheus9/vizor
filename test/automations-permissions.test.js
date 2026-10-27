@@ -118,6 +118,17 @@ describe('cliArgs keeps the Read tool off secrets', () => {
   });
 });
 
+describe('cliArgs denies the tools no level may use', () => {
+  it('web, subagents, and notebook edits where nothing is edited, at every level', () => {
+    for (const level of ['read', 'worktree', 'project']) {
+      const denied = list(cliArgs({ ...base, level }, {}), '--disallowedTools');
+      for (const tool of ['WebFetch', 'WebSearch', 'Task', 'Agent']) expect(denied, `${level} ${tool}`).toContain(tool);
+      expect(list(cliArgs({ ...base, level }, {}), '--allowedTools')).not.toContain('WebFetch');
+    }
+    expect(list(cliArgs({ ...base, level: 'read' }, {}), '--disallowedTools')).toContain('NotebookEdit');
+  });
+});
+
 describe('guardRules', () => {
   const programs = (r) => r.allowBash.map((e) => [e.program, ...(e.sub ?? e.argsPrefix ?? [])].join(' '));
   it('read: no edits, reads only', () => {
