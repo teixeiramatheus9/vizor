@@ -320,3 +320,13 @@ body[data-theme='arcade'] {
   --fs-lg: 14px;
   text-transform: uppercase;
 }
+
+/* Compact under arcade: the skin's sizes above win the tie with the plain
+   compact block, so the density shrinks them here, after the skin. */
+body[data-theme='arcade'][data-density='compact'] {
+  font-size: 9.5px;
+  --fs-xs: 10px;
+  --fs-sm: 10.5px;
+  --fs-base: 11.5px;
+  --fs-lg: 13px;
+}
