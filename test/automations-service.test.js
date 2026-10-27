@@ -468,30 +468,49 @@ describe('automation service: review fixes', () => {
     expect(t.runner.runs.filter((r) => r.automation.id === big)).toHaveLength(0);
   });
 
-  it('records the process group of a run, and a crash restart kills it if it is still claude', async () => {
-    const t = setup();
+  it('records the process group and its start time, and a restart kills it only when it is provably ours', async () => {
+    const starts = { 4242: '9001', 777: '55', 555: '100', 666: '100' };
+    const t = setup({ extra: { readStartTime: (pid) => starts[pid] ?? null } });
     await t.service.start();
     const id = (await t.service.save(base())).automation.id;
     await t.service.runNow(id);
     await flush();
     t.runner.runs[0].onSpawn(4242);
     await flush();
-    expect(t.pending()).toEqual([expect.objectContaining({ id, pgid: 4242 })]);
+    expect(t.pending()).toEqual([expect.objectContaining({ id, pgid: 4242, startTime: '9001' })]);
     t.service.killAllNow();
     const kills = [];
-    const cmdlines = { 4242: 'node\0/usr/bin/claude\0-p\0/vizor-x\0', 777: 'bash\0' };
-    const leftovers = [...t.pending(), { id, name: 'outra', capUsd: 1, pgid: 777 }, { id, name: 'sumiu', capUsd: 1, pgid: 888 }, { id, name: 'sem pgid', capUsd: 1 }];
+    const ours = `A=1\0VIZOR_INTERNAL=1\0VIZOR_AUTOMATION=${id}\0`;
+    const environs = {
+      4242: ours,
+      777: 'HOME=/h\0', // the user's own claude, same pid reused
+      555: ours, // env matches but the process started at another time
+      666: null, // unreadable
+    };
+    const leftovers = [
+      ...t.pending(),
+      { id, name: 'reused', capUsd: 1, pgid: 777, startTime: '55' },
+      { id, name: 'late', capUsd: 1, pgid: 555, startTime: '99' },
+      { id, name: 'unreadable', capUsd: 1, pgid: 666, startTime: '100' },
+      { id, name: 'other id', capUsd: 1, pgid: 4242, startTime: '9001', id2: 1 },
+      { id, name: 'gone', capUsd: 1, pgid: 888, startTime: '1' },
+      { id, name: 'no start', capUsd: 1, pgid: 4242 },
+      { id, name: 'sem pgid', capUsd: 1 },
+    ];
+    leftovers[4].id = 'someone-else'; // 'other id' leftover: env carries another automation id
+    leftovers[4].pgid = 4242;
     const next = setup({
       storeOverride: t.store,
       inflight: leftovers,
       extra: {
         kill: (pid, signal) => kills.push([pid, signal]),
-        readCmdline: (pid) => { if (!(pid in cmdlines)) throw Object.assign(new Error('gone'), { code: 'ENOENT' }); return cmdlines[pid]; },
+        readStartTime: (pid) => starts[pid] ?? null,
+        readEnviron: (pid) => { if (environs[pid] == null) throw Object.assign(new Error('gone'), { code: 'ENOENT' }); return environs[pid]; },
       },
     });
     await next.service.start();
     expect(kills).toEqual([[-4242, 'SIGKILL']]);
-    expect(next.entries.map((e) => e.status)).toEqual(['cancelled', 'cancelled', 'cancelled', 'cancelled']);
+    expect(next.entries.map((e) => e.status)).toEqual(Array(8).fill('cancelled'));
     expect(next.pending()).toEqual([]);
   });
 

@@ -624,9 +624,11 @@ const automations = createAutomationService({
   guardEnabled: () => managerConfig.guardEnabled !== false,
   guardReady: guardHookInSettings,
   baseEnv: () => process.env,
-  // A crash's leftover run: killed by its group, once /proc says it is still a claude.
+  // A crash's leftover run: killed by its group, once /proc proves it is that run's (start time + env markers).
   kill: (pid, signal) => process.kill(pid, signal),
-  readCmdline: (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8'),
+  readEnviron: (pid) => fs.readFileSync(`/proc/${pid}/environ`, 'utf8'),
+  // Field 22 of /proc/<pid>/stat; the comm field (2) may hold spaces, so count after its closing paren.
+  readStartTime: (pid) => fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[19] ?? null,
   log,
 });
 // Read from settings.json, not from guardInstalled: a failed write leaves that flag set.

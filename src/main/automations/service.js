@@ -38,7 +38,7 @@ export function createAutomationService({
   inflight, mkdir, notify = () => {}, commandsOf = async () => ({}), removeWorktree = async () => {},
   saveDayCap = async () => {}, guardEnabled = () => true, guardReady = () => true, baseEnv = () => ({}), log = () => {},
   // A crash leaves the detached claude group alive: the next start kills it.
-  kill = () => {}, readCmdline = () => '',
+  kill = () => {}, readEnviron = () => '', readStartTime = () => null,
   now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout,
 }) {
   let items = [];
@@ -200,7 +200,7 @@ export function createAutomationService({
   // The runs in flight, on disk: a quit or crash that never wrote their
   // history leaves them here for the next start to record as cancelled.
   function saveInflight() {
-    const list = [...running.values()].filter((r) => r.recorded).map(({ id, name, startedAt, late, capUsd, pgid }) => ({ id, name, startedAt, late, capUsd, pgid }));
+    const list = [...running.values()].filter((r) => r.recorded).map(({ id, name, startedAt, late, capUsd, pgid, startTime }) => ({ id, name, startedAt, late, capUsd, pgid, startTime }));
     inflightChain = inflightChain.then(() => inflight.write(list)).catch((error) => log(`automations: inflight write failed (${error})`));
     return inflightChain;
   }
@@ -265,6 +265,11 @@ export function createAutomationService({
     if (r.cancelRequested) return { status: 'cancelled', branch };
     const onSpawn = (pgid) => {
       r.pgid = pgid;
+      try {
+        r.startTime = readStartTime(pgid) ?? undefined;
+      } catch {
+        r.startTime = undefined; // no identity: a restart will not kill it
+      }
       saveInflight();
     };
     const result = await runner.run({ automation: a, args, cwd, env, timeoutMs: a.timeoutMin * 60000, onSpawn });
@@ -320,16 +325,20 @@ export function createAutomationService({
     emit();
   }
 
-  // A pgid is only killed while its leader is still a claude: the pid may
-  // have been handed to something else since.
-  function killLeftover(pgid) {
+  // A pgid is only killed when it is provably this run's: same start time as
+  // recorded, and an environment carrying this run's markers. A reused pid
+  // (the user's own claude) fails both; any doubt means no kill.
+  function killLeftover(run) {
+    const pgid = run.pgid;
     if (!Number.isInteger(pgid) || pgid <= 1) return;
     try {
-      if (!String(readCmdline(pgid) ?? '').includes('claude')) return;
+      if (typeof run.startTime !== 'string' || !run.startTime || String(readStartTime(pgid)) !== run.startTime) return;
+      const env = String(readEnviron(pgid) ?? '').split('\0');
+      if (!env.includes('VIZOR_INTERNAL=1') || !env.includes(`VIZOR_AUTOMATION=${run.id}`)) return;
       kill(-pgid, 'SIGKILL');
       log(`automations: killed the leftover run group ${pgid}`);
     } catch {
-      // gone already, or not ours to kill
+      // gone already, unreadable, or not ours to kill
     }
   }
 
@@ -347,7 +356,7 @@ export function createAutomationService({
       const leftovers = await inflight.read().catch(() => []);
       for (const run of Array.isArray(leftovers) ? leftovers : []) {
         if (typeof run?.id !== 'string') continue;
-        killLeftover(run.pgid);
+        killLeftover(run);
         budget.add(Number(run.capUsd) || 0);
         await history.append(run.id, { name: run.name, status: 'cancelled', costUsd: Number(run.capUsd) || 0, late: Boolean(run.late), reason: 'O Vizor fechou no meio da execução.' })
           .catch((error) => log(`automations: history append failed (${error})`));

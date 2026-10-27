@@ -112,7 +112,7 @@ describe('cliArgs keeps the Read tool off secrets', () => {
       const denied = list(cliArgs({ ...base, level }, {}), '--disallowedTools');
       for (const rule of ['Read(~/.ssh/**)', 'Read(~/.gnupg/**)', 'Read(~/.config/gh/**)', 'Read(~/.claude/.credentials.json)', 'Read(~/.git-credentials)',
         'Read(~/.netrc)', 'Read(~/.aws/**)', 'Read(~/.config/gcloud/**)', 'Read(~/.docker/config.json)', 'Read(~/.kube/**)', 'Read(~/.npmrc)',
-        'Read(~/.pypirc)', 'Read(**/.env)', 'Read(**/.env.*)'])
+        'Read(~/.pypirc)', 'Read(**/.env)', 'Read(**/.env.*)', 'Read(//proc/**)'])
         expect(denied, `${level} ${rule}`).toContain(rule);
     }
   });

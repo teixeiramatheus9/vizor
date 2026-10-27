@@ -28,7 +28,7 @@ const PROTECTED_PATHS = ['~/.claude/**', '~/.config/vizor/**'];
 // is assumed from the permission syntax, not verified at runtime.
 const SECRET_DIRS = ['~/.ssh', '~/.gnupg', '~/.config/gh', '~/.aws', '~/.config/gcloud', '~/.kube'];
 const SECRET_FILES = ['~/.claude/.credentials.json', '~/.git-credentials', '~/.netrc', '~/.docker/config.json', '~/.npmrc', '~/.pypirc'];
-const SECRET_READS = [...SECRET_DIRS.map((d) => `Read(${d}/**)`), ...SECRET_FILES.map((f) => `Read(${f})`), 'Read(**/.env)', 'Read(**/.env.*)'];
+const SECRET_READS = [...SECRET_DIRS.map((d) => `Read(${d}/**)`), ...SECRET_FILES.map((f) => `Read(${f})`), 'Read(**/.env)', 'Read(**/.env.*)', 'Read(//proc/**)'];
 // No level reaches the web or starts a subagent; listed as denies because a
 // deny beats an allow in the user's or the project's settings.
 const NO_TOOLS = ['WebFetch', 'WebSearch', 'Task', 'Agent'];
