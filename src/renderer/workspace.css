@@ -592,6 +592,9 @@ button:hover {
   padding: 3px 10px;
   cursor: pointer;
 }
+.plan-action:hover {
+  color: var(--bg-surface);
+}
 .plan-action:disabled {
   opacity: 0.5;
 }
