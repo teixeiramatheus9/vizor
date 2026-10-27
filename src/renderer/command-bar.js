@@ -26,6 +26,8 @@ export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, f
   for (const chat of chats.filter((item) => item.status === 'working'))
     items.push({ id: `interrupt:${chat.sessionId}`, group: 'Chats', label: `Interromper ${chat.name}`, action: { type: 'interrupt', sessionId: chat.sessionId } });
   for (const pr of prs) items.push({ id: `review:${pr.number}`, group: 'PRs', label: `Revisar PR #${pr.number} ${pr.title}`, action: { type: 'review-pr', number: pr.number } });
+  for (const [tab, name] of [['workspace', 'Workspace'], ['agents', 'Agentes'], ['github', 'GitHub']])
+    items.push({ id: `tab:${tab}`, group: 'Telas', label: `Ir pra ${name}`, action: { type: 'goto-tab', tab } });
   items.push({ id: 'maestro', group: 'Vizor', label: maestroOn ? 'Desligar o Maestro' : 'Ligar o Maestro', action: { type: 'maestro', on: !maestroOn } });
   return items;
 }

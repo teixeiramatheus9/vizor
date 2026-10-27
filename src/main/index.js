@@ -2425,17 +2425,20 @@ ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}
 
 const INSPECTOR_MODES = ['arquivo', 'cards'];
 const INSPECTOR_WIDTHS = ['compact', 'wide', 'collapsed'];
+const TOP_TABS = ['workspace', 'agents', 'github'];
 
 ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
   const saved = loadPersistedState().workspaceInspector ?? {};
   const current = {
     mode: INSPECTOR_MODES.includes(saved.mode) ? saved.mode : 'arquivo',
     width: INSPECTOR_WIDTHS.includes(saved.width) ? saved.width : 'compact',
+    topTab: TOP_TABS.includes(saved.topTab) ? saved.topTab : 'workspace',
   };
   if (!fromWorkspace(event) || !set) return current;
   const next = {
     mode: INSPECTOR_MODES.includes(set.mode) ? set.mode : current.mode,
     width: INSPECTOR_WIDTHS.includes(set.width) ? set.width : current.width,
+    topTab: TOP_TABS.includes(set.topTab) ? set.topTab : current.topTab,
   };
   try {
     fs.mkdirSync(configDir, { recursive: true });

@@ -72,6 +72,69 @@ button:hover {
   flex: 1;
 }
 
+/* top tabs: one view at a time; a hidden view draws and asks for nothing */
+#top-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  background: var(--ws-bg);
+  border-bottom: 1px solid var(--ws-border);
+}
+
+.top-tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 4px 12px;
+  color: var(--text-3);
+}
+
+.top-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent, currentColor);
+}
+
+.view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.view[hidden] {
+  display: none;
+}
+
+#shortcuts-help {
+  position: fixed;
+  top: 20%;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 320px;
+  padding: 12px 18px;
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-border);
+  border-radius: 6px;
+  z-index: 60;
+}
+
+#shortcuts-help h2 {
+  margin: 0 0 8px;
+  font-size: 1em;
+}
+
+#shortcuts-help dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+#shortcuts-help dd {
+  margin: 0;
+  color: var(--text-2);
+}
+
 #columns {
   flex: 1;
   min-height: 0;

@@ -31,6 +31,8 @@ import { averageColor, nudgeColor } from './project-accent.js';
 import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
 import { createReviewController } from './review/review-controller.js';
+import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
+import { keyAction, renderShortcuts } from './shell/shortcuts.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -259,7 +261,10 @@ async function ensureView(id) {
 // The terminal lives in a drawer under the review: closed, nothing is
 // fitted (a zero-size fit would shrink the pty) and nothing takes the keys.
 const drawerEl = document.getElementById('terminal-drawer');
-const drawerShown = () => drawerEl.classList.contains('open');
+// The drawer belongs to the Workspace view: elsewhere it is display:none, so
+// nothing is fitted (a zero-size fit would shrink the pty) and no key goes there.
+let topTab = 'workspace';
+const drawerShown = () => topTab === 'workspace' && drawerEl.classList.contains('open');
 // A state push must not pull the keys out of the composer or the file filter.
 const typingElsewhere = () => document.activeElement?.matches?.('input, textarea, select') && !drawerEl.contains(document.activeElement);
 
@@ -354,9 +359,35 @@ function renderSidebarOnly() {
   sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds, musicianMarks(), avatarMarks());
 }
 
+const topTabsEl = document.getElementById('top-tabs');
+function drawTopTabs() {
+  const html = renderTopTabs(topTab, { waiting: lastTree?.counts?.waiting ?? 0 });
+  if (topTabsEl.innerHTML !== html) topTabsEl.innerHTML = html;
+}
+
+// Switching only shows and hides views: no pty is touched. Coming back to the
+// Workspace refits the terminal, which could not be measured while hidden.
+function setTopTab(next, { save = true } = {}) {
+  next = normalizeTopTab(next);
+  if (next === topTab) return;
+  topTab = next;
+  for (const tab of TOP_TABS) document.getElementById(`view-${tab.id}`).hidden = tab.id !== next;
+  drawTopTabs();
+  if (save) window.vizor.setPrefs({ topTab: next }).catch(() => {});
+  if (next === 'workspace') {
+    fitActive();
+    if (!commandBarOpen() && drawerShown() && !typingElsewhere()) views.get(activeTab)?.term.focus();
+  }
+}
+topTabsEl.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-top-tab]');
+  if (button) setTopTab(button.dataset.topTab);
+});
+
 function render() {
   if (!lastTree) return;
   topbar.innerHTML = renderTopBar(lastTree, { voice: voiceInfo, maestro: maestro.on });
+  drawTopTabs();
   renderSidebarOnly();
   renderTerminalArea();
 }
@@ -622,6 +653,7 @@ window.vizor.onEditsChanged(({ sessionId }) => {
 
 window.vizor.getPrefs().then((saved) => {
   Object.assign(prefs, saved);
+  setTopTab(saved.topTab, { save: false });
   if (prefs.width !== 'collapsed') lastOpenWidth = prefs.width;
   renderInspector();
 });
@@ -1148,7 +1180,7 @@ function openCommandBar() {
 
 function closeCommandBar() {
   commandBar.hidden = true;
-  if (!maestro.on) views.get(activeTab)?.term.focus();
+  if (!maestro.on && topTab === 'workspace') views.get(activeTab)?.term.focus();
 }
 
 function toast(text) {
@@ -1162,6 +1194,7 @@ async function runCommandItem(item) {
   if (!item || item.disabled) return;
   closeCommandBar();
   const { action } = item;
+  if (action.type === 'goto-tab') return void setTopTab(action.tab);
   if (action.type === 'focus') {
     showDrawer();
     if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
@@ -1191,6 +1224,39 @@ window.addEventListener(
   true,
 );
 
+// Ctrl+1..3 switch the top tab, caught before xterm like Ctrl+K. Bare 1..4
+// (review tabs) and "?" (help) only count outside the terminal and text fields.
+const helpEl = document.getElementById('shortcuts-help');
+const REVIEW_TAB_IDS = ['summary', 'changes', 'impact', 'live'];
+function toggleHelp(show = helpEl.hidden) {
+  if (show) helpEl.innerHTML = renderShortcuts();
+  helpEl.hidden = !show;
+}
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (event.key === 'Escape' && !helpEl.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleHelp(false);
+      return;
+    }
+    if (commandBarOpen()) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const focusInTerminal = Boolean(target?.closest('#terminal-drawer'));
+    const focusInField = focusInTerminal || Boolean(target?.closest('input, textarea, select, [contenteditable]'));
+    const action = keyAction(event, { focusInTerminal, focusInField, composing: event.isComposing });
+    if (!action) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (action.top) setTopTab(TOP_TABS[action.top - 1].id);
+    else if (action.inner) {
+      if (topTab === 'workspace') review.setTab(REVIEW_TAB_IDS[action.inner - 1]);
+    } else if (action.help) toggleHelp();
+  },
+  true,
+);
+
 // Ctrl+` opens and closes the terminal drawer, before xterm sees it.
 window.addEventListener(
   'keydown',
@@ -1198,7 +1264,7 @@ window.addEventListener(
     if (!event.ctrlKey || event.shiftKey || event.altKey || (event.key !== '`' && event.code !== 'Backquote')) return;
     event.preventDefault();
     event.stopPropagation();
-    review.toggleDrawer();
+    if (topTab === 'workspace') review.toggleDrawer();
   },
   true,
 );

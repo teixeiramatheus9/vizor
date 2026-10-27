@@ -14,6 +14,8 @@
   </head>
   <body data-inspector-width="compact" data-review-tab="summary">
     <header id="topbar"></header>
+    <nav id="top-tabs" role="tablist" aria-label="Telas"></nav>
+    <div class="view" id="view-workspace">
     <main id="columns">
       <nav id="sidebar" aria-label="Projetos"></nav>
       <section id="review" aria-label="Revisão">
@@ -71,6 +73,10 @@
         <div id="review-composer"></div>
       </aside>
     </main>
+    </div>
+    <section class="view" id="view-agents" aria-label="Agentes" hidden></section>
+    <section class="view" id="view-github" aria-label="GitHub" hidden></section>
+    <div id="shortcuts-help" role="dialog" aria-label="Atalhos" hidden></div>
     <div id="command-bar" hidden>
       <input id="command-input" placeholder="puxar issue, ir para um chat, aprovar o plano…" autocomplete="off" spellcheck="false" />
       <ul id="command-list" role="listbox"></ul>
