@@ -8,7 +8,7 @@ export function createDailyBudget({ file, readFile, writeFile, now = () => new D
   const load = () => {
     try {
       const raw = JSON.parse(readFile(file));
-      if (typeof raw?.day === 'string' && Number.isFinite(raw.spent)) { day = raw.day; total = raw.spent; return; }
+      if (typeof raw?.day === 'string' && Number.isFinite(raw.spent) && raw.spent >= 0) { day = raw.day; total = raw.spent; return; }
     } catch { /* first run or unreadable: start the day at 0 */ }
     day = dayKey(now());
     total = 0;

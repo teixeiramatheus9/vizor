@@ -8,6 +8,8 @@ const REPORT_NAME = /^\d{8}-\d{4}(?:-\d+)?\.md$/;
 const pad = (n) => String(n).padStart(2, '0');
 const stamp = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 // An id is a path segment: refuse anything that could climb out of dir.
+// Only these reach historico.jsonl: never stderr or the raw CLI JSON.
+const KEPT = ['name', 'status', 'costUsd', 'durationMs', 'numTurns', 'sessionId', 'permissionDenials', 'late', 'branch', 'reason'];
 const safeId = (id) => typeof id === 'string' && /^[\w-]+$/.test(id);
 
 export function createHistory({ dir, fs, now = () => new Date(), keep = KEEP_RUNS }) {
@@ -47,8 +49,8 @@ export function createHistory({ dir, fs, now = () => new Date(), keep = KEEP_RUN
         name = `${base}-${n}.md`;
       }
       await fs.writeFile(join(folder(id), name), report({ ...entry, id }));
-      const saved = { ...entry, at: at.toISOString(), report: name };
-      delete saved.result; // the report holds the text; the log stays small
+      // The report holds the text; the log stays small.
+      const saved = { ...Object.fromEntries(KEPT.filter((k) => entry[k] !== undefined).map((k) => [k, entry[k]])), at: at.toISOString(), report: name };
       await fs.appendFile(logFile(id), `${JSON.stringify(saved)}\n`);
       const all = await readEntries(id);
       if (all.length > keep) {

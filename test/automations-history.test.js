@@ -22,6 +22,12 @@ describe('history', () => {
     expect(md).toContain('tudo certo');
     expect(md).toContain('Status: ok');
   });
+  it('persists only allowlisted fields (no stderr/raw)', async () => {
+    const h = createHistory({ dir, fs: fsp });
+    const saved = await h.append('a1', { status: 'ok', costUsd: 1, stderr: 'secret', raw: { big: 1 }, result: 'x' });
+    expect(saved.stderr).toBeUndefined();
+    expect(JSON.stringify(await h.list('a1'))).not.toMatch(/secret|big/);
+  });
   it('two runs in the same minute do not overwrite each other', async () => {
     const h = createHistory({ dir, fs: fsp, now: () => new Date(2026, 9, 27, 10, 0) });
     const one = await h.append('a1', { status: 'ok', result: 'um' });

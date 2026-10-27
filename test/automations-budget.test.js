@@ -32,6 +32,9 @@ describe('daily budget', () => {
     expect(t.b.spent()).toBe(0);
     expect(t.b.allows(5)).toBe(true);
   });
+  it('a negative spent in the file is corrupt', () => {
+    expect(mk(JSON.stringify({ day: '2026-10-27', spent: -9 }), new Date(2026, 9, 27)).b.spent()).toBe(0);
+  });
   it('a corrupt file reads as a fresh day', () => {
     expect(mk('{nope', new Date(2026, 9, 27)).b.spent()).toBe(0);
   });

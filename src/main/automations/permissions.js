@@ -163,6 +163,7 @@ export function runEnv(a, baseEnv = {}) {
   // The worktree level runs untrusted-ish edits: no desktop keyring (DBUS) and
   // an empty gh config dir, so gh has no auth there. 'read' and 'project' keep it.
   if (a.level === 'worktree') {
+    if (!baseEnv.HOME) throw new Error('HOME is required to isolate the worktree level');
     env.DBUS_SESSION_BUS_ADDRESS = 'disabled:';
     env.GH_CONFIG_DIR = `${baseEnv.HOME ?? ''}/.config/vizor/automacoes/${a.id}/gh-empty`;
   }

@@ -9,6 +9,8 @@ function fakeSpawn() {
     child.pid = 4242;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
+    child.stdout.setEncoding = () => {};
+    child.stderr.setEncoding = () => {};
     calls.push({ cmd, args, opts, child });
     return child;
   };
@@ -88,7 +90,7 @@ describe('runner', () => {
     expect(runner.cancel('a1')).toBe(true);
     expect(runner.cancel('nope')).toBe(false);
     calls[0].child.emit('close', null);
-    expect(await p1).toMatchObject({ status: 'cancelled', costUsd: 0 });
+    expect(await p1).toMatchObject({ status: 'cancelled', costUsd: 1 });
     runner.cancelAll();
     calls[1].child.emit('close', null);
     expect((await p2).status).toBe('cancelled');
@@ -99,5 +101,88 @@ describe('runner', () => {
   it('a spawn that throws is failed', async () => {
     const runner = createRunner({ spawn: () => { throw new Error('ENOENT'); } });
     expect((await runner.run({ automation: a, args: [], timeoutMs: 1 })).status).toBe('failed');
+  });
+
+  it('unknown cost counts the run cap: spawn throw, error event, unparsable output, default cap', async () => {
+    const thrower = createRunner({ spawn: () => { throw new Error('ENOENT'); } });
+    expect(await thrower.run({ automation: { id: 'a', capUsd: 2 }, args: [], timeoutMs: 1 })).toMatchObject({ status: 'failed', costUsd: 2 });
+    const { runner, calls } = setup();
+    const p1 = runner.run({ automation: { id: 'a', capUsd: 2 }, args: [], timeoutMs: 1 });
+    calls[0].child.emit('error', new Error('boom'));
+    expect(await p1).toMatchObject({ status: 'failed', costUsd: 2 });
+    const p2 = runner.run({ automation: { id: 'b', capUsd: 3 }, args: [], timeoutMs: 1 });
+    calls[1].child.stdout.emit('data', 'garbage');
+    calls[1].child.emit('close', 1);
+    expect(await p2).toMatchObject({ status: 'failed', costUsd: 3 });
+    const p3 = runner.run({ automation: { id: 'c' }, args: [], timeoutMs: 1 });
+    calls[2].child.emit('close', 1);
+    expect((await p3).costUsd).toBe(1);
+  });
+
+  it('a cancelled run counts the parsed cost, else the cap', async () => {
+    const { runner, calls } = setup();
+    const p1 = runner.run({ automation: { id: 'a', capUsd: 2 }, args: [], timeoutMs: 1 });
+    runner.cancel('a');
+    calls[0].child.stdout.emit('data', JSON.stringify({ is_error: true, total_cost_usd: 0.4 }));
+    calls[0].child.emit('close', null);
+    expect(await p1).toMatchObject({ status: 'cancelled', costUsd: 0.4 });
+    const p2 = runner.run({ automation: { id: 'b', capUsd: 2 }, args: [], timeoutMs: 1 });
+    runner.cancel('b');
+    calls[1].child.emit('close', null);
+    expect(await p2).toMatchObject({ status: 'cancelled', costUsd: 2 });
+  });
+
+  it('killAllNow SIGKILLs every live group synchronously', () => {
+    const { runner, kills } = setup();
+    runner.run({ automation: { id: 'a', capUsd: 1 }, args: [], timeoutMs: 1 });
+    runner.killAllNow();
+    expect(kills).toEqual([[-4242, 'SIGKILL']]);
+  });
+
+  it('cancelAll resolves when every run closed, or after the grace period', async () => {
+    const { runner, calls, timers } = setup();
+    runner.run({ automation: { id: 'a', capUsd: 1 }, args: [], timeoutMs: 1 });
+    let done = false;
+    const all = runner.cancelAll().then(() => { done = true; });
+    await Promise.resolve();
+    expect(done).toBe(false);
+    calls[0].child.emit('close', null);
+    await all;
+    expect(done).toBe(true);
+    // a stuck child: the grace timer releases it
+    runner.run({ automation: { id: 'b', capUsd: 1 }, args: [], timeoutMs: 1 });
+    let released = false;
+    const stuck = runner.cancelAll().then(() => { released = true; });
+    timers.filter((t) => t.ms === 6000 && !t.cleared).forEach((t) => t.fn());
+    await stuck;
+    expect(released).toBe(true);
+  });
+
+  it('rejects a second concurrent run of the same id', async () => {
+    const { runner, calls } = setup();
+    runner.run({ automation: { id: 'a', capUsd: 1 }, args: [], timeoutMs: 1 });
+    const r = await runner.run({ automation: { id: 'a', capUsd: 1 }, args: [], timeoutMs: 1 });
+    expect(r).toMatchObject({ status: 'failed', costUsd: 0 });
+    expect(calls.length).toBe(1);
+  });
+
+  it('resolves even when the kill throws and the child never closes', async () => {
+    const s = fakeSpawn();
+    const t = fakeTimers();
+    const runner = createRunner({ spawn: s.spawn, setTimer: t.setTimer, clearTimer: t.clearTimer, kill: () => { throw new Error('EPERM'); } });
+    const p = runner.run({ automation: { id: 'a', capUsd: 1 }, args: [], timeoutMs: 5 });
+    t.timers[0].fn();
+    t.timers[1].fn();
+    t.timers.at(-1).fn();
+    expect((await p).status).toBe('timeout');
+  });
+
+  it('caps stdout at 4 MB', async () => {
+    const { runner, calls } = setup();
+    const p = runner.run({ automation: { id: 'a', capUsd: 1 }, args: [], timeoutMs: 1 });
+    calls[0].child.stdout.emit('data', 'x'.repeat(5 * 1024 * 1024));
+    calls[0].child.emit('close', 0);
+    const r = await p;
+    expect(r.status).toBe('failed');
   });
 });

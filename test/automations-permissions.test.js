@@ -199,10 +199,15 @@ describe('runEnv', () => {
     }
   });
 
+  it('worktree level fails closed without a HOME', () => {
+    expect(() => runEnv({ ...base, level: 'worktree' }, {})).toThrow();
+    expect(() => runEnv({ ...base, level: 'read' }, {})).not.toThrow();
+  });
+
   it('does not change the env it was given', () => {
-    const given = { GH_TOKEN: 't' };
+    const given = { GH_TOKEN: 't', HOME: '/h' };
     runEnv(base, given);
-    expect(given).toEqual({ GH_TOKEN: 't' });
+    expect(given).toEqual({ GH_TOKEN: 't', HOME: '/h' });
   });
 
   it('real git: a push fails with the env applied, and works without it', () => {

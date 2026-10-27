@@ -12,7 +12,8 @@ export async function prepareWorktree(a, { git, exists, repoRoot, base, home, no
   const root = resolve(repoRoot);
   const path = join(dirname(root), `${basename(root)}-auto-${a.slug}`);
   // The guard refuses edits under .claude/, at / and in the home itself.
-  if (path === '/' || (home && path === resolve(home)) || path.split('/').includes('.claude')) {
+  if (!home) return failed('Não consegui descobrir a pasta pessoal para validar a worktree.');
+  if (path === '/' || path === resolve(home) || path.split('/').includes('.claude')) {
     return failed('A pasta da worktree cairia num lugar proibido. Escolha outro projeto.');
   }
   const refExists = async (ref) => (await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root })).code === 0;
@@ -24,6 +25,9 @@ export async function prepareWorktree(a, { git, exists, repoRoot, base, home, no
 
   const branch = `auto/${a.slug}/${branchStamp(now())}`;
   if (await exists(path)) {
+    // A folder that is not its own checkout would make `status` read the parent repo.
+    const top = await git(['rev-parse', '--show-toplevel'], { cwd: path });
+    if (top.code !== 0 || resolve(top.stdout.trim()) !== path) return failed('A pasta da worktree da automação não é um checkout próprio. Remova-a e tente de novo.');
     const status = await git(['status', '--porcelain'], { cwd: path });
     if (status.code !== 0) return failed('Não consegui ler o estado da worktree da automação.');
     if (status.stdout.trim()) {

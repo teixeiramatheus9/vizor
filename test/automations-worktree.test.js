@@ -3,12 +3,13 @@ import { prepareWorktree } from '../src/main/automations/worktree.js';
 
 const a = { slug: 'varredura' };
 const now = () => new Date(2026, 9, 27, 9, 5);
-function fake({ refs = ['origin/main', 'main'], present = false, dirty = '', failOn } = {}) {
+function fake({ refs = ['origin/main', 'main'], present = false, dirty = '', failOn, toplevel } = {}) {
   const calls = [];
   const git = async (args, { cwd }) => {
     calls.push({ args, cwd });
     const cmd = args.join(' ');
     if (failOn && cmd.startsWith(failOn)) return { code: 1, stdout: '' };
+    if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return { code: 0, stdout: `${toplevel ?? cwd}\n` };
     if (args[0] === 'rev-parse') return { code: refs.some((r) => args[3].startsWith(`${r}^`)) ? 0 : 1, stdout: '' };
     if (args[0] === 'status') return { code: 0, stdout: dirty };
     return { code: 0, stdout: '' };
@@ -47,6 +48,16 @@ describe('prepareWorktree', () => {
       if (repoRoot === '/home/m/x') expect(r.ok).toBe(true);
       else expect(r.status).toBe('failed');
     }
+  });
+  it('fails closed without a home', async () => {
+    const { opts } = fake();
+    expect((await prepareWorktree(a, { ...opts, home: undefined })).status).toBe('failed');
+  });
+  it('does not trust status of a folder that is not its own git toplevel', async () => {
+    const { calls, opts } = fake({ present: true, toplevel: '/work/vizor' });
+    const r = await prepareWorktree(a, opts);
+    expect(r.status).toBe('failed');
+    expect(calls.some((c) => c.args[0] === 'checkout')).toBe(false);
   });
   it('fails with a reason when git fails or no base exists', async () => {
     expect((await prepareWorktree(a, fake({ refs: [] }).opts)).status).toBe('failed');
