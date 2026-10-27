@@ -15,6 +15,7 @@ import { safeToTypeIdle } from './bubble-routing.js';
 //      focus steal could land anywhere.
 // No channel while a turn runs → it waits for the turn to end. Otherwise the
 // comment fails and the user can copy it (no automatic clipboard writes).
+import { blocksTyping } from './session-status.js';
 const PASTE_ENTER_DELAY_MS = 150;
 const IDLE = ['done', 'waiting'];
 
@@ -51,7 +52,7 @@ export function createCommentDelivery({
     if (peer === 'failed') return { outcome: 'failed', channel: null };
     if (!idle) return { outcome: 'hold', channel: null };
     // A Vizor session whose notice hasn't settled yet: try again shortly.
-    if (ptyId && !safeToTypeIdle(session, now()) && !session.needsPermission && !session.question)
+    if (ptyId && !safeToTypeIdle(session, now()) && !blocksTyping(session))
       return { outcome: 'hold', channel: null };
     if (!ptyId && immediate) {
       const typed = await typeReply(session, flattenForTyping(comment.message));

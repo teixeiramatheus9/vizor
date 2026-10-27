@@ -2177,6 +2177,20 @@ async function generateVoiceForStop(session) {
     await voiceSession.onSessionStop({ id: session.id, lastMessage: snapshot.lastAssistantMessage });
     return;
   }
+  // A turn that ends on a plain question is urgent like an AskUserQuestion: the
+  // question itself is the notice, no Haiku tokens for a paraphrase.
+  const textQuestion = snapshot.pendingQuestion?.kind === 'text' ? snapshot.pendingQuestion.text : null;
+  if (textQuestion) {
+    registry.setManagerMessage(session.id, { message: textQuestion });
+    await bark(session, 'question', textQuestion, {
+      projectName: displayNameOf(session),
+      text: textQuestion,
+      kind: 'question',
+      optionsCount: 0,
+      sessionId: session.id,
+    });
+    return;
+  }
   let voice;
   // Mid-conversation, another chat finishing is a short fixed line: no
   // Haiku tokens for an alert that only interrupts (#161).
@@ -2218,6 +2232,12 @@ async function enrichNotification(session) {
   const snapshot = session.transcriptPath
     ? await readSnapshotWithQuestionRetry(session.transcriptPath)
     : { pendingQuestion: null };
+  // The Stop already announced a text question: the idle Notification that
+  // follows must not repeat it, nor drop it.
+  if (snapshot.pendingQuestion?.kind === 'text' && session.question?.kind === 'text') {
+    registry.setManagerMessage(session.id, { message: session.question.text }); // the Notification overwrote it
+    return;
+  }
   registry.setQuestion(session.id, snapshot.pendingQuestion);
   const firstQuestion = snapshot.pendingQuestion?.questions?.[0];
   // The card shows exactly what the tooltip showed — one message per chat.

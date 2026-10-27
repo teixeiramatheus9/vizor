@@ -13,6 +13,7 @@ function titleOf(session, issue) {
 export function questionText(question) {
   if (!question) return null;
   if (typeof question === 'string') return question;
+  if (question.kind === 'text' && question.text) return question.text;
   const first = question.questions?.[0]?.question;
   return typeof first === 'string' && first ? first : 'Esperando sua resposta.';
 }

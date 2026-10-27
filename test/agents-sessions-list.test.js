@@ -28,6 +28,7 @@ describe('buildAgentSessions', () => {
   });
   it('turns the pending question into text', () => {
     expect(questionText({ questions: [{ question: 'Qual?' }] })).toBe('Qual?');
+    expect(questionText({ kind: 'text', text: 'Quer que eu siga?' })).toBe('Quer que eu siga?');
     expect(questionText(null)).toBeNull();
     expect(questionText({})).toBe('Esperando sua resposta.');
   });

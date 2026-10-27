@@ -13,3 +13,8 @@ export const STATUS = {
 // guardAsk: truthy when the rule guard has an ask pending for this session.
 export const needsYou = (session, { guardAsk = false } = {}) =>
   Boolean(session?.question || session?.needsPermission || guardAsk);
+
+// A text question ({ kind: 'text' }) leaves claude's input box free: only a
+// chip question or a permission ask is a dialog that typed text would hit.
+export const blocksTyping = (session) =>
+  Boolean(session?.needsPermission || (session?.question && session.question.kind !== 'text'));

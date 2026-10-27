@@ -115,6 +115,49 @@ describe('parsePendingQuestion', () => {
   });
 });
 
+describe('parsePendingQuestion: a plain-text question', () => {
+  const turn = (text) => [userLine('faz ai'), assistantLine(text)].join('\n');
+  const asText = (text) => parsePendingQuestion(turn(text));
+
+  it('counts a last paragraph that ends with "?"', () => {
+    expect(asText('Terminei a parte 1.\n\nQuer que eu siga?')).toEqual({ kind: 'text', text: 'Quer que eu siga?' });
+  });
+  it('allows a closing paren, bold or trailing spaces after the "?"', () => {
+    expect(asText('Pronto.\n\n(Quer que eu siga?)')?.kind).toBe('text');
+    expect(asText('Pronto.\n\n**Quer que eu siga?**  ')?.kind).toBe('text');
+  });
+  it('ignores a "?" in the middle of a paragraph or in an earlier paragraph', () => {
+    expect(asText('Será que vai? Acho que sim.')).toBeNull();
+    expect(asText('Quer que eu siga?\n\nFeito, é só isso.')).toBeNull();
+  });
+  it('ignores a "?" inside a fenced block or inline code', () => {
+    expect(asText('Rodei isto:\n\n```js\nconst x = a ?\n```')).toBeNull();
+    expect(asText('Rodei isto:\n\n```\nwhy?\n\nwhat?\n```')).toBeNull();
+    expect(asText('Use o operador `a ?`')).toBeNull();
+  });
+  it('does not take a heading as a question', () => {
+    expect(asText('Explicação.\n\n## Por que?')).toBeNull();
+  });
+  it('shows the last paragraph cut to 300 chars', () => {
+    const found = asText(`Antes.\n\n${'a'.repeat(400)}?`);
+    expect(found.text.length).toBeLessThanOrEqual(300);
+  });
+  it('still checks the tail of a huge message', () => {
+    expect(asText(`${'x '.repeat(10000)}\n\nPosso continuar?`)?.text).toBe('Posso continuar?');
+  });
+  it('does not count prose that a tool call followed (mid-work)', () => {
+    const tool = JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }] } });
+    expect(parsePendingQuestion([userLine('x'), assistantLine('Posso rodar?'), tool].join('\n'))).toBeNull();
+  });
+  it('only looks at the turn: an answered question is gone', () => {
+    expect(parsePendingQuestion([assistantLine('Quer?'), userLine('sim')].join('\n'))).toBeNull();
+  });
+  it('keeps AskUserQuestion as it was, ahead of a text question', () => {
+    const found = parsePendingQuestion([userLine('x'), assistantLine('Qual?'), askLine()].join('\n'));
+    expect(found.questions[0].options).toEqual(['feat/sdv-nova', 'feat/sdv-antiga']);
+  });
+});
+
 const aiTitleLine = (title) => JSON.stringify({ type: 'ai-title', aiTitle: title });
 
 describe('parseAiTitle', () => {

@@ -28,6 +28,12 @@ describe('columnOf', () => {
     expect(columnOf(s, { now: NOW, guardAsk: true })).toBe('failed');
   });
 
+  it('puts a chat that ended on a text question in waiting, with Responder', () => {
+    const asked = session({ status: STATUS.DONE, question: { kind: 'text', text: 'Quer que eu siga?' } });
+    expect(columnOf(asked, { now: NOW })).toBe('waiting');
+    expect(sessionCard(asked, { now: NOW }).actions).toContain('answer');
+  });
+
   it('puts a question, a permission ask or a guard ask in waiting', () => {
     expect(columnOf(session({ question: { text: 'q' } }), { now: NOW })).toBe('waiting');
     expect(columnOf(session({ needsPermission: true }), { now: NOW })).toBe('waiting');
