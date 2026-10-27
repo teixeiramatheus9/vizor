@@ -46,7 +46,7 @@ describe('renderGithub', () => {
     const evil = '"><img src=x onerror=alert(1)>';
     const html = render({
       data: data({ issues: [issue({ title: evil, labels: [{ name: evil, color: evil }], assignees: [{ login: evil }] })], prs: [pr({ title: evil, author: { login: evil }, headRefName: evil })] }),
-      projects: [{ root: '/p/a', name: evil, uri: evil, accent: evil }],
+      projects: [{ root: '/p/a', name: evil, uri: `data:image/png;${evil}`, accent: evil }],
       project: '/p/a',
     });
     // the only real <img> is the project avatar, and its src stays inside the quotes
@@ -58,6 +58,24 @@ describe('renderGithub', () => {
     expect(html).not.toContain('<script>');
     expect(html).toContain('<strong>hi</strong>');
     expect(render({ selected: { kind: 'issue', number: 7 }, body: null })).toContain('skeleton-body');
+  });
+});
+
+describe('hardening', () => {
+  it('compares the selected row as numbers', () => {
+    expect(render({ selected: { kind: 'issue', number: '7' } })).toContain('gh-item selected');
+  });
+  it('only accepts data:image avatars', () => {
+    const html = render({ projects: [{ root: '/p/a', name: 'alpha', uri: 'https://evil/x.png' }] });
+    expect(html).not.toContain('evil');
+    expect(html).toContain('gh-avatar mono');
+  });
+  it('falls back to grey for a hostile label colour', () => {
+    expect(labelStyle('"><x')).toBe('background:#8b949e;color:#111');
+    expect(labelStyle(12345)).toContain('#8b949e');
+  });
+  it('ignores prototype keys as checks', () => {
+    expect(render({ data: data({ prs: [pr({ checks: 'constructor' })] }) })).not.toContain('gh-checks');
   });
 });
 

@@ -11,14 +11,18 @@ function inline(escaped) {
     return `\u0000${codes.length - 1}\u0000`;
   });
   // ![alt](url) and [label](url) both end as text; an image is never loaded.
-  text = text.replace(/!?\[([^\]\n]*)\]\(((?:[^()\s]|\([^()\s]*\))*)\)/g, (_, label, url) => `${label} <span class="md-url">(${url})</span>`);
+  text = text.replace(/!?\[([^\]\n]{0,200})\]\(((?:[^()\s]|\([^()\s]{0,200}\)){0,500})\)/g, (_, label, url) => `${label} <span class="md-url">(${url})</span>`);
   text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/(^|[^\w])_([^_\n]+)_(?=[^\w]|$)/g, '$1<em>$2</em>');
   return text.replace(/\u0000(\d+)\u0000/g, (_, index) => codes[Number(index)]);
 }
 
+// Past this a line is shown as plain escaped text: nothing to backtrack on.
+const MAX_FORMATTED_LINE = 2000;
+
 export function renderSafeMarkdown(text) {
-  const lines = escapeHtml(String(text ?? '').replace(/\r\n?/g, '\n')).split('\n');
+  // NUL is the code-placeholder delimiter: a body must not be able to forge one.
+  const lines = escapeHtml(String(text ?? '').replace(/\r\n?/g, '\n').replace(/\u0000/g, '')).split('\n');
   const out = [];
   let list = null; // 'ul' | 'ol'
   let paragraph = [];
@@ -47,7 +51,7 @@ export function renderSafeMarkdown(text) {
     if (heading) {
       flushParagraph();
       closeList();
-      out.push(`<h${heading[1].length} class="md-h">${inline(heading[2])}</h${heading[1].length}>`);
+      out.push(`<h${heading[1].length} class="md-h">${line.length > MAX_FORMATTED_LINE ? heading[2] : inline(heading[2])}</h${heading[1].length}>`);
     } else if (item) {
       flushParagraph();
       const kind = item[1] ? 'ol' : 'ul';
@@ -56,13 +60,13 @@ export function renderSafeMarkdown(text) {
         out.push(`<${kind}>`);
         list = kind;
       }
-      out.push(`<li>${inline(item[2])}</li>`);
+      out.push(`<li>${line.length > MAX_FORMATTED_LINE ? item[2] : inline(item[2])}</li>`);
     } else if (!line.trim()) {
       flushParagraph();
       closeList();
     } else {
       closeList();
-      paragraph.push(inline(line));
+      paragraph.push(line.length > MAX_FORMATTED_LINE ? line : inline(line));
     }
   }
   flushParagraph();

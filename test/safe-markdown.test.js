@@ -28,4 +28,19 @@ describe('renderSafeMarkdown', () => {
   it('escapes quotes so attributes cannot be broken out of', () => {
     expect(renderSafeMarkdown('"><b onclick=1>')).not.toContain('<b');
   });
+  it('renders an adversarial 64 KB body fast', () => {
+    const body = `${'['.repeat(60000)}\n${'![a'.repeat(1300)}`;
+    const start = performance.now();
+    renderSafeMarkdown(body);
+    expect(performance.now() - start).toBeLessThan(50);
+  });
+  it('leaves very long lines as plain escaped text', () => {
+    const html = renderSafeMarkdown(`**${'a'.repeat(2100)}** <b>`);
+    expect(html).not.toContain('<strong>');
+    expect(html).toContain('&lt;b&gt;');
+  });
+  it('strips NUL so placeholders cannot be forged', () => {
+    expect(renderSafeMarkdown('`x` \u00000\u0000')).not.toContain('undefined');
+    expect(renderSafeMarkdown('\u00005\u0000')).not.toContain('undefined');
+  });
 });

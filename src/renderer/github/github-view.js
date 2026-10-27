@@ -9,7 +9,8 @@ const HEX = /^[0-9a-f]{6}$/i;
 
 // GitHub label colours are arbitrary: pick black or white text by luminance.
 export function labelStyle(color) {
-  const hex = HEX.test(String(color ?? '')) ? color : '8b949e';
+  const text = String(color ?? '');
+  const hex = HEX.test(text) ? text : '8b949e';
   const [r, g, b] = [0, 2, 4].map((at) => {
     const channel = parseInt(hex.slice(at, at + 2), 16) / 255;
     return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
@@ -35,7 +36,7 @@ function chatBadge(chats, number) {
 
 function renderIssue(issue, chats, selected) {
   const number = escapeHtml(issue.number);
-  const on = selected?.kind === 'issue' && selected.number === issue.number;
+  const on = selected?.kind === 'issue' && Number(selected.number) === Number(issue.number);
   const assignees = (issue.assignees ?? []).map((a) => `<span class="gh-assignee">@${escapeHtml(a.login)}</span>`).join('');
   return [
     `<li class="gh-item${on ? ' selected' : ''}" data-gh-kind="issue" data-gh-number="${number}">`,
@@ -48,9 +49,9 @@ function renderIssue(issue, chats, selected) {
 
 function renderPr(pr, selected) {
   const number = escapeHtml(pr.number);
-  const on = selected?.kind === 'pr' && selected.number === pr.number;
-  const checks = CHECKS[pr.checks];
-  const review = REVIEWS[pr.reviewDecision];
+  const on = selected?.kind === 'pr' && Number(selected.number) === Number(pr.number);
+  const checks = Object.hasOwn(CHECKS, pr.checks) ? CHECKS[pr.checks] : null;
+  const review = Object.hasOwn(REVIEWS, pr.reviewDecision) ? REVIEWS[pr.reviewDecision] : null;
   return [
     `<li class="gh-item${on ? ' selected' : ''}" data-gh-kind="pr" data-gh-number="${number}">`,
     `<div class="gh-line"><span class="gh-number">#${number}</span><span class="gh-title">${escapeHtml(pr.title)}</span>`,
@@ -104,7 +105,7 @@ function section(title, result, render, emptyText) {
 function picker(projects, current) {
   const options = projects
     .map((p) => {
-      const art = p.uri
+      const art = String(p.uri ?? '').startsWith('data:image/')
         ? `<img class="gh-avatar" src="${escapeHtml(p.uri)}" alt="" width="16" height="16" />`
         : `<span class="gh-avatar mono" style="background:${escapeHtml(p.accent ?? monogramColor(p.name))}" aria-hidden="true">${escapeHtml(monogramOf(p.name))}</span>`;
       return `<button type="button" class="gh-project${p.root === current ? ' selected' : ''}" data-gh-project="${escapeHtml(p.root)}">${art}<span>${escapeHtml(p.name)}</span></button>`;

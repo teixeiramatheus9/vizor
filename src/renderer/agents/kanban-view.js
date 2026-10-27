@@ -35,7 +35,7 @@ export function agoLabel(since, now) {
 function avatar(card, projects) {
   const project = projects?.[card.avatarKey];
   const name = project?.name ?? String(card.avatarKey ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
-  if (project?.uri) return `<img class="kb-avatar" src="${escapeHtml(project.uri)}" alt="" width="18" height="18" />`;
+  if (String(project?.uri ?? '').startsWith('data:image/')) return `<img class="kb-avatar" src="${escapeHtml(project.uri)}" alt="" width="18" height="18" />`;
   return `<span class="kb-avatar mono" style="background:${escapeHtml(project?.accent ?? monogramColor(name))}" aria-hidden="true">${escapeHtml(monogramOf(name))}</span>`;
 }
 
@@ -43,7 +43,7 @@ function renderCard(card, projects, now) {
   const id = escapeHtml(card.id);
   const accent = projects?.[card.avatarKey]?.accent;
   const buttons = (card.actions ?? [])
-    .filter((action) => ACTION_LABELS[action])
+    .filter((action) => Object.hasOwn(ACTION_LABELS, action))
     .map((action) => `<button type="button" class="kb-action kb-${action}" data-action="${action}" data-card-id="${id}">${ACTION_LABELS[action]}</button>`)
     .join('');
   return [

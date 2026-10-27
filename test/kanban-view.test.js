@@ -58,6 +58,15 @@ describe('renderKanban', () => {
   });
 });
 
+describe('hardening', () => {
+  it('ignores prototype keys as actions and non-data:image avatars', () => {
+    const html = renderKanban([card({ actions: ['constructor', 'focus'] })], { projects: { '/p/a': { name: 'a', uri: 'https://evil/x.png' } }, now: NOW });
+    expect(html).not.toContain('data-action="constructor"');
+    expect(html).not.toContain('evil');
+    expect(html).toContain('kb-avatar mono');
+  });
+});
+
 describe('skeleton', () => {
   it('makes the requested rows', () => {
     expect(skeleton('list', 3).match(/skeleton-row/g)).toHaveLength(3);
