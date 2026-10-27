@@ -149,6 +149,11 @@ try {
   await workspace.click('[data-au-action="save"]');
   await workspace.waitForFunction(() => document.querySelectorAll('.au-item').length === 3, null, { timeout: 10000 });
   assert.ok(fs.existsSync(path.join(home, '.claude', 'skills', 'vizor-resumo-do-dia', 'SKILL.md')), 'the skill was written');
+  // Paused: "todo dia às 9h" would otherwise come due in a run that crosses
+  // 09:00 and be charged at whatever cost a later scenario set.
+  const resumo = idOf('Resumo do dia');
+  await workspace.click(`[data-automation="${resumo}"] [data-au-action="pause"]`);
+  await workspace.waitForFunction((target) => /pausada/.test(document.querySelector(`[data-automation="${target}"]`)?.textContent ?? ''), resumo, { timeout: 5000 });
 
   // ---- 1. create "PRs da manhã": the skill and the rules land on disk ------------
   const bubble = windowOf(app, 'app.html');
