@@ -38,7 +38,8 @@ function fromJson(json) {
 export function createRunner({ spawn, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, kill = process.kill.bind(process), command = 'claude' }) {
   const live = new Map(); // automation id → { stop(reason), killNow(), done: Promise }
 
-  function run({ automation, args, cwd, env, timeoutMs }) {
+  // onSpawn(pgid): the detached group, for the inflight record a crash leaves behind.
+  function run({ automation, args, cwd, env, timeoutMs, onSpawn = () => {} }) {
     // One run per automação at a time: a second one would orphan the first's handle.
     if (live.has(automation.id)) {
       return Promise.resolve({ status: 'failed', result: '', costUsd: 0, durationMs: 0, raw: null, stderr: 'already running' });
@@ -59,6 +60,11 @@ export function createRunner({ spawn, now = Date.now, setTimer = setTimeout, cle
         // Unknown cost: count the whole cap rather than nothing.
         resolve({ status: 'failed', result: '', costUsd: cap, durationMs: 0, raw: null, stderr: String(err?.message ?? err) });
         return;
+      }
+      try {
+        onSpawn(child.pid);
+      } catch {
+        // the record is a best effort; the run goes on
       }
       const killGroup = (signal) => { try { kill(-child.pid, signal); } catch { /* already gone */ } };
       let killTimer = null;

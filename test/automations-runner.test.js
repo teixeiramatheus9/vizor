@@ -45,6 +45,15 @@ describe('runner', () => {
     expect(await p).toMatchObject({ status: 'ok', result: 'feito', costUsd: 0.2, numTurns: 3, durationMs: 900, sessionId: 's', permissionDenials: 2 });
   });
 
+  it('reports the process group it spawned, so a crash can kill it later', async () => {
+    const { runner, calls } = setup();
+    const spawned = [];
+    const p = runner.run({ automation: a, args: [], timeoutMs: 1, onSpawn: (pgid) => spawned.push(pgid) });
+    expect(spawned).toEqual([4242]);
+    finish(calls[0].child, { is_error: false, result: 'x', total_cost_usd: 0 });
+    await p;
+  });
+
   it('is_error true is failed', async () => {
     const { runner, calls } = setup();
     const p = runner.run({ automation: a, args: [], timeoutMs: 1 });

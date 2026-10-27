@@ -33,7 +33,7 @@ function fakeRunner() {
   return runner;
 }
 
-function setup({ automations = [], guardEnabled = true, guardReady = true, inflight = [], budgetFile = null, rulesFail = false, storeOverride = null, saveDayCap } = {}) {
+function setup({ automations = [], guardEnabled = true, guardReady = true, inflight = [], budgetFile = null, rulesFail = false, storeOverride = null, saveDayCap, extra = {} } = {}) {
   const store = storeOverride ?? memStore(automations);
   const runner = fakeRunner();
   let budgetText = budgetFile;
@@ -66,6 +66,7 @@ function setup({ automations = [], guardEnabled = true, guardReady = true, infli
     baseEnv: () => ({ HOME: '/home/u', PATH: '/bin' }),
     log: () => {},
     now: Date.now, setTimer: setTimeout, clearTimer: clearTimeout,
+    ...extra,
   });
   return { inflightAtAppend, service, store, runner, budget, history, entries, skills, rulesDocs, writeGuardRules, order, inflight: inflightIo, pending: () => pending, worktree, mkdir, notify };
 }
@@ -465,6 +466,33 @@ describe('automation service: review fixes', () => {
     expect(back.next).toBe(Date.now() + 15 * MIN);
     await flush();
     expect(t.runner.runs.filter((r) => r.automation.id === big)).toHaveLength(0);
+  });
+
+  it('records the process group of a run, and a crash restart kills it if it is still claude', async () => {
+    const t = setup();
+    await t.service.start();
+    const id = (await t.service.save(base())).automation.id;
+    await t.service.runNow(id);
+    await flush();
+    t.runner.runs[0].onSpawn(4242);
+    await flush();
+    expect(t.pending()).toEqual([expect.objectContaining({ id, pgid: 4242 })]);
+    t.service.killAllNow();
+    const kills = [];
+    const cmdlines = { 4242: 'node\0/usr/bin/claude\0-p\0/vizor-x\0', 777: 'bash\0' };
+    const leftovers = [...t.pending(), { id, name: 'outra', capUsd: 1, pgid: 777 }, { id, name: 'sumiu', capUsd: 1, pgid: 888 }, { id, name: 'sem pgid', capUsd: 1 }];
+    const next = setup({
+      storeOverride: t.store,
+      inflight: leftovers,
+      extra: {
+        kill: (pid, signal) => kills.push([pid, signal]),
+        readCmdline: (pid) => { if (!(pid in cmdlines)) throw Object.assign(new Error('gone'), { code: 'ENOENT' }); return cmdlines[pid]; },
+      },
+    });
+    await next.service.start();
+    expect(kills).toEqual([[-4242, 'SIGKILL']]);
+    expect(next.entries.map((e) => e.status)).toEqual(['cancelled', 'cancelled', 'cancelled', 'cancelled']);
+    expect(next.pending()).toEqual([]);
   });
 
   it('reserves the caps of runs in flight against the day', async () => {
