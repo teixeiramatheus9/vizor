@@ -91,19 +91,22 @@ describe('review service', () => {
     expect(calls.some((c) => c.key === 'cat-file --batch')).toBe(true);
   });
 
-  it('puts the contract files first once the cold analysis lands, then freezes the order', async () => {
+  it.each([[300, ['b.js', 'a.js']], [1500, ['a.js', 'b.js']]])('settles the provisional order only when the analysis lands within 1 s (at %i ms)', async (lateness, expected) => {
     const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
-    const { service, gitMap } = setup({
+    let clock = 0;
+    const { service } = setup({
       git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': '', 'cat-file --batch': `o blob 1\nx\no blob ${API_BEFORE.length}\n${API_BEFORE}\n` },
       files: { '/w/a.js': 'y', '/w/b.js': API },
+      extra: { now: () => clock },
     });
     const done = landed(service);
     expect((await service.summary(WT)).order).toEqual(['a.js', 'b.js']);
+    clock = lateness;
     await done;
-    const settled = (await service.summary(WT)).order;
-    expect(settled).toEqual(['b.js', 'a.js']);
-    gitMap['cat-file --batch'] = 'o blob 1\nx\no blob 1\nx\n';
-    expect((await service.summary(WT)).order).toEqual(settled);
+    const second = await service.summary(WT);
+    expect(second.contract.map((c) => c.path)).toEqual(['b.js']); // badges and verdict update either way
+    expect(second.order).toEqual(expected);
+    expect((await service.summary(WT)).order).toEqual(expected); // and it stays
   });
 
   it('reports a pt-BR baseError when no base candidate resolves', async () => {

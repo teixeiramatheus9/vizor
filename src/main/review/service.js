@@ -19,6 +19,7 @@ const DEBOUNCE_MS = 300;
 const MAX_VIEW_LINES = 3000;
 const BASE_TEXT_CACHE = 500;
 const CHUNK = 8;
+const SETTLE_MS = 1000;
 const SOURCE = /\.(m|c)?[jt]sx?$/;
 const STATUS = { A: 'added', C: 'added', D: 'deleted', R: 'renamed' };
 
@@ -47,7 +48,7 @@ export function createReviewService({
   git, readFile, stat, graphFor, graphBuilt = (wt) => graphFor(wt)?.graph(), verifier, storeFor, sessionsOf,
   setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout,
   cacheDir = path.join(os.homedir(), '.cache', 'vizor', 'tsc'),
-  startPaused = false, log = () => {},
+  startPaused = false, now = Date.now, log = () => {},
 }) {
   const service = new EventEmitter();
   const states = new Map();
@@ -365,11 +366,17 @@ export function createReviewService({
     // change landing later must not reshuffle what the dev is reading. The one
     // exception is the first analysis of a cold set: while it is pending the order
     // is provisional (no contract data, so no contract-first yet) and is redone
-    // once when the analysis lands, a moment after the list opened; from then on it
-    // is frozen for that set. (Freezing the cold order would lose contract-first
-    // for every first open.)
+    // once when the analysis lands, but only within SETTLE_MS of the first answer;
+    // later than that the dev may already be reading, so the provisional order is
+    // frozen (badges and verdict still update). Freezing the cold order outright
+    // would lose contract-first on every first open.
     const set = files.map((f) => f.path).sort().join('\0');
-    if (s.order?.set !== set || s.order.provisional) s.order = { set, provisional: pending, paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+    if (s.order?.set !== set) {
+      s.order = { set, provisional: pending, at: now(), paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+    } else if (s.order.provisional) {
+      if (now() - s.order.at <= SETTLE_MS) s.order = { set, provisional: pending, at: s.order.at, paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+      else s.order.provisional = false;
+    }
     const order = s.order.paths;
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,
