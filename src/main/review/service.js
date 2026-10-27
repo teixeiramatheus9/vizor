@@ -59,7 +59,7 @@ export function createReviewService({
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, openRun: null, refreshing: null, order: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, openRun: null, refreshing: null, order: null, analysing: null });
     }
     return states.get(wt);
   };
@@ -291,6 +291,26 @@ export function createReviewService({
     }
   }
 
+  // The analysis of a file only when it is already worked out for this graph:
+  // the summary never waits for it.
+  function cachedAnalysis(wt, sha, file, graph, stamp) {
+    const entry = stateOf(wt).files.get(`a\0${suffix(sha, file.path, stamp)}`);
+    return entry && entry.graph === graph ? { changes: entry.changes, functions: entry.functions } : null;
+  }
+
+  // The contract analysis, started after the answer went out and announced when
+  // it lands. One run per worktree at a time; nothing starts while paused (the
+  // next summary, on show, starts it).
+  function analyseLater(wt, sha, files, graph, stamps) {
+    const s = stateOf(wt);
+    if (paused || s.analysing) return;
+    s.analysing = prefetchBase(wt, sha, files)
+      .then(() => chunked(files, (f) => analyse(wt, sha, f, graph, stamps.get(f.path))))
+      .then(() => announce(wt))
+      .catch((error) => log(`review contract analysis of ${wt} failed: ${error?.stack ?? error}`))
+      .finally(() => { s.analysing = null; });
+  }
+
   async function summarise(wt) {
     const base = await baseOf(wt);
     if (base.error) return emptySummary(wt, base.error);
@@ -309,22 +329,25 @@ export function createReviewService({
 
   async function finishSummary(wt, base, files, graph) {
     const stamps = await stampsOf(wt, files);
-    // Two independent git runs: the merge-base texts feed the analysis, the full patch feeds the hunk counts.
-    const [analysed] = await Promise.all([
-      prefetchBase(wt, base.sha, files).then(() => chunked(files, (f) => analyse(wt, base.sha, f, graph, stamps.get(f.path)))),
-      ensurePatches(wt, base.sha, files, stamps),
-    ]);
+    // The contract analysis (merge-base texts + babel on both sides) is the dear
+    // part of a cold list and nothing on screen needs it to be readable: the
+    // answer carries whatever is already cached and the rest is worked out
+    // right after, announced as a 'changed' when it lands.
+    await ensurePatches(wt, base.sha, files, stamps);
     evict(wt, base.sha, files, stamps);
+    const analysed = files.map((f) => cachedAnalysis(wt, base.sha, f, graph, stamps.get(f.path)));
+    const pending = analysed.some((a) => !a);
+    if (pending) analyseLater(wt, base.sha, files, graph, stamps);
     const contract = [];
     analysed.forEach((a, i) => {
-      if (!a.changes.length) return;
+      if (!a?.changes.length) return;
       files[i].contract = true;
       contract.push({ path: files[i].path, changes: a.changes });
     });
     let untestedChanged = 0;
     if (graph) {
       const untested = untestedModules(graph);
-      analysed.forEach((a, i) => { if (untested.has(files[i].path)) untestedChanged += a.functions.length; });
+      analysed.forEach((a, i) => { if (a && untested.has(files[i].path)) untestedChanged += a.functions.length; });
     }
     const approved = await loadApproved(wt);
     const s = stateOf(wt);
@@ -339,13 +362,18 @@ export function createReviewService({
     }
     s.store.prune?.(live);
     // The order is worked out once per set of files: a graph or a contract
-    // change landing later must not reshuffle what the dev is reading.
+    // change landing later must not reshuffle what the dev is reading. The one
+    // exception is the first analysis of a cold set: while it is pending the order
+    // is provisional (no contract data, so no contract-first yet) and is redone
+    // once when the analysis lands, a moment after the list opened; from then on it
+    // is frozen for that set. (Freezing the cold order would lose contract-first
+    // for every first open.)
     const set = files.map((f) => f.path).sort().join('\0');
-    if (s.order?.set !== set) s.order = { set, paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+    if (s.order?.set !== set || s.order.provisional) s.order = { set, provisional: pending, paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
     const order = s.order.paths;
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,
-      contract: contract.reduce((n, c) => n + c.changes.length, 0), approved: approvedCount, totalHunks,
+      contract: contract.reduce((n, c) => n + c.changes.length, 0), contractPending: pending, approved: approvedCount, totalHunks,
     });
     return { base: base.sha, baseError: null, files, order, verdict, contract, request: requestSource(wt) ?? null };
   }

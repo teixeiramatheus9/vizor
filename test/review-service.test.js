@@ -57,7 +57,55 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
   return { service, calls, fire, approvals, gitMap };
 }
 
+const landed = (service) => new Promise((resolve) => service.once('changed', resolve));
+const API = 'export function f(a) { return a; }\n';
+const API_BEFORE = 'export function f(a, b) { return a + b; }\n';
+
 describe('review service', () => {
+  it('answers before the contract analysis: no merge-base read, the contract item pending, then it lands as a changed', async () => {
+    const { service, calls } = setup({
+      git: { 'cat-file --batch': `o blob ${API_BEFORE.length}\n${API_BEFORE}\n` },
+      files: { '/w/a.js': API },
+    });
+    const done = landed(service);
+    const first = await service.summary(WT);
+    expect(first.contract).toEqual([]);
+    expect(first.verdict.find((v) => v.key === 'contract')).toEqual({ key: 'contract', text: 'contrato: analisando…', tone: 'muted' });
+    await done;
+    expect(calls.filter((c) => c.key === 'cat-file --batch')).toHaveLength(1);
+    const second = await service.summary(WT);
+    expect(second.contract.map((c) => c.path)).toEqual(['a.js']);
+    expect(second.files[0].contract).toBe(true);
+    expect(second.verdict.find((v) => v.key === 'contract').text).toMatch(/mudança de contrato/);
+  });
+
+  it('does not start the analysis while paused, and starts it with the next summary after resume', async () => {
+    const { service, calls } = setup({ files: { '/w/a.js': API }, extra: { startPaused: true } });
+    await service.summary(WT);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(calls.some((c) => c.key === 'cat-file --batch')).toBe(false);
+    service.resume();
+    const done = landed(service);
+    await service.summary(WT);
+    await done;
+    expect(calls.some((c) => c.key === 'cat-file --batch')).toBe(true);
+  });
+
+  it('puts the contract files first once the cold analysis lands, then freezes the order', async () => {
+    const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
+    const { service, gitMap } = setup({
+      git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': '', 'cat-file --batch': `o blob 1\nx\no blob ${API_BEFORE.length}\n${API_BEFORE}\n` },
+      files: { '/w/a.js': 'y', '/w/b.js': API },
+    });
+    const done = landed(service);
+    expect((await service.summary(WT)).order).toEqual(['a.js', 'b.js']);
+    await done;
+    const settled = (await service.summary(WT)).order;
+    expect(settled).toEqual(['b.js', 'a.js']);
+    gitMap['cat-file --batch'] = 'o blob 1\nx\no blob 1\nx\n';
+    expect((await service.summary(WT)).order).toEqual(settled);
+  });
+
   it('reports a pt-BR baseError when no base candidate resolves', async () => {
     const err = new Error('bad ref');
     const { service } = setup({ git: { 'merge-base HEAD origin/main': err, 'merge-base HEAD main': err, 'merge-base HEAD origin/master': err, 'merge-base HEAD master': err } });
@@ -445,6 +493,9 @@ describe('review service', () => {
       files: { '/w/src/a.js': 'y', '/w/src/b.js': 'y', '/w/src/c.js': 'y' },
       extra: { graphFor: () => ({ graph: () => built }), graphBuilt: () => built },
     });
+    const settled = landed(service);
+    expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
+    await settled;
     expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
     built = graph;
     expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
@@ -486,6 +537,8 @@ describe('review service', () => {
     const modules = Object.assign([{ id: 'a.js', functions: [] }], { find(...args) { lookups++; return Array.prototype.find.apply(this, args); } });
     const graph = { modules, functions: [], imports: [], calls: [], edges: [] };
     const { service } = setup({ files: { '/w/a.js': 'new' }, graph: { graph: () => graph } });
+    await service.summary(WT);
+    await landed(service);
     await service.summary(WT);
     const first = lookups;
     expect(first).toBeGreaterThan(0);
