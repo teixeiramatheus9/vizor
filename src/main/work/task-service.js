@@ -597,7 +597,7 @@ export function createTaskService({
     const { state: s, plan } = task;
     return (plan?.steps ?? []).map((step, index) => ({
       n: index + 1, text: step.text, done: step.done, why: step.why, dev: step.dev,
-      reviewed: s.reviewed.includes(T.stepKey(step.text)), checkpoint: Boolean(s.checkpoints[index + 1]),
+      reviewed: s.reviewed.includes(T.stepKey(step.text)), checkpoint: Boolean(s.checkpoints[index + 1]), restorePoint: Boolean(s.checkpoints[index]),
     }));
   }
 

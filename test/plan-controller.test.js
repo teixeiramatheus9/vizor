@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPlanController } from '../src/renderer/work/plan-controller.js';
 
-const step = (n, over = {}) => ({ n, text: `passo ${n}`, done: false, why: null, dev: false, reviewed: false, checkpoint: false, ...over });
+const step = (n, over = {}) => ({ n, text: `passo ${n}`, done: false, why: null, dev: false, reviewed: false, checkpoint: false, restorePoint: over.checkpoint ?? false, ...over });
 const baseTask = (over = {}) => ({
   issue: 7, phase: 'steps', mode: 'step', quick: false, title: '', error: null,
   contract: [{ text: 'a → b' }], contractApproved: true,

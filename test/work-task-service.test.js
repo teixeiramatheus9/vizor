@@ -265,7 +265,11 @@ describe('the task service: the steps', () => {
     await ctx.service.bind('s1', WT, 169);
     expect(ctx.deps.checkpoints.take).toHaveBeenCalledTimes(1);
     expect(ctx.deps.verifier.run).toHaveBeenCalledTimes(1);
-    expect((await ctx.service.state('s1')).steps[0]).toMatchObject({ n: 1, done: true, why: 'era o passo', checkpoint: true });
+    const { steps } = await ctx.service.state('s1');
+    expect(steps[0]).toMatchObject({ n: 1, done: true, why: 'era o passo', checkpoint: true });
+    // What "voltar" restores is the checkpoint before the step: step 1 has the baseline (0), step 2 has 1.
+    expect(steps[0].restorePoint).toBe(true);
+    expect(steps[1]).toMatchObject({ checkpoint: false, restorePoint: true });
   });
 
   it('two steps ticked at once take two checkpoints and one run', async () => {

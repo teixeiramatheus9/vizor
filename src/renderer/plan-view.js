@@ -117,10 +117,10 @@ function stepRow(task, step, ui, lastDone) {
     tools.push(button('comentar', { ui: 'comment', n: step.n }));
     tools.push(button('desfazer', { task: 'undoStep', n: step.n }, { disabled: task.working, title: task.working ? 'o agente está trabalhando' : '' }));
   }
-  // Back to the files before this step: needs the step's checkpoint and a quiet agent.
-  const canRestore = step.checkpoint && !task.working;
-  const restoreTitle = task.working ? 'o agente está trabalhando' : !step.checkpoint ? 'este passo não tem ponto salvo' : '';
-  if (step.done || step.checkpoint) {
+  // Back to the files before this step: needs the checkpoint before it (what the service restores) and a quiet agent.
+  const canRestore = step.restorePoint && !task.working;
+  const restoreTitle = task.working ? 'o agente está trabalhando' : !step.restorePoint ? 'não há ponto salvo antes deste passo' : '';
+  if (step.done || step.restorePoint) {
     if (ui.confirming?.kind === 'restore' && ui.confirming.n === step.n) {
       tools.push(`<span class="plan-confirm">Voltar os arquivos pra antes do passo ${step.n}? Nada é apagado. ${button('sim, voltar', { task: 'restoreBefore', n: step.n }, { cls: 'plan-action', disabled: !canRestore })} ${button('cancelar', { ui: 'cancel' })}</span>`);
     } else {

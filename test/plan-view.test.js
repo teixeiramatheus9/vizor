@@ -41,7 +41,7 @@ describe('the plan card', () => {
 
 import { renderTaskCard } from '../src/renderer/plan-view.js';
 
-const step = (n, over = {}) => ({ n, text: `passo ${n}`, done: false, why: null, dev: false, reviewed: false, checkpoint: false, ...over });
+const step = (n, over = {}) => ({ n, text: `passo ${n}`, done: false, why: null, dev: false, reviewed: false, checkpoint: false, restorePoint: over.checkpoint ?? false, ...over });
 const task = (over = {}) => ({
   issue: 7, phase: 'steps', mode: 'step', quick: false, title: 'Menu', error: null,
   contract: [{ text: 'a → b' }, { text: 'c → d' }], contractApproved: true,
@@ -122,7 +122,20 @@ describe('the task card', () => {
     const off = (html) => /data-kind="restore" data-n="1"[^>]*disabled/.test(html);
     expect(off(renderTaskCard(task()))).toBe(false);
     expect(off(renderTaskCard(task({ working: true })))).toBe(true);
-    expect(off(renderTaskCard(task({ steps: [step(1, { done: true, checkpoint: false }), step(2)] })))).toBe(true);
+    expect(off(renderTaskCard(task({ steps: [step(1, { done: true, checkpoint: true, restorePoint: false }), step(2)] })))).toBe(true);
+  });
+
+  it('"voltar" follows the checkpoint it restores (the one before the step)', () => {
+    const off = (html, n) => new RegExp(`data-kind="restore" data-n="${n}"[^>]*disabled`).test(html);
+    const on = (html, n) => html.includes(`data-kind="restore" data-n="${n}"`) && !off(html, n);
+    // (a) step 1 with only the baseline: its own checkpoint is not there yet, the way back is.
+    expect(on(renderTaskCard(task({ steps: [step(1, { done: true, checkpoint: false, restorePoint: true }), step(2)] })), 1)).toBe(true);
+    // (b) an undone step whose predecessor's checkpoint exists.
+    expect(on(renderTaskCard(task({ steps: [step(1, { done: true, checkpoint: true, restorePoint: true }), step(2, { restorePoint: true })] })), 2)).toBe(true);
+    // (c) no point before the step: disabled, with the reason.
+    const html = renderTaskCard(task({ steps: [step(1, { done: true, checkpoint: true, restorePoint: false }), step(2)] }));
+    expect(off(html, 1)).toBe(true);
+    expect(html).toContain('title="não há ponto salvo antes deste passo"');
   });
 
   it('trust mode: "revisado ✓" per done step, reviewed ones just say so', () => {
