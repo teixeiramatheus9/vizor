@@ -25,10 +25,13 @@ const NOTICE = {
   timeout: (name) => `a automação ${name} passou do tempo`,
 };
 const DAY_CAP_NOTICE = 'as automações passaram do teto do dia e pausaram até amanhã';
+// A run capped above the whole day's cap could never start: it is set aside, not left holding the queue.
+const CAP_OVER_DAY = 'teto da execução maior que o teto do dia';
 
 const dayKey = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
 const nextMidnight = (ms) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime(); };
 const capOf = (a) => (Number.isFinite(a?.capUsd) && a.capUsd > 0 ? a.capUsd : 1);
+const money = (usd) => `US$ ${usd.toFixed(2).replace('.', ',')}`;
 
 export function createAutomationService({
   store, runner, budget, history, schedule, permissions, worktree, skills, writeGuardRules,
@@ -68,7 +71,8 @@ export function createAutomationService({
     if (f == null || (natural != null && natural > f)) return natural;
     return schedule.nextRun(a.when, { from: f, lastRun: f });
   }
-  const schedulable = (a) => !a.paused && !a.blockedUntilConfirm && !running.has(a.id) && !isQueued(a.id);
+  const overDayCap = (a) => capOf(a) > budget.capUsd + 1e-9;
+  const schedulable = (a) => !a.paused && !a.blockedUntilConfirm && !overDayCap(a) && !running.has(a.id) && !isQueued(a.id);
   // The one way into the queue: an automação already queued or running is
   // refused, so no entry point can start one slot twice.
   function enqueue(entry) {
@@ -155,6 +159,14 @@ export function createAutomationService({
     if (budgetPausedDay && budgetPausedDay !== dayKey(now())) {
       budgetPausedDay = null;
       releaseHeld(now());
+    }
+    // Queued before the day cap dropped under its own cap: its slot is handled, the others go on.
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const a = find(queue[i].id);
+      if (!a || !overDayCap(a)) continue;
+      const [entry] = queue.splice(i, 1);
+      if (!entry.manual) floor.set(entry.id, now());
+      log(`automations: ${entry.id} set aside, its cap is above the day cap`);
     }
     while (running.size < MAX_RUNNING) {
       const busy = new Set([...running.values()].map((r) => r.root));
@@ -348,6 +360,8 @@ export function createAutomationService({
       const editable = Object.fromEntries(EDITABLE.filter((k) => input[k] !== undefined).map((k) => [k, input[k]]));
       const merged = existing ? { ...existing, ...editable } : editable;
       if (EDIT_LEVELS.has(merged.level) && !guardEnabled()) return fail(GUARD_OFF);
+      const cap = merged.capUsd === undefined ? 1 : merged.capUsd;
+      if (typeof cap === 'number' && cap > budget.capUsd + 1e-9) return fail(`O teto da execução não pode passar do teto do dia (${money(budget.capUsd)}).`);
       let result;
       try {
         result = await store.save(merged);
@@ -424,6 +438,7 @@ export function createAutomationService({
       const a = find(id);
       if (!a) return fail('Automação não encontrada.');
       if (a.blockedUntilConfirm) return fail('Esta automação passou do teto ou do tempo: confirme antes de rodar de novo.');
+      if (overDayCap(a)) return fail(`Bloqueada: ${CAP_OVER_DAY}.`);
       if (running.has(id)) return fail('Ela já está rodando.');
       if (isQueued(id)) return fail('Ela já está na fila.');
       enqueue({ id, late: false, slot: now(), manual: true });
@@ -455,7 +470,10 @@ export function createAutomationService({
         log(`automations: day cap save failed (${error})`);
         return fail('Não deu pra gravar o teto do dia.');
       }
+      const wasOver = items.filter(overDayCap);
       budget.setCap(usd);
+      // Back under the cap: on schedule from now, the slots it sat out not caught up.
+      for (const a of wasOver) if (!overDayCap(a)) floor.set(a.id, now());
       // Runs held by the old cap get their turn now.
       budgetPausedDay = null;
       drain();
@@ -543,6 +561,7 @@ export function createAutomationService({
           last: last.get(a.id) ?? null,
           running: r ? { startedAt: r.startedAt, late: r.late } : null,
           queued,
+          capBlocked: overDayCap(a) ? CAP_OVER_DAY : null,
         };
       });
       const nexts = list.map((a) => a.next).filter((n) => n != null);

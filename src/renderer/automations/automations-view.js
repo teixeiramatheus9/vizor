@@ -24,6 +24,7 @@ export const PRESETS = [
   { label: 'dias úteis às 9h', fields: { whenKind: 'weekdays', at: '09:00' } },
 ];
 const SKILL_WARNING = 'vai pro repositório se você commitar';
+const SKILL_WORKTREE_REASON = 'a skill do projeto não chega na worktree da automação; use skill pessoal';
 
 const levelOf = (id) => LEVELS.find((level) => level.id === id) ?? LEVELS[0];
 const pad = (n) => String(n).padStart(2, '0');
@@ -122,7 +123,8 @@ const num = (text) => (String(text ?? '').trim() === '' ? NaN : Number(String(te
 
 // → { errors: { field: message }, payload: object|null }. Mirrors what the
 // store enforces, so the answer shows while typing instead of after saving.
-export function validateForm(form, { guardEnabled = true, projects = {} } = {}) {
+// dayCap: today's cap for every automação; a run capped above it could never start.
+export function validateForm(form, { guardEnabled = true, projects = {}, dayCap = null } = {}) {
   const errors = {};
   if (!String(form.name ?? '').trim()) errors.name = 'Dê um nome à automação.';
   if (!String(form.prompt ?? '').trim()) errors.prompt = 'Escreva o que a automação deve fazer.';
@@ -132,9 +134,11 @@ export function validateForm(form, { guardEnabled = true, projects = {} } = {}) 
   if (parsed.error) errors.when = parsed.error;
   const capUsd = num(form.capUsd);
   if (!(capUsd >= 0.05 && capUsd <= 20)) errors.capUsd = 'O teto deve ficar entre US$ 0,05 e US$ 20.';
+  else if (Number.isFinite(dayCap) && capUsd > dayCap) errors.capUsd = `O teto da execução não pode passar do teto do dia (${money(dayCap)}).`;
   const timeoutMin = num(form.timeoutMin);
   if (!(Number.isInteger(timeoutMin) && timeoutMin >= 1 && timeoutMin <= 60)) errors.timeoutMin = 'O tempo limite deve ficar entre 1 e 60 min.';
   if (form.level !== 'read' && !guardEnabled) errors.level = GUARD_OFF_REASON;
+  if (form.level === 'worktree' && form.skillScope === 'project') errors.skillScope = SKILL_WORKTREE_REASON;
   if (Object.keys(errors).length) return { errors, payload: null };
   const payload = {
     name: form.name.trim(), prompt: form.prompt, projectRoot: form.projectRoot, when: parsed,
@@ -152,8 +156,8 @@ const options = (list, selected, valueOf = (item) => item.id, labelOf = (item) =
   list.map((item) => `<option value="${escapeHtml(valueOf(item))}"${valueOf(item) === selected ? ' selected' : ''}>${escapeHtml(labelOf(item))}</option>`).join('');
 
 // ui: { improving, improveError, saveError }
-export function renderForm(form, { projects = {}, guardEnabled = true, readError = null, ui = {} } = {}) {
-  const { errors } = validateForm(form, { guardEnabled, projects });
+export function renderForm(form, { projects = {}, guardEnabled = true, readError = null, dayCap = null, ui = {} } = {}) {
+  const { errors } = validateForm(form, { guardEnabled, projects, dayCap });
   const roots = Object.keys(projects);
   const projectList = form.projectRoot && !roots.includes(form.projectRoot) ? [form.projectRoot, ...roots] : roots;
   const nameOf = (root) => projects[root]?.name ?? String(root).split('/').filter(Boolean).pop() ?? root;
@@ -193,7 +197,7 @@ export function renderForm(form, { projects = {}, guardEnabled = true, readError
     field('timeoutMin', 'Tempo limite (min)', `<input class="au-input au-narrow" data-au-field="timeoutMin" value="${escapeHtml(form.timeoutMin)}" inputmode="numeric" />`, errors.timeoutMin),
     field('missed', 'Se perder o horário', `<select class="au-input" data-au-field="missed">${options([{ id: 'run', label: 'rodar ao abrir' }, { id: 'skip', label: 'pular' }], form.missed)}</select>`),
     '</div>',
-    field('skillScope', 'Onde mora a skill', `<select class="au-input" data-au-field="skillScope">${options([{ id: 'personal', label: 'pessoal (~/.claude)' }, { id: 'project', label: 'do projeto' }], form.skillScope)}</select>`, null, form.skillScope === 'project' ? SKILL_WARNING : ''),
+    field('skillScope', 'Onde mora a skill', `<select class="au-input" data-au-field="skillScope">${options([{ id: 'personal', label: 'pessoal (~/.claude)' }, { id: 'project', label: 'do projeto' }], form.skillScope)}</select>`, errors.skillScope, form.skillScope === 'project' ? SKILL_WARNING : ''),
     ui.saveError ? `<span class="au-error" role="alert">${escapeHtml(ui.saveError)}</span>` : '',
     '<div class="au-row au-footer">',
     `<button type="submit" class="au-btn primary" data-au-action="save"${Object.keys(errors).length || readError ? ' disabled' : ''}>Salvar</button>`,
@@ -216,6 +220,8 @@ export function stateOf(a) {
   if (a.running) return { id: 'running', late: Boolean(a.running.late) };
   if (a.queued) return { id: 'queued' };
   if (a.blockedUntilConfirm) return { id: 'blocked' };
+  // Its own cap is above the day's: it waits for one of them to change, not for a confirm.
+  if (a.capBlocked) return { id: 'capped', reason: String(a.capBlocked) };
   if (a.paused) return { id: 'paused' };
   return { id: 'idle' };
 }
@@ -229,6 +235,7 @@ function renderItem(a, { projects, now, ui, readError, selected }) {
     running: `<span class="au-state running">rodando há <span data-au-elapsed="${Number(a.running?.startedAt ?? now)}">${escapeHtml(elapsedLabel(a.running?.startedAt ?? now, now))}</span>${state.late ? ' · atrasada' : ''}</span>`,
     queued: '<span class="au-state queued">na fila</span>',
     blocked: '<span class="au-state blocked">bloqueada: passou do teto ou do tempo</span>',
+    capped: `<span class="au-state blocked">bloqueada: ${escapeHtml(state.reason ?? '')}</span>`,
     paused: '<span class="au-state paused">pausada</span>',
     idle: '',
   }[state.id];
@@ -238,7 +245,9 @@ function renderItem(a, { projects, now, ui, readError, selected }) {
   const next = a.next != null ? `<span class="au-next">próxima: ${escapeHtml(nextLabel(a.next, now))}</span>` : '';
   const busy = state.id === 'running' || state.id === 'queued';
   const actions = [
-    busy ? button('cancel', 'Cancelar') : button('run', 'Rodar agora', state.id === 'blocked' ? ' disabled title="confirme antes de rodar de novo"' : ''),
+    busy
+      ? button('cancel', 'Cancelar')
+      : button('run', 'Rodar agora', state.id === 'blocked' ? ' disabled title="confirme antes de rodar de novo"' : state.id === 'capped' ? ' disabled title="baixe o teto dela ou suba o teto do dia"' : ''),
     state.id === 'blocked' ? button('confirm', 'Confirmar') : '',
     button('pause', a.paused ? 'Retomar' : 'Pausar', busy ? ' disabled' : ''),
     button('edit', 'Editar', busy ? ' disabled' : ''),

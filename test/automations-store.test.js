@@ -25,8 +25,8 @@ describe('validateAutomation', () => {
     });
   });
   it('keeps given values', () => {
-    const r = ok({ ...base, id: 'k', slug: 'meu', level: 'worktree', model: 'opus', capUsd: 0.05, timeoutMin: 60, missed: 'skip', skillScope: 'project', paused: true, blockedUntilConfirm: true, createdAt: 5, lastRun: 7 });
-    expect(r.automation).toMatchObject({ id: 'k', slug: 'meu', level: 'worktree', model: 'opus', capUsd: 0.05, timeoutMin: 60, missed: 'skip', skillScope: 'project', paused: true, blockedUntilConfirm: true, createdAt: 5, lastRun: 7 });
+    const r = ok({ ...base, id: 'k', slug: 'meu', level: 'project', model: 'opus', capUsd: 0.05, timeoutMin: 60, missed: 'skip', skillScope: 'project', paused: true, blockedUntilConfirm: true, createdAt: 5, lastRun: 7 });
+    expect(r.automation).toMatchObject({ id: 'k', slug: 'meu', level: 'project', model: 'opus', capUsd: 0.05, timeoutMin: 60, missed: 'skip', skillScope: 'project', paused: true, blockedUntilConfirm: true, createdAt: 5, lastRun: 7 });
   });
   it('rejects each bad field', () => {
     for (const bad of [
@@ -40,6 +40,12 @@ describe('validateAutomation', () => {
       expect(r.error).toBeTruthy();
     }
     expect(ok(null).ok).toBe(false);
+  });
+  it('a project skill never reaches the worktree level: refused, in pt-BR', () => {
+    const r = ok({ ...base, level: 'worktree', skillScope: 'project' });
+    expect(r).toEqual({ ok: false, error: 'A skill do projeto não chega na worktree da automação; use skill pessoal.' });
+    expect(ok({ ...base, level: 'worktree', skillScope: 'personal' }).ok).toBe(true);
+    expect(ok({ ...base, level: 'read', skillScope: 'project' }).ok).toBe(true);
   });
   it('accepts the range edges', () => {
     expect(ok({ ...base, capUsd: 20, timeoutMin: 1 }).ok).toBe(true);

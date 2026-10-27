@@ -87,6 +87,16 @@ describe('list', () => {
     expect(stateOf(automation()).id).toBe('idle');
   });
 
+  it('a run cap above the day cap shows its reason and cannot run', () => {
+    const a = automation({ capBlocked: 'teto da execução maior que o teto do dia', paused: true });
+    expect(stateOf(a)).toEqual({ id: 'capped', reason: 'teto da execução maior que o teto do dia' });
+    expect(stateOf({ ...a, blockedUntilConfirm: true }).id).toBe('blocked');
+    const html = renderList([a], { projects, now: NOW });
+    expect(html).toContain('bloqueada: teto da execução maior que o teto do dia');
+    expect(html).toMatch(/data-au-action="run"[^>]*disabled/);
+    expect(html).not.toContain('data-au-action="confirm"');
+  });
+
   it('shows the level badge and the delete confirmation with its options', () => {
     const a = automation({ level: 'worktree' });
     const html = renderList([a], { projects, now: NOW, ui: { deleting: 'a1' } });
@@ -159,6 +169,19 @@ describe('form validation', () => {
   it('refuses the editing levels while the guard is off', () => {
     expect(validateForm({ ...ok(), level: 'worktree' }, { projects, guardEnabled: false }).errors.level).toBe(GUARD_OFF_REASON);
     expect(validateForm({ ...ok(), level: 'read' }, { projects, guardEnabled: false }).errors.level).toBeUndefined();
+  });
+
+  it('refuses a project skill on the worktree level', () => {
+    expect(validateForm({ ...ok(), level: 'worktree', skillScope: 'project' }, { projects }).errors.skillScope).toBe('a skill do projeto não chega na worktree da automação; use skill pessoal');
+    expect(validateForm({ ...ok(), level: 'project', skillScope: 'project' }, { projects }).errors.skillScope).toBeUndefined();
+    expect(renderForm({ ...ok(), level: 'worktree', skillScope: 'project' }, { projects })).toContain('use skill pessoal');
+  });
+
+  it('refuses a run cap above the day cap', () => {
+    expect(validateForm({ ...ok(), capUsd: '6' }, { projects, dayCap: 5 }).errors.capUsd).toBe('O teto da execução não pode passar do teto do dia (US$ 5,00).');
+    expect(validateForm({ ...ok(), capUsd: '5' }, { projects, dayCap: 5 }).errors.capUsd).toBeUndefined();
+    expect(validateForm({ ...ok(), capUsd: '6' }, { projects }).errors.capUsd).toBeUndefined();
+    expect(renderForm({ ...ok(), capUsd: '6' }, { projects, dayCap: 5 })).toContain('não pode passar do teto do dia');
   });
 
   it('keeps the id when editing and round-trips a saved automação', () => {

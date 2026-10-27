@@ -427,6 +427,46 @@ describe('automation service', () => {
 });
 
 describe('automation service: review fixes', () => {
+  it('save refuses a run cap above the day cap', async () => {
+    const t = setup();
+    await t.service.start();
+    expect(await t.service.save(base({ capUsd: 6 }))).toEqual({ ok: false, error: 'O teto da execução não pode passar do teto do dia (US$ 5,00).' });
+    expect(t.service.count()).toBe(0);
+    expect((await t.service.save(base({ capUsd: 5 }))).ok).toBe(true);
+  });
+
+  it('a day cap lowered below a run cap blocks only that automação, never the queue', async () => {
+    const t = setup();
+    await t.service.start();
+    const big = (await t.service.save(base({ name: 'Grande', projectRoot: '/work/a', capUsd: 2 }))).automation.id;
+    const twin = (await t.service.save(base({ name: 'Gêmea', projectRoot: '/work/a', capUsd: 0.5 }))).automation.id;
+    await t.service.save(base({ name: 'Pequena', projectRoot: '/work/b', capUsd: 0.5 }));
+    // Gêmea runs, Grande waits behind it (same project) when the cap drops.
+    await t.service.runNow(twin);
+    await t.service.runNow(big);
+    await flush();
+    expect(t.service.state().list.find((a) => a.id === big).queued).toBe(true);
+    expect((await t.service.setDayCap(1)).ok).toBe(true);
+    const blocked = t.service.state().list.find((a) => a.id === big);
+    expect(blocked).toMatchObject({ queued: false, next: null, capBlocked: 'teto da execução maior que o teto do dia' });
+    expect(await t.service.runNow(big)).toEqual({ ok: false, error: 'Bloqueada: teto da execução maior que o teto do dia.' });
+    t.runner.runs[0].resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    await vi.advanceTimersByTimeAsync(15 * MIN);
+    expect(t.runner.runs.map((r) => r.automation.name).sort()).toEqual(['Gêmea', 'Gêmea', 'Pequena']);
+    expect(t.service.state().budget.paused).toBe(false);
+    expect(t.notify).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'day-cap' }));
+    for (const r of t.runner.runs) r.resolve({ status: 'ok', costUsd: 0 });
+    await flush();
+    // Raised again: back on its schedule from now, the blocked slots not caught up.
+    expect((await t.service.setDayCap(5)).ok).toBe(true);
+    const back = t.service.state().list.find((a) => a.id === big);
+    expect(back.capBlocked).toBeNull();
+    expect(back.next).toBe(Date.now() + 15 * MIN);
+    await flush();
+    expect(t.runner.runs.filter((r) => r.automation.id === big)).toHaveLength(0);
+  });
+
   it('reserves the caps of runs in flight against the day', async () => {
     const t = setup({ budgetFile: JSON.stringify({ day: '2026-10-27', spent: 3.5 }) });
     await t.service.start();

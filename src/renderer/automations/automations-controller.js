@@ -40,6 +40,7 @@ export function createAutomationsController({
   const find = (id) => list().find((a) => a.id === id) ?? null;
   const guardEnabled = () => data?.guardEnabled !== false;
   const readError = () => data?.readError ?? null;
+  const dayCap = () => (Number.isFinite(data?.budget?.cap) ? data.budget.cap : null);
 
   function put(name, html) {
     if (last[name] === html) return false;
@@ -67,7 +68,7 @@ export function createAutomationsController({
       if (last.sideKey === key) return;
       last.sideKey = key;
       last.side = null;
-      put('side', renderForm(side.form, { projects: projects(), guardEnabled: guardEnabled(), readError: readError(), ui }));
+      put('side', renderForm(side.form, { projects: projects(), guardEnabled: guardEnabled(), readError: readError(), dayCap: dayCap(), ui }));
       return;
     }
     last.sideKey = null;
@@ -92,7 +93,7 @@ export function createAutomationsController({
   // Live validation without redrawing: the typed text keeps its focus.
   function refreshValidation() {
     if (side?.mode !== 'form' || !regions.side.querySelectorAll) return;
-    const { errors } = validateForm(side.form, { guardEnabled: guardEnabled(), projects: projects() });
+    const { errors } = validateForm(side.form, { guardEnabled: guardEnabled(), projects: projects(), dayCap: dayCap() });
     for (const node of regions.side.querySelectorAll('[data-au-error]')) {
       const text = errors[node.dataset.auError] ?? '';
       node.textContent = text;
@@ -173,7 +174,7 @@ export function createAutomationsController({
 
   async function save() {
     if (side?.mode !== 'form' || readError()) return;
-    const { payload } = validateForm(side.form, { guardEnabled: guardEnabled(), projects: projects() });
+    const { payload } = validateForm(side.form, { guardEnabled: guardEnabled(), projects: projects(), dayCap: dayCap() });
     if (!payload) {
       refreshValidation();
       return;

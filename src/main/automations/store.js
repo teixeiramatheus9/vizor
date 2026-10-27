@@ -48,6 +48,8 @@ export function validateAutomation(raw, { now = Date.now, newId = randomUUID } =
   if (!missed) return fail('Opção de horário perdido inválida.');
   const skillScope = oneOf(SCOPES, raw.skillScope, 'personal');
   if (!skillScope) return fail('Escopo da skill inválido.');
+  // The worktree level runs in a fresh worktree, where an uncommitted project skill does not exist.
+  if (skillScope === 'project' && level === 'worktree') return fail('A skill do projeto não chega na worktree da automação; use skill pessoal.');
   const lastRun = raw.lastRun ?? null;
   if (lastRun !== null && !isNum(lastRun)) return fail('Última execução inválida.');
   const createdAt = raw.createdAt ?? now();
