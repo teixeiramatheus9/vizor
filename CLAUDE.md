@@ -38,7 +38,11 @@ App Electron (src/main/index.js)
   ├── cc-sessions.js       → resolve sessionId → socket/token/pid do Claude Code
   ├── cc-peer.js           → cliente NDJSON do socket da sessão
   ├── work/                → fluxo principal: plano do chat (.vizor/plano-<issue>.md),
-  │                          prompts compartilhados entre voz e Ctrl+K
+  │                          prompts compartilhados entre voz e Ctrl+K; contract.js lê a
+  │                          "## Contrato" do plano, task-state.js guarda fases e aprovações
+  │                          (~/.config/vizor/tarefas/), checkpoints.js tira um checkpoint
+  │                          por passo (refs do git via índice temporário) e task-service.js
+  │                          dirige portões, checkpoints e a rodada de testes
   ├── review/              → tela de revisão (main: git-diff, contract, slice, verify,
   │                          verdict, compose, review-store em ~/.config/vizor/revisao/;
   │                          renderer: src/renderer/review/ com abas Resumo/Mudanças/
@@ -97,6 +101,19 @@ Pontos críticos:
   instalada em `settings.json` sempre que existe ao menos uma automação, e os
   níveis que editam recusam rodar com ela desligada. Os flags do CLI são só a
   primeira barreira; quem segura é a trava.
+- **Modo tarefa da trava**: o Vizor grava `~/.config/vizor/tarefas/regras.json`
+  (fase e arquivos permitidos por `sessionId`; testes travados com sha256 por
+  worktree) e o `rule-guard.js` lê no `PreToolUse` de chat interativo (nunca em
+  automação). Não é allowlist: o chat roda o que quiser, só a sessão da tarefa
+  segue a fase (sem aprovar o contrato = nenhuma edição fora do plano; fase de
+  testes = só os testes do contrato). Teste travado não é escrito por nenhuma
+  sessão e `git push`/PR são negados enquanto o hash de algum divergir do
+  aprovado; as checagens de linha pegam as formas comuns de escrita, o hash é
+  a prova. Falha aberta pro chat: arquivo ausente ou corrompido só vai pro log.
+  O contrato aprovado é de texto (casos), então reordenar passos não o invalida;
+  plano sem `## Contrato` é tarefa rápida, sem portões. Destravar os testes
+  sempre pergunta (voz: segurar 3 s; Ctrl+K: duas confirmações). Chat que
+  encerra o turno com pergunta em texto vira "esperando" só depois do Stop.
 - **Sessão morta**: fechar o terminal mata o `claude` sem disparar hook nenhum,
   então a lista só descobre isso comparando com `~/.claude/sessions/`. Ausência
   ali não é prova de morte: builds sem o registro não listam nada. Só se reapa

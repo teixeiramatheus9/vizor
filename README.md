@@ -111,6 +111,38 @@ com tudo feito, "Abrir PR" pede pra rodar os testes e abrir a PR. A mesma barra
 leva a qualquer chat, interrompe um que está rodando, chama a revisão de uma PR
 e liga o Maestro. Por voz: "aprova o plano" e "abre a PR da 169".
 
+### Contrato e passos
+
+Quando o plano do chat traz uma seção `## Contrato`, a tarefa deixa de ser
+rápida e passa por portões, na ordem: **contrato → testes → passos → sua vez**.
+O contrato é uma lista de casos no formato `- situação → resultado`; o cartão
+do plano (no Resumo) mostra onde você está e o que falta aprovar. Plano sem
+`## Contrato` continua sendo tarefa rápida, sem portão nenhum.
+
+1. **Contrato.** Enquanto você não aprova o contrato, o chat não edita código
+   (só o próprio plano). A trava barra a edição e avisa o motivo.
+2. **Testes.** Aprovado o contrato, o chat escreve só os testes dele e o
+   comando que roda tudo. Você aprova os testes e o comando; o Vizor guarda o
+   sha256 de cada teste travado.
+3. **Passos.** O chat implementa um passo por vez e o Vizor tira um
+   checkpoint do worktree a cada um (refs do git, sem mexer na sua branch nem
+   no seu índice). A aba **Mudanças** mostra um passo por vez, só pra ler; dá
+   pra voltar pro checkpoint de antes de um passo (o Vizor confere o que vai
+   restaurar). Por padrão o chat para depois de cada passo; no modo confiar ele
+   segue, e você marca como revisado o que quiser.
+4. **Sua vez.** Passos revisados, "Abrir PR" libera a PR. Abrir com passos
+   sem revisão é uma escolha sua, explícita.
+
+Teste travado não se mexe: se um teste do contrato mudar depois de aprovado,
+o chat não consegue editá-lo e o `git push`/a PR ficam negados até você olhar.
+Destravar é sempre pedido com confirmação: por voz você segura 3 segundos
+("destrava os testes"), no Ctrl+K ele pergunta duas vezes. Aprovar contrato,
+testes e o próximo passo também sai por voz ou pelo Ctrl+K.
+
+Um chat que termina o turno com uma pergunta em texto conta como "esperando
+você": a bolha avisa e o card sobe pra coluna de espera. Os estados da tarefa
+ficam em `~/.config/vizor/tarefas/`, fora do repo.
+
 ### Abas: Agentes e GitHub
 
 O workspace tem três abas no topo: **Workspace** (a revisão), **Agentes** e
