@@ -61,13 +61,14 @@ function contractSection(task, ui) {
 }
 
 function runBlock(run) {
-  if (run?.running) return '<p class="plan-hint">rodando os testes…</p>';
+  // A new run keeps the last result on screen until its own result lands.
+  const running = run?.running ? '<p class="plan-hint">rodando os testes…</p>' : '';
   const last = run?.last;
-  if (!last) return '';
+  if (!last) return running;
   const ok = last.status === 'ok';
   const secs = last.ms ? ` · ${(last.ms / 1000).toFixed(1)} s` : '';
   const tail = last.tail ? `<details class="plan-tail"><summary>fim da saída</summary><pre>${e(last.tail)}</pre></details>` : '';
-  return `<p class="plan-run ${ok ? 'ok' : 'bad'}">${ok ? '✓' : '✗'} última execução: ${e(last.status)}${secs}</p>${tail}`;
+  return `${running}<p class="plan-run ${ok ? 'ok' : 'bad'}">${ok ? '✓' : '✗'} última execução: ${e(last.status)}${secs}</p>${tail}`;
 }
 
 function testsSection(task, ui) {

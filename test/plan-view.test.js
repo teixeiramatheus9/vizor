@@ -206,4 +206,10 @@ describe('the task card', () => {
   it('title and issue are escaped', () => {
     expect(renderTaskCard(task({ title: '<i>x</i>' }))).not.toContain('<i>x</i>');
   });
+  it('a new test run keeps the last output on screen', () => {
+    const html = renderTaskCard(task({ phase: 'steps', run: { running: true, last: { status: 'fail', tail: 'boom <x>' } } }));
+    expect(html).toContain('rodando os testes…');
+    expect(html).toContain('plan-run bad');
+    expect(html).toContain('boom &lt;x&gt;');
+  });
 });

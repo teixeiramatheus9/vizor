@@ -152,11 +152,12 @@ try {
   await ws.click('[data-task="approveTests"]');
   await ws.waitForSelector('#plan-card .plan-run.bad', { timeout: 30000 });
   assert.match(await ws.textContent('#plan-card .plan-run.bad'), /✗ última execução/);
+  // Read the output of this run now: the fake ticks step 1 next, and that starts another run.
+  assert.match(await ws.textContent('#plan-card .plan-tail pre'), /Cannot find module '\.\.\/src\/x\.js'/);
   // The card moves on to the steps right after the run: open the output once it settled.
   await ws.waitForSelector('#plan-card [data-section="steps"]', { timeout: 30000 });
   await ws.click('#plan-card .plan-tail summary');
   await ws.waitForSelector('#plan-card details.plan-tail[open]', { timeout: 5000 });
-  assert.match(await ws.textContent('#plan-card .plan-tail pre'), /Cannot find module '\.\.\/src\/x\.js'/);
   await shot(ws, 'run-failed');
   assert.match(await card(), /travado/);
   await until('the locked test in the guard rules', () => {
