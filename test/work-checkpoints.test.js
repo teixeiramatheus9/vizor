@@ -151,6 +151,26 @@ describe('createCheckpoints (real git)', () => {
     await expect(c.take(empty, 1, 1)).rejects.toThrow(/não tem commits/);
   });
 
+  it('restore keeps a file committed or only staged after the checkpoint, lists it as left, and leaves the index alone', async () => {
+    const dir = repo();
+    const c = cp();
+    writeFileSync(join(dir, 'a.txt'), 'step1\n');
+    const { ref } = await c.take(dir, 5, 1);
+    writeFileSync(join(dir, 'a.txt'), 'step2\n');
+    writeFileSync(join(dir, 'committed.txt'), 'committed\n');
+    g(dir, 'add', 'committed.txt'); g(dir, 'commit', '-qm', 'later');
+    writeFileSync(join(dir, 'staged.txt'), 'staged\n');
+    g(dir, 'add', 'staged.txt');
+    const index = [g(dir, 'diff', '--cached', '--name-status'), readFileSync(join(dir, '.git', 'index'))];
+    const out = await c.restore(dir, ref);
+    expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('step1\n');
+    expect(readFileSync(join(dir, 'committed.txt'), 'utf8')).toBe('committed\n');
+    expect(readFileSync(join(dir, 'staged.txt'), 'utf8')).toBe('staged\n');
+    expect(out.left.sort()).toEqual(['committed.txt', 'staged.txt']);
+    expect(out.restored).toEqual(['a.txt']);
+    expect([g(dir, 'diff', '--cached', '--name-status'), readFileSync(join(dir, '.git', 'index'))]).toEqual(index);
+  });
+
   it('a file deleted after the checkpoint comes back and is listed as restored', async () => {
     const dir = repo();
     const c = cp();

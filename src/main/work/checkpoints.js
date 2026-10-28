@@ -87,12 +87,15 @@ export function createCheckpoints({
     const tokens = nuls(await git(['diff', '--name-status', '-z', '--no-renames', ref], { cwd }));
     const changed = [];
     for (let i = 0; i + 1 < tokens.length; i += 2) changed.push({ status: tokens[i], file: tokens[i + 1] });
-    const known = new Set(nuls(await git(['ls-tree', '-r', '-z', '--name-only', ref], { cwd })));
-    const untracked = nuls(await git(['ls-files', '-o', '-z', '--exclude-standard'], { cwd }));
     const restored = changed.filter((c) => c.status !== 'A').map((c) => c.file);
-    const added = changed.filter((c) => c.status === 'A').map((c) => c.file);
-    const left = [...new Set([...added, ...untracked])].filter((f) => !known.has(f));
-    await git(['restore', `--source=${ref}`, '--worktree', '--', '.'], { cwd });
+    // --overlay: a tracked file the checkpoint never had stays (no-overlay would delete it).
+    await git(['restore', '--overlay', `--source=${ref}`, '--worktree', '--', '.'], { cwd });
+    // What was left is read after the restore, so the list says what is really on disk.
+    const known = new Set(nuls(await git(['ls-tree', '-r', '-z', '--name-only', ref], { cwd })));
+    const after = nuls(await git(['diff', '--name-status', '-z', '--no-renames', '--diff-filter=A', ref], { cwd }))
+      .filter((_, i) => i % 2 === 1);
+    const untracked = nuls(await git(['ls-files', '-o', '-z', '--exclude-standard'], { cwd }));
+    const left = [...new Set([...after, ...untracked])].filter((f) => !known.has(f));
     return { restored, left };
   }
 
