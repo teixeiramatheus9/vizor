@@ -237,4 +237,16 @@ describe('the plan controller', () => {
     await make().refresh('s1');
     expect(fresh.open).toBe(true);
   });
+  it('a redraw keeps open the diffs of the changed tests the dev opened', async () => {
+    make();
+    await flush();
+    const opened = [{ open: true, dataset: { file: 't.js' } }, { open: false, dataset: { file: 'u.js' } }];
+    const fresh = [{ open: false, dataset: { file: 't.js' } }, { open: false, dataset: { file: 'u.js' } }];
+    let drawn = false;
+    el.querySelectorAll = (selector) => (selector === 'details.plan-diff' ? (drawn ? fresh : opened) : []);
+    const write = Object.getOwnPropertyDescriptor(el, 'innerHTML');
+    Object.defineProperty(el, 'innerHTML', { get: write.get ?? (() => write.value), set: (value) => { drawn = true; write.value = value; }, configurable: true });
+    await make().refresh('s1');
+    expect(fresh.map((d) => d.open)).toEqual([true, false]);
+  });
 });

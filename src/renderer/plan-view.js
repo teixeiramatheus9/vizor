@@ -76,7 +76,11 @@ function testsSection(task, ui) {
   const changed = new Set(tests.changedLocked ?? []);
   const files = (tests.files ?? []).map((file) => {
     const mark = changed.has(file) ? ' <b class="plan-bad">mudou</b>' : locked.has(file) ? ' <i>travado</i>' : locked.size ? ' <i>novo, destravado</i>' : '';
-    return `<li><code>${e(file)}</code>${mark}</li>`;
+    const patch = changed.has(file) ? tests.changedDiffs?.[file] : null;
+    const diff = typeof patch === 'string' && patch
+      ? `<details class="plan-diff" data-file="${e(file)}"><summary>o que mudou desde a aprovação</summary><pre>${e(patch)}</pre></details>`
+      : '';
+    return `<li><code>${e(file)}</code>${mark}${diff}</li>`;
   });
   // Files the plan dropped stay locked: they are not in the list but the dev must see them.
   const dropped = [...locked].filter((file) => !(tests.files ?? []).includes(file)).map((file) => `<li><code>${e(file)}</code> <i>travado, fora da lista do plano</i></li>`);

@@ -45,6 +45,12 @@ describe('phases', () => {
     expect(nextPhase(state, finished)).toBe('pr');
   });
 
+  it('approving the tests keeps the blobs of the approved files when there are any', () => {
+    const p = plan();
+    const state = approveTests(approveContract(newTaskState(), p), p, { 'test/a.test.js': 'h1' }, { 'test/a.test.js': 'b'.repeat(40) });
+    expect(state.tests).toEqual({ command: 'npm test', hashes: { 'test/a.test.js': 'h1' }, blobs: { 'test/a.test.js': 'b'.repeat(40) } });
+  });
+
   it('a plan with a contract error never advances past its first approval', () => {
     const bad = parseTaskPlan('## Contrato\n- só um\n');
     expect(bad.error).toBeTruthy();
@@ -225,6 +231,14 @@ describe('the task store', () => {
     expect(loaded.lastRun.tail).toHaveLength(8192);
     const wrong = { ...newTaskState(), worktree: 'relative', issue: -1, sessions: 'x', quick: 1, lastRun: { status: 3 }, changedLocked: {}, ended: 'yes', waitUntick: 'x' };
     expect(await make(fakeFs({ [file]: JSON.stringify(wrong) })).load(KEY)).toEqual(newTaskState());
+  });
+
+  it('keeps the approved blobs of the locked tests, dropping anything that is not an object id', async () => {
+    const file = `/cfg/tarefas/${KEY}.json`;
+    const blob = 'a'.repeat(40);
+    const saved = { ...newTaskState(), tests: { command: 'npm test', hashes: { 't/a.js': 'h1' }, blobs: { 't/a.js': blob, 't/b.js': 'nope', 't/c.js': 3 } } };
+    const loaded = await make(fakeFs({ [file]: JSON.stringify(saved) })).load(KEY);
+    expect(loaded.tests).toEqual({ command: 'npm test', hashes: { 't/a.js': 'h1' }, blobs: { 't/a.js': blob } });
   });
 
   it('a wrong shape counts as corrupt too', async () => {

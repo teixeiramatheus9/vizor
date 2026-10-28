@@ -43,11 +43,13 @@ export function createPlanController({ el, api, sessionId, getSession = () => nu
     const keep = active?.dataset?.key ? { key: active.dataset.key, start: active.selectionStart, end: active.selectionEnd } : null;
     // A state push redraws the card: the test output the dev opened stays open.
     const tailOpen = Boolean(el.querySelector?.('details.plan-tail')?.open);
+    const diffsOpen = new Set([...(el.querySelectorAll?.('details.plan-diff') ?? [])].filter((node) => node.open).map((node) => node.dataset?.file));
     el.innerHTML = html + (html ? noteHtml : '');
     if (tailOpen) {
       const tail = el.querySelector('details.plan-tail');
       if (tail) tail.open = true;
     }
+    if (diffsOpen.size) for (const node of el.querySelectorAll('details.plan-diff')) if (diffsOpen.has(node.dataset?.file)) node.open = true;
     if (keep) {
       const back = [...el.querySelectorAll('[data-key]')].find((node) => node.dataset.key === keep.key);
       if (back) {

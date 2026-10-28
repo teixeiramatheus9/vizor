@@ -16,6 +16,16 @@ const NO_TASK = 'Esse chat não tem tarefa.';
 const MAX_COMMENT = 4000;
 const MAX_TODOS = 20;
 const TAIL_MAX = 8192;
+const DIFF_MAX = 8000;
+// The blob-to-blob header names object ids, not the file: the card shows only the hunks.
+const DIFF_HEADER = /^(?:diff --git |index |--- |\+\+\+ |new file mode |deleted file mode |old mode |new mode )/;
+const hunksOf = (patch) => {
+  const lines = String(patch).split('\n');
+  let start = 0;
+  while (start < lines.length && DIFF_HEADER.test(lines[start])) start++;
+  const text = lines.slice(start).join('\n');
+  return text.length > DIFF_MAX ? `${text.slice(0, DIFF_MAX)}\n… (cortado)` : text;
+};
 const MAX_DELAY = 2 ** 31 - 1; // setTimeout's own limit
 const GATED = new Set(['contract', 'tests', 'steps', 'pr']);
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -453,6 +463,7 @@ export function createTaskService({
       }
       // Locked already (the command changed): the locked set and its hashes stay.
       let hashes = task.state.tests?.hashes;
+      let blobs = task.state.tests?.blobs;
       if (!hashes) {
         hashes = {};
         for (const file of files) {
@@ -462,15 +473,59 @@ export function createTaskService({
             return failed(`Não achei o arquivo de teste ${file}.`);
           }
         }
+        blobs = await approvedBlobs(task, files);
       }
       await takeBaseline(task);
       task.state = {
-        ...T.approveTests(task.state, task.plan, hashes),
+        ...T.approveTests(task.state, task.plan, hashes, blobs),
         changedLocked: [],
         lastRun: { status: run.status, tail: String(run.tail ?? run.reason ?? '').slice(-TAIL_MAX), at: now(), ms: run.ms ?? 0 },
       };
       return { prompt: nextOrder(task), run: task.state.lastRun };
     });
+  }
+
+  // The approved content of each test, kept as a git object: a later change diffs against it.
+  async function approvedBlobs(task, files) {
+    const blobs = {};
+    if (!git) return blobs;
+    for (const file of files) {
+      try {
+        const oid = String(await git(['hash-object', '-w', '--', file], { cwd: task.worktree })).trim();
+        if (T.isObjectId(oid)) blobs[file] = oid;
+      } catch (error) {
+        log(`tasks: could not keep the approved ${file} of #${task.issue} (${error?.message ?? error})`);
+      }
+    }
+    return blobs;
+  }
+
+  // What a changed locked test changed since its approval; only asked for flagged files,
+  // and cached while neither side moves. null when there is nothing to diff against.
+  async function lockDiff(task, file) {
+    const approved = task.state.tests?.blobs?.[file];
+    if (!git || !approved) return null;
+    let current = null;
+    try {
+      current = await sha256File(abs(task, file));
+    } catch {
+      // deleted: diffs against the empty file
+    }
+    const key = `${approved}:${current}`;
+    task.lockDiffs ??= new Map();
+    const cached = task.lockDiffs.get(file);
+    if (cached?.key === key) return cached.text;
+    let text = null;
+    try {
+      const cwd = task.worktree;
+      const args = current == null ? ['hash-object', '-w', '-t', 'blob', '/dev/null'] : ['hash-object', '-w', '--', file];
+      const oid = String(await git(args, { cwd })).trim();
+      if (T.isObjectId(oid)) text = hunksOf(await git(['diff', '--no-color', '-U3', approved, oid], { cwd }));
+    } catch (error) {
+      log(`tasks: could not diff the locked ${file} of #${task.issue} (${error?.message ?? error})`);
+    }
+    task.lockDiffs.set(file, { key, text });
+    return text;
   }
 
   const unlockTests = (sessionId) => act(sessionId, 'unlockTests', (task) => {
@@ -651,6 +706,7 @@ export function createTaskService({
         approvedCommand: s.tests?.command ?? null,
         locked,
         changedLocked: s.changedLocked,
+        changedDiffs: Object.fromEntries(await Promise.all(s.changedLocked.map(async (file) => [file, await lockDiff(task, file)]))),
         contractFilesChanged: Boolean(s.tests) && JSON.stringify([...files].sort()) !== JSON.stringify([...locked].sort()),
       },
       run: { running: task.running > 0, last: s.lastRun },

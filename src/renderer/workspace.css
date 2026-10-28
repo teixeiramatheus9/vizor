@@ -3064,6 +3064,8 @@ body[data-palette='giz'] #view-automations {
 .plan-command span { display: block; color: var(--muted); font-size: 0.8em; }
 .plan-command code { font-size: 1.05em; font-weight: 600; white-space: pre-wrap; word-break: break-all; }
 .plan-tail pre { max-height: 180px; overflow: auto; margin: 4px 0; padding: 6px; background: var(--bg-surface); white-space: pre-wrap; word-break: break-all; }
+.plan-diff summary { cursor: pointer; }
+.plan-diff pre { max-height: 220px; overflow: auto; margin: 4px 0; padding: 6px; background: var(--bg-surface); white-space: pre; font-size: 11px; }
 .plan-run.ok, .plan-ok { color: var(--ok, var(--accent)); }
 .plan-run.bad, .plan-bad { color: var(--warn); }
 .plan-warn, .plan-confirm { color: var(--warn); margin: 4px 0; }

@@ -12,13 +12,20 @@ const sha = (algo, text) => createHash(algo).update(text).digest('hex');
 export const taskKey = (worktree, issue) => `${sha('sha1', String(worktree))}-${issue}`;
 
 // Only the cases' text counts: the file lines and the steps change all the time.
+// A git object id (sha1 or sha256).
+export const isObjectId = (v) => typeof v === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(v);
+// Only real object ids, and no key at all when there are none.
+function withBlobs(blobs) {
+  const kept = Object.fromEntries(Object.entries(blobs ?? {}).filter(([, oid]) => isObjectId(oid)));
+  return Object.keys(kept).length ? { blobs: kept } : {};
+}
 export const contractHash = (plan) => sha('sha256', (plan?.contract ?? []).map((item) => item.text).join('\n'));
 
 export const newTaskState = () => ({
   version: 1,
   mode: 'step', // the default: the músico stops after each step
   contract: null, // { hash } once the dev approved the contract text
-  tests: null, // { command, hashes } once the dev approved the tests and the command
+  tests: null, // { command, hashes, blobs? } once the dev approved the tests and the command
   reviewed: [], // normalized step texts the dev checked: reordering the plan keeps them
   checkpoints: {}, // step → ref already taken
   openAnyway: false, // the dev opens the PR with unreviewed steps
@@ -55,8 +62,9 @@ export function nextPhase(state, plan) {
 // A plan that does not parse cleanly cannot be approved: the state stays as it is.
 export const approveContract = (state, plan) => (hasContract(plan) ? { ...state, contract: { hash: contractHash(plan) } } : state);
 // Nothing to lock or run without a command and at least one test file.
-export const approveTests = (state, plan, hashes) => (hasContract(plan) && plan.testCommand && plan.contractFiles?.length > 0
-  ? { ...state, tests: { command: plan.testCommand, hashes: { ...hashes } } }
+// blobs: file → the git object of the approved content, so a change can show its diff.
+export const approveTests = (state, plan, hashes, blobs = {}) => (hasContract(plan) && plan.testCommand && plan.contractFiles?.length > 0
+  ? { ...state, tests: { command: plan.testCommand, hashes: { ...hashes }, ...withBlobs(blobs) } }
   : state);
 export const unlockTests = (state) => ({ ...state, tests: null });
 export const reviewStep = (state, text) => {
@@ -82,7 +90,11 @@ function coerce(data) {
     mode: MODES.includes(data.mode) ? data.mode : base.mode,
     contract: isObject(data.contract) && typeof data.contract.hash === 'string' ? { hash: data.contract.hash } : null,
     tests: isObject(data.tests) && typeof data.tests.command === 'string' && isObject(data.tests.hashes)
-      ? { command: data.tests.command, hashes: Object.fromEntries(Object.entries(data.tests.hashes).filter(([, h]) => typeof h === 'string')) }
+      ? {
+        command: data.tests.command,
+        hashes: Object.fromEntries(Object.entries(data.tests.hashes).filter(([, h]) => typeof h === 'string')),
+        ...withBlobs(isObject(data.tests.blobs) ? data.tests.blobs : {}),
+      }
       : null,
     reviewed: Array.isArray(data.reviewed) ? data.reviewed.filter((x) => typeof x === 'string') : [],
     checkpoints: isObject(data.checkpoints) ? Object.fromEntries(Object.entries(data.checkpoints).filter(([, r]) => typeof r === 'string')) : {},

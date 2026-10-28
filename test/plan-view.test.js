@@ -69,6 +69,17 @@ describe('the task card', () => {
     expect(html).toMatch(/data-task="approveContract"[^>]*disabled/);
   });
 
+  it('a changed locked test shows its diff escaped in a collapsible block under the file', () => {
+    const tests = { ...task().tests, changedLocked: ['t/a.test.js'], changedDiffs: { 't/a.test.js': '@@ -1 +1 @@\n-<old>\n+<script>x</script>\n' } };
+    const html = renderTaskCard(task({ tests }));
+    expect(html).toMatch(/<li><code>t\/a\.test\.js<\/code> <b class="plan-bad">mudou<\/b><details class="plan-diff" data-file="t\/a\.test\.js"><summary>[^<]+<\/summary><pre>/);
+    expect(html).toContain('+&lt;script&gt;x&lt;/script&gt;');
+    expect(html).not.toContain('<script>');
+    const none = renderTaskCard(task({ tests: { ...tests, changedDiffs: { 't/a.test.js': null } } }));
+    expect(none).toContain('mudou');
+    expect(none).not.toContain('plan-diff');
+  });
+
   it('tests phase: the command in full and prominent, files, approve', () => {
     const html = renderTaskCard(task({ phase: 'tests', tests: { ...task().tests, locked: [] } }));
     expect(html).toContain('<code>npx vitest run t/a.test.js</code>');

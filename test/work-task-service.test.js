@@ -253,6 +253,95 @@ describe('the task service: the tests', () => {
   });
 });
 
+describe('the task service: what a changed locked test changed', () => {
+  const APPROVED = 'a'.repeat(40);
+  const NOW = 'b'.repeat(40);
+  const EMPTY = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391';
+  const PATCH = `diff --git a/${APPROVED} b/${NOW}\nindex aaaaaaa..bbbbbbb 100644\n--- a/${APPROVED}\n+++ b/${NOW}\n@@ -1 +1 @@\n-expect(1)\n+expect(2)\n`;
+  const withGit = (ctx, { approved = APPROVED, now = NOW, patch = PATCH } = {}) => {
+    const blob = { current: approved };
+    ctx.deps.git.mockImplementation(async (args) => {
+      if (args[0] === 'hash-object') return `${args.includes('/dev/null') ? EMPTY : blob.current}\n`;
+      if (args[0] === 'diff') return patch;
+      return '';
+    });
+    return { later: () => { blob.current = now; } };
+  };
+  const diffCalls = (ctx) => ctx.deps.git.mock.calls.filter(([args]) => args[0] === 'diff');
+
+  it('the approval records the blob of each locked test; nothing is diffed while nothing changed', async () => {
+    const ctx = setup();
+    withGit(ctx);
+    await toSteps(ctx);
+    expect(ctx.deps.git).toHaveBeenCalledWith(['hash-object', '-w', '--', 'test/menu.test.js'], { cwd: WT });
+    await ctx.service.onStop('s1', WT);
+    expect((await ctx.service.state('s1')).tests.changedDiffs).toEqual({});
+    expect(diffCalls(ctx)).toEqual([]);
+  });
+
+  it('a changed locked test shows the diff from what was approved, without the blob header', async () => {
+    const ctx = setup();
+    const git = withGit(ctx);
+    await toSteps(ctx);
+    git.later();
+    ctx.hashes[TEST_FILE] = 'mexido';
+    await ctx.service.onStop('s1', WT);
+    const { tests } = await ctx.service.state('s1');
+    expect(diffCalls(ctx).at(-1)[0]).toEqual(['diff', '--no-color', '-U3', APPROVED, NOW]);
+    expect(tests.changedDiffs['test/menu.test.js']).toBe('@@ -1 +1 @@\n-expect(1)\n+expect(2)\n');
+    // the same content again is not diffed twice
+    const calls = diffCalls(ctx).length;
+    await ctx.service.state('s1');
+    expect(diffCalls(ctx)).toHaveLength(calls);
+  });
+
+  it('a deleted locked test diffs against the empty file', async () => {
+    const ctx = setup();
+    withGit(ctx);
+    await toSteps(ctx);
+    delete ctx.hashes[TEST_FILE];
+    await ctx.service.onStop('s1', WT);
+    await ctx.service.state('s1');
+    expect(diffCalls(ctx).at(-1)[0]).toEqual(['diff', '--no-color', '-U3', APPROVED, EMPTY]);
+  });
+
+  it('a huge diff is cut', async () => {
+    const ctx = setup();
+    const git = withGit(ctx, { patch: `@@ -1 +1 @@\n${'+x\n'.repeat(20_000)}` });
+    await toSteps(ctx);
+    git.later();
+    ctx.hashes[TEST_FILE] = 'mexido';
+    await ctx.service.onStop('s1', WT);
+    const text = (await ctx.service.state('s1')).tests.changedDiffs['test/menu.test.js'];
+    expect(text.length).toBeLessThan(10_000);
+    expect(text).toMatch(/cortado/);
+  });
+
+  it('unlocking and approving again diffs from the new approval', async () => {
+    const ctx = setup();
+    const git = withGit(ctx);
+    await toSteps(ctx);
+    await ctx.service.unlockTests('s1');
+    git.later();
+    await ctx.service.approveTests('s1');
+    ctx.deps.git.mockImplementation(async (args) => (args[0] === 'hash-object' ? 'c'.repeat(40) : args[0] === 'diff' ? PATCH : ''));
+    ctx.hashes[TEST_FILE] = 'mexido';
+    await ctx.service.onStop('s1', WT);
+    await ctx.service.state('s1');
+    expect(diffCalls(ctx).at(-1)[0]).toEqual(['diff', '--no-color', '-U3', NOW, 'c'.repeat(40)]);
+  });
+
+  it('without a recorded blob (or git failing) the file is flagged with no diff', async () => {
+    const ctx = setup();
+    await toSteps(ctx); // the default git mock answers garbage: no blob recorded
+    ctx.hashes[TEST_FILE] = 'mexido';
+    await ctx.service.onStop('s1', WT);
+    const { tests } = await ctx.service.state('s1');
+    expect(tests.changedLocked).toEqual(['test/menu.test.js']);
+    expect(tests.changedDiffs).toEqual({ 'test/menu.test.js': null });
+  });
+});
+
 describe('the task service: the steps', () => {
   it('a new tick takes a checkpoint, then runs the contract; the same plan again does neither', async () => {
     const ctx = setup();
