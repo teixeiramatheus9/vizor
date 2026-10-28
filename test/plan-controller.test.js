@@ -224,4 +224,17 @@ describe('the plan controller', () => {
     await flush();
     expect(api.planAction).toHaveBeenCalledWith('s1', 'pr');
   });
+  it('a redraw keeps the test output open when the dev opened it', async () => {
+    make();
+    await flush();
+    const opened = { open: true };
+    const fresh = { open: false };
+    let drawn = false;
+    el.querySelector = (selector) => (selector === 'details.plan-tail' ? (drawn ? fresh : opened) : null);
+    const write = Object.getOwnPropertyDescriptor(el, 'innerHTML');
+    Object.defineProperty(el, 'innerHTML', { get: write.get ?? (() => write.value), set: (value) => { drawn = true; write.value = value; }, configurable: true });
+    task = baseTask({ run: { running: false, last: { ok: false, tail: 'boom' } } });
+    await make().refresh('s1');
+    expect(fresh.open).toBe(true);
+  });
 });
