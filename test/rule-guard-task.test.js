@@ -236,6 +236,11 @@ describe('a PR opened from another folder or through gh api', () => {
     'gh api --method=post repos/o/r/pulls',
     'gh api repos/o/r/pulls -ftitle=x',
     "gh api graphql -f query='mutation { createPullRequest(input: {}) { pullRequest { url } } }'",
+    'gh api https://api.github.com/repos/o/r/pulls -f title=x',
+    'gh api https://ghe.example.com/api/v3/repos/o/r/pulls -f title=x',
+    'gh api graphql -F query=@mutation.graphql',
+    'gh api graphql --input body.json',
+    '/usr/bin/gh api repos/o/r/pulls -f title=x',
   ];
 
   it('cd into the folder, then gh pr create, is held when a lock changed and passes when it did not', () => {
@@ -243,6 +248,10 @@ describe('a PR opened from another folder or through gh api', () => {
       expect(verdict(bash(command), { rules: changed(), cwd: other }), command).toBe(SHIP);
       expect(verdict(bash(command), { cwd: other }), command).toBeNull();
     }
+  });
+
+  it('gh called by its full path is still gh', () => {
+    expect(verdict(bash('/usr/bin/gh pr create --fill'), { rules: changed() })).toBe(SHIP);
   });
 
   it('a plain gh pr create from the folder is still held when a lock changed', () => {

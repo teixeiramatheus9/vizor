@@ -1118,8 +1118,10 @@ function sha256Of(file) {
 
 const PR_CREATE = new Set(['create', 'new']);
 const GH_VALUE_OPTIONS = new Set(['-R', '--repo']);
+// gh by name or by its full path (/usr/bin/gh).
+const isGh = (token) => typeof token === 'string' && path.basename(token) === 'gh';
 function isPrCreate(tokens) {
-  if (tokens[0] !== 'gh') return false;
+  if (!isGh(tokens[0])) return false;
   let index = 1;
   while (index < tokens.length && tokens[index].startsWith('-')) index += GH_VALUE_OPTIONS.has(tokens[index]) ? 2 : 1;
   return tokens[index] === 'pr' && PR_CREATE.has(tokens[index + 1]);
@@ -1128,15 +1130,18 @@ function isPrCreate(tokens) {
 // gh api that opens a pull request: a write (fields, --input or POST) to
 // repos/<o>/<r>/pulls, or the createPullRequest mutation.
 const GH_API_VALUE_OPTIONS = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
-const PULLS_ENDPOINT = /^\/?repos\/[^/\s]+\/[^/\s]+\/pulls\/?(?:\?.*)?$/;
+// Also as a full URL, on github.com or an Enterprise host (/api/v3).
+const PULLS_ENDPOINT = /^(?:https?:\/\/[^/\s]+(?:\/api\/v3)?)?\/?repos\/[^/\s]+\/[^/\s]+\/pulls\/?(?:\?.*)?$/;
 function isPrApi(tokens) {
-  if (tokens[0] !== 'gh') return false;
+  if (!isGh(tokens[0])) return false;
   let index = 1;
   while (index < tokens.length && tokens[index].startsWith('-')) index += GH_VALUE_OPTIONS.has(tokens[index]) ? 2 : 1;
   if (tokens[index] !== 'api') return false;
   let endpoint = null;
   let method = null;
   let sends = false;
+  // A graphql query read from a file or stdin cannot be checked for the mutation.
+  let queryUnseen = false;
   for (let i = index + 1; i < tokens.length; i++) {
     const token = tokens[i];
     if (!token.startsWith('-')) {
@@ -1150,9 +1155,12 @@ function isPrApi(tokens) {
     const value = short ? token.slice(2) : equals !== -1 ? token.slice(equals + 1) : GH_API_VALUE_OPTIONS.has(name) ? (tokens[++i] ?? '') : null;
     const option = short ?? name;
     if (option === '-X' || option === '--method') method = String(value).toUpperCase();
-    else if (['-f', '--raw-field', '-F', '--field', '--input'].includes(option)) sends = true;
+    else if (['-f', '--raw-field', '-F', '--field', '--input'].includes(option)) {
+      sends = true;
+      if (option === '--input' || (['-F', '--field'].includes(option) && /^query=@/.test(String(value)))) queryUnseen = true;
+    }
   }
-  if (endpoint === 'graphql') return tokens.some((token) => /\bcreatePullRequest\b/.test(token));
+  if (endpoint === 'graphql') return queryUnseen || tokens.some((token) => /\bcreatePullRequest\b/.test(token));
   if (!endpoint || !PULLS_ENDPOINT.test(endpoint)) return false;
   return method ? method === 'POST' : sends;
 }
