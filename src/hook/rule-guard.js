@@ -207,7 +207,8 @@ function joinDir(base, next) {
 // Each git action in the command with every directory it may run in: the
 // cwd plus each cd before it. A subshell or a failed cd can undo a cd, so all
 // of them count — a guard that is unsure asks.
-function gitActions(command) {
+// parse(segment, tokens) names an action ({ dir } relative to the shell's) or null.
+function actionsWithDirs(command, parse) {
   const actions = [];
   const dirs = [''];
   let current = '';
@@ -219,10 +220,14 @@ function gitActions(command) {
       if (!dirs.includes(current)) dirs.push(current);
       continue;
     }
-    const parsed = parseGitAction(segment);
+    const parsed = parse(segment, tokens);
     if (parsed) actions.push({ parsed, dirs: dirs.map((dir) => joinDir(dir, parsed.dir)) });
   }
   return actions;
+}
+
+function gitActions(command) {
+  return actionsWithDirs(command, (segment) => parseGitAction(segment));
 }
 
 function branchName(ref) {
@@ -1120,16 +1125,49 @@ function isPrCreate(tokens) {
   return tokens[index] === 'pr' && PR_CREATE.has(tokens[index + 1]);
 }
 
+// gh api that opens a pull request: a write (fields, --input or POST) to
+// repos/<o>/<r>/pulls, or the createPullRequest mutation.
+const GH_API_VALUE_OPTIONS = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
+const PULLS_ENDPOINT = /^\/?repos\/[^/\s]+\/[^/\s]+\/pulls\/?(?:\?.*)?$/;
+function isPrApi(tokens) {
+  if (tokens[0] !== 'gh') return false;
+  let index = 1;
+  while (index < tokens.length && tokens[index].startsWith('-')) index += GH_VALUE_OPTIONS.has(tokens[index]) ? 2 : 1;
+  if (tokens[index] !== 'api') return false;
+  let endpoint = null;
+  let method = null;
+  let sends = false;
+  for (let i = index + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token.startsWith('-')) {
+      endpoint ??= token;
+      continue;
+    }
+    const equals = token.startsWith('--') ? token.indexOf('=') : -1;
+    const name = equals === -1 ? token : token.slice(0, equals);
+    // Short options may carry their value glued: -XPOST, -ftitle=x.
+    const short = /^-[XfF]./.test(token) ? token.slice(0, 2) : null;
+    const value = short ? token.slice(2) : equals !== -1 ? token.slice(equals + 1) : GH_API_VALUE_OPTIONS.has(name) ? (tokens[++i] ?? '') : null;
+    const option = short ?? name;
+    if (option === '-X' || option === '--method') method = String(value).toUpperCase();
+    else if (['-f', '--raw-field', '-F', '--field', '--input'].includes(option)) sends = true;
+  }
+  if (endpoint === 'graphql') return tokens.some((token) => /\bcreatePullRequest\b/.test(token));
+  if (!endpoint || !PULLS_ENDPOINT.test(endpoint)) return false;
+  return method ? method === 'POST' : sends;
+}
+
 // The directories a push or a PR of this line may ship from (resolved; null
 // = one the guard cannot follow), or an empty list when it ships nothing.
+// A cd or pushd before gh counts, as it does for git push.
 function shipDirs(command, readable, cwd) {
   const dirs = [];
   for (const { parsed, dirs: where } of gitActions(command))
     if (parsed.action === 'push') dirs.push(...where.map((dir) => resolveDir(cwd, dir)));
-  for (const segment of splitCommand(command))
-    if (isPrCreate(withoutRedirections(words(segment)).map((token) => token.text))) dirs.push(cwd);
+  const prs = actionsWithDirs(command, (segment, tokens) => (isPrCreate(tokens) || isPrApi(tokens) ? { dir: '' } : null));
+  for (const { dirs: where } of prs) dirs.push(...where.map((dir) => resolveDir(cwd, dir)));
   // A line the guard cannot read that still says push or pr create ships from here.
-  if (dirs.length === 0 && !readable && /\bgit\b[\s\S]*\bpush\b|\bgh\b[\s\S]*\bpr\s+(?:create|new)\b/.test(command)) dirs.push(cwd);
+  if (dirs.length === 0 && !readable && /\bgit\b[\s\S]*\bpush\b|\bgh\b[\s\S]*\b(?:pr\s+(?:create|new)|api\b[\s\S]*(?:\/pulls\b|createPullRequest))/.test(command)) dirs.push(cwd);
   return dirs;
 }
 

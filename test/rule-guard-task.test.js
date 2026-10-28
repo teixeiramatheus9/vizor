@@ -223,6 +223,48 @@ describe('push and PR while a locked test differs', () => {
   });
 });
 
+describe('a PR opened from another folder or through gh api', () => {
+  const changed = () => load(body({ hash: sha256('the approved text') }));
+  const API_CREATES = [
+    'gh api repos/o/r/pulls -f title=x -f head=b -f base=main',
+    'gh api /repos/o/r/pulls -F title=x',
+    'gh api repos/{owner}/{repo}/pulls --field title=x',
+    'gh api repos/o/r/pulls --raw-field title=x',
+    'gh api repos/o/r/pulls --input pr.json',
+    'gh api -X POST repos/o/r/pulls',
+    'gh api --method POST repos/o/r/pulls',
+    'gh api --method=post repos/o/r/pulls',
+    'gh api repos/o/r/pulls -ftitle=x',
+    "gh api graphql -f query='mutation { createPullRequest(input: {}) { pullRequest { url } } }'",
+  ];
+
+  it('cd into the folder, then gh pr create, is held when a lock changed and passes when it did not', () => {
+    for (const command of [`cd ${root} && gh pr create --fill`, `pushd ${root}; gh pr create`, `cd ${root}/src && gh pr new`]) {
+      expect(verdict(bash(command), { rules: changed(), cwd: other }), command).toBe(SHIP);
+      expect(verdict(bash(command), { cwd: other }), command).toBeNull();
+    }
+  });
+
+  it('a plain gh pr create from the folder is still held when a lock changed', () => {
+    expect(verdict(bash('gh pr create --fill'), { rules: changed() })).toBe(SHIP);
+    expect(verdict(bash('gh pr create --fill'), { rules: changed(), cwd: other })).toBeNull();
+  });
+
+  it('gh api creating a pull request ships, also after a cd', () => {
+    for (const command of API_CREATES) {
+      expect(verdict(bash(command), { rules: changed() }), command).toBe(SHIP);
+      expect(verdict(bash(command)), command).toBeNull();
+    }
+    expect(verdict(bash(`cd ${root} && ${API_CREATES[0]}`), { rules: changed(), cwd: other })).toBe(SHIP);
+  });
+
+  it('reading pull requests through gh api is fine', () => {
+    for (const command of ['gh api repos/o/r/pulls', 'gh api repos/o/r/pulls -X GET -f state=open', 'gh api repos/o/r/pulls/3', 'gh api repos/o/r/pulls --jq ".[].title"', 'gh api graphql -f query="{ viewer { login } }"']) {
+      expect(verdict(bash(command), { rules: changed() }), command).toBeNull();
+    }
+  });
+});
+
 describe('decide', () => {
   const event = (command, extra = {}) => ({ hook_event_name: 'PreToolUse', session_id: 's1', cwd: root, tool_name: 'Bash', tool_input: { command }, ...extra });
 
