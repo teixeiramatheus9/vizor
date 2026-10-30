@@ -197,6 +197,82 @@ export function ensureGuard(settings, command) {
   return next;
 }
 
+// The status-line tap (src/hook/statusline-tap.js) wraps the dev's own
+// statusLine: the original command and padding live in a sidecar file in the
+// config dir, and settings.json only carries the tap's shim.
+export const STATUSLINE_MARKER = 'statusline-tap';
+
+// The tap script, its POSIX shim or its Windows shim as a path segment: a
+// user's own ~/bin/statusline-tap-foo.sh is not ours.
+const STATUSLINE_TAP = /(^|[\\/"'\s])statusline-tap\.(js|cmd|sh)(["'\s]|$)/;
+export const isStatusLineTap = (command) => STATUSLINE_TAP.test(String(command ?? ''));
+
+// POSIX single-quoting: the only character to escape is the quote itself.
+const shQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+
+// On POSIX settings.json points at a sh shim, never at the app's runtime: an
+// AppImage mount vanishes on a crash and a package can be uninstalled, and
+// either would leave the dev's status line broken (exit 127). The shim runs
+// the tap while the runtime and the script exist; otherwise it runs the
+// original itself from originalScript (the command as plain text, kept next
+// to the sidecar), with the same stdin, output and exit code. On Windows the
+// .cmd shim still calls the runtime directly.
+export function buildStatusLineCommand({ platform, execPath, tapScript, shimDir, originalScript }) {
+  if (platform === 'win32') {
+    const shimPath = path.win32.join(shimDir, 'statusline-tap.cmd');
+    const content = [
+      '@echo off',
+      'set ELECTRON_RUN_AS_NODE=1',
+      `"${execPath}" "${tapScript}" %*`,
+      '',
+    ].join('\r\n');
+    return { command: `"${shimPath}"`, shim: { path: shimPath, content } };
+  }
+  const shimPath = path.posix.join(shimDir, 'statusline-tap.sh');
+  const content = [
+    '#!/bin/sh',
+    '# Written by Vizor: the Claude Code status line goes through here. It runs the',
+    "# limits tap while the app's runtime exists, and the dev's own line otherwise.",
+    '# Inside a tap already (an original that calls back here): nothing, no loop.',
+    '[ "$VIZOR_TAP_ACTIVE" = 1 ] && exit 0',
+    `runtime=${shQuote(execPath)}`,
+    `tap=${shQuote(tapScript)}`,
+    'if [ -x "$runtime" ] && [ -f "$tap" ]; then',
+    '  ELECTRON_RUN_AS_NODE=1',
+    '  export ELECTRON_RUN_AS_NODE',
+    '  exec "$runtime" "$tap"',
+    'fi',
+    `original=${shQuote(originalScript)}`,
+    '[ -f "$original" ] || exit 0',
+    'unset ELECTRON_RUN_AS_NODE',
+    'VIZOR_TAP_ACTIVE=1',
+    'export VIZOR_TAP_ACTIVE',
+    'exec sh -c "$(cat "$original")"',
+    '',
+  ].join('\n');
+  return { command: shQuote(shimPath), shim: { path: shimPath, content, mode: 0o755 } };
+}
+
+// original: the whole statusLine object the dev had (every key), null when
+// there was none, or undefined when already tapped (the sidecar keeps what it has).
+export function ensureStatusLine(settings, tapCommand) {
+  const current = settings.statusLine;
+  if (isStatusLineTap(current?.command)) {
+    if (current.command === tapCommand) return { settings, original: undefined };
+    return { settings: { ...settings, statusLine: { ...current, command: tapCommand } }, original: undefined };
+  }
+  const hasOriginal = typeof current?.command === 'string' && current.command.trim() !== '';
+  const original = hasOriginal ? { ...current } : null;
+  const statusLine = { ...(original ?? {}), type: 'command', command: tapCommand };
+  return { settings: { ...settings, statusLine }, original };
+}
+
+export function removeStatusLine(settings, original) {
+  if (!isStatusLineTap(settings.statusLine?.command)) return settings;
+  const { statusLine, ...rest } = settings;
+  return original ? { ...rest, statusLine: { ...original } } : rest;
+}
+
 function main() {
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const hookScript = path.resolve(scriptDir, '..', 'src', 'hook', 'hook-emit.js');

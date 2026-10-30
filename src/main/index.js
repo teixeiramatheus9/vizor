@@ -20,8 +20,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildHookCommand, ensureGuard, ensureHooks, isGuardCommand, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
+import { buildHookCommand, buildStatusLineCommand, ensureGuard, ensureHooks, isGuardCommand, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand, installGuardScript } from './guard-runtime.js';
+import { projectStatusLineOverrides, tapStatusText } from './limits/limits-settings.js';
+import { createLimitsService, installTapScript, syncStatusLineTap, writeOriginalScript, LIMITS_FILE_NAME } from './limits/limits-service.js';
 import { createGuardAsks, isGuardChoice } from './guard-asks.js';
 import { createRulesStore, pruneSeenSessions } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
@@ -125,7 +127,7 @@ import { generateManagerMessage, humanizeNotification, isPermissionAsk } from '.
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
 import { fallbackMessage } from './manager-voice.js';
-import { loadConfig, saveConfig } from './config-store.js';
+import { clampLimits, loadConfig, saveConfig } from './config-store.js';
 import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
 import { VOICES, speechLang } from './sherpa-installer.js';
@@ -337,6 +339,41 @@ const noticeBatch = createNotifyBatch({
     showTooltip();
   },
 });
+
+// The usage limits (5 h and weekly): readings arrive from the status-line tap.
+// Every limit notice is urgent: it skips the chat batch, which would word it
+// as chats waiting.
+// A notice that fires at boot (a window that reset while the app was closed)
+// would reach a renderer that is not listening yet: it waits for both windows.
+let windowsLoadedCount = 0;
+let markWindowsLoaded;
+const windowsLoaded = new Promise((resolve) => {
+  markWindowsLoaded = resolve;
+});
+const windowLoaded = () => {
+  if (++windowsLoadedCount === 2) markWindowsLoaded();
+};
+// A window that never loads must not swallow the limit notices: 10 s after the
+// windows are created they go out anyway.
+const WINDOWS_LOAD_CAP_MS = 10_000;
+const capWindowsLoad = () => setTimeout(() => markWindowsLoaded(), WINDOWS_LOAD_CAP_MS).unref?.();
+const limits = createLimitsService({
+  whenReady: windowsLoaded,
+  file: path.join(configDir, LIMITS_FILE_NAME),
+  readFile: (file) => fs.promises.readFile(file, 'utf8'),
+  writeFile: async (file, text) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(`${file}.tmp`, text);
+    await fs.promises.rename(`${file}.tmp`, file);
+  },
+  settings: () => managerConfig.limits,
+  notify: ({ text, speech, urgent }) =>
+    noticeBatch.push({ kind: 'limit', urgent, sessionId: null, tooltip: { projectName: 'Limites', text, kind: 'hint', sessionId: null, speech } }),
+  onChange: () => workspaceWindow?.send('limits:changed', limitsSnapshot()),
+  log,
+});
+
+const limitsSnapshot = () => ({ ...limits.snapshot(), tap: limitsTapStatus });
 
 // Runs the per-event policy, then hands the balloon to the batch.
 async function bark(session, kind, text, tooltip) {
@@ -2053,6 +2090,7 @@ function createWindows() {
     sendToRenderer('ui:env', { managed: canPositionWindows });
     sendState();
   });
+  mainWindow.webContents.once('did-finish-load', windowLoaded);
 
   spotlightWindow = new BrowserWindow({
     ...windowOptions,
@@ -2081,6 +2119,8 @@ function createWindows() {
     sendToRenderer('ui:env', { managed: canPositionWindows });
     sendState();
   });
+  overlayWindow.webContents.once('did-finish-load', windowLoaded);
+  capWindowsLoad();
   bornParked(overlayWindow);
 
   settingsWindow = new BrowserWindow({
@@ -3439,6 +3479,11 @@ function verifiedTerm(event) {
 }
 
 function onHookEvent(event, reply) {
+  // The status-line tap: usage numbers only. It never creates or touches a session.
+  if (event?.type === 'StatusLine') {
+    limits.ingest(event);
+    return;
+  }
   // Only while the Maestro is on: off, nothing would ever forget it (review I2).
   if (maestroOn()) backstage.onEvent(event);
   // Sub-agent starts and stops are the backstage's only (#142).
@@ -3685,6 +3730,7 @@ function applyConfig(partial) {
   if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
   if (partial && 'voiceMic' in partial) allowed.voiceMic = normalizeMic(partial.voiceMic);
   if (typeof partial?.maestroEnabled === 'boolean') allowed.maestroEnabled = partial.maestroEnabled;
+  if (partial?.limits && typeof partial.limits === 'object') allowed.limits = clampLimits(partial.limits, managerConfig.limits);
   if (partial && 'audioOutput' in partial) allowed.audioOutput = normalizeOutput(partial.audioOutput);
   const micChanged = 'voiceMic' in allowed && JSON.stringify(allowed.voiceMic) !== JSON.stringify(managerConfig.voiceMic ?? null);
   const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
@@ -3723,6 +3769,10 @@ function applyConfig(partial) {
     stopVoice();
     if (managerConfig.voiceEnabled) enableVoice();
   }
+  if ('limits' in allowed) {
+    syncLimitsTap();
+    limits.reconfigure();
+  }
   sendState();
   if (allowed.panelScale && overlayMode === 'panel') showOverlay('panel', { focus: true });
   if (allowed.panelScale && settingsVisible()) openSettingsWindow();
@@ -3740,6 +3790,25 @@ function applyConfig(partial) {
 }
 
 ipcMain.handle('config:set', (_event, partial) => applyConfig(partial));
+// The settings section: the tap's state and the projects with their own statusLine.
+function limitsSettingsInfo() {
+  const snap = limits.snapshot();
+  return {
+    status: tapStatusText({ tap: limitsTapStatus, seenAt: snap.seenAt }),
+    overrides: projectStatusLineOverrides(workspaceProjects()),
+  };
+}
+const fromSettings = (event) => Boolean(settingsWindow && !settingsWindow.isDestroyed() && event.sender === settingsWindow.webContents);
+ipcMain.handle('limits:settings', (event) => (fromSettings(event) ? limitsSettingsInfo() : null));
+// "reconectar": the user confirmed, so the CURRENT statusLine becomes the original.
+// It writes ~/.claude/settings.json: only the settings window, and only confirmed.
+ipcMain.handle('limits:reconnect', (event, options) => {
+  if (!fromSettings(event) || options?.confirmed !== true) return null;
+  syncLimitsTap({ force: true });
+  limits.reconfigure();
+  return limitsSettingsInfo();
+});
+ipcMain.handle('limits:state', (event) => (fromWorkspace(event) ? limitsSnapshot() : null));
 
 // Remembers the exact window title each session was last found under, so the
 // next hunt hits it instantly instead of cycling tabs again.
@@ -4354,6 +4423,104 @@ function syncGuardHook() {
     log(`rule guard ${guardInstalled ? 'installed' : 'removed'}`);
   } catch (error) {
     log(`syncGuardHook failed: ${error}`);
+  }
+}
+
+// The status-line tap: on while any limits window is watched. Mirrors the
+// guard: the script is copied out of the app, and where only the AppImage's
+// own mount could run it (no node on PATH), it is removed on quit instead.
+// On POSIX settings.json points at a sh shim that falls back to the original
+// (kept as plain text in statusline-original.sh) when the runtime is gone, so
+// a crash or an uninstall never breaks the dev's line.
+const statusLineSidecar = path.join(configDir, 'statusline-original.json');
+const statusLineOriginalScript = path.join(configDir, 'statusline-original.sh');
+const tapDir = path.join(configDir, 'statusline');
+let limitsTapOffline = true;
+let limitsTapStatus = { installed: false, replaced: false };
+
+function readTapOriginal() {
+  try {
+    return JSON.parse(fs.readFileSync(statusLineSidecar, 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') log(`statusline sidecar unreadable: ${error}`);
+    return undefined;
+  }
+}
+
+function removeTapOriginal() {
+  fs.rmSync(statusLineSidecar, { force: true });
+  fs.rmSync(statusLineOriginalScript, { force: true });
+}
+
+function syncLimitsTap({ force = false } = {}) {
+  try {
+    const wanted = Boolean(managerConfig.limits.fiveHour || managerConfig.limits.sevenDay);
+    let tapCommand = null;
+    if (wanted) {
+      const tapSource = path.join(currentDir, '..', 'hook', 'statusline-tap.js');
+      if (fs.existsSync(tapSource)) {
+        const node = process.env.APPIMAGE ? findNodeOnPath() : null;
+        const built = buildStatusLineCommand({
+          platform: process.platform,
+          execPath: node ?? process.execPath,
+          tapScript: installTapScript({ source: tapSource, dir: tapDir }),
+          shimDir: process.platform === 'win32' ? configDir : tapDir,
+          originalScript: statusLineOriginalScript,
+        });
+        if (built.shim) {
+          fs.mkdirSync(path.dirname(built.shim.path), { recursive: true });
+          // Atomic: Claude Code may run the shim while it is rewritten.
+          fs.writeFileSync(`${built.shim.path}.tmp`, built.shim.content, { mode: built.shim.mode ?? 0o644 });
+          if (built.shim.mode) fs.chmodSync(`${built.shim.path}.tmp`, built.shim.mode);
+          fs.renameSync(`${built.shim.path}.tmp`, built.shim.path);
+        }
+        limitsTapOffline = process.platform === 'win32' ? false : !process.env.APPIMAGE || Boolean(node);
+        tapCommand = built.command;
+      } else {
+        log('statusline tap script is missing: limits stay unread');
+      }
+    }
+    limitsTapStatus = syncStatusLineTap({
+      enabled: tapCommand !== null,
+      tapCommand,
+      readSettings: readClaudeSettings,
+      writeSettings: writeClaudeSettings,
+      readOriginal: readTapOriginal,
+      writeOriginal: (value) => {
+        fs.mkdirSync(configDir, { recursive: true });
+        // The shim's copy first: the tap goes in only after both exist.
+        writeOriginalScript(statusLineOriginalScript, value);
+        fs.writeFileSync(statusLineSidecar, `${JSON.stringify(value)}\n`);
+      },
+      removeOriginal: removeTapOriginal,
+      force,
+    });
+    // Keeps the shim's plain-text copy in step with the sidecar (an install
+    // from before the shim has only the JSON).
+    if (limitsTapStatus.installed) writeOriginalScript(statusLineOriginalScript, readTapOriginal() ?? null);
+    if (limitsTapStatus.replaced) log('statusLine was changed by the user: the limits tap stays out');
+  } catch (error) {
+    log(`syncLimitsTap failed: ${error}`);
+  }
+}
+
+function removeLimitsTapIfOnlineOnly() {
+  if (limitsTapOffline || !limitsTapStatus.installed) return;
+  try {
+    // Re-reads settings.json: a line the dev swapped while the app ran is
+    // theirs, and the sidecar stays for the next boot's "reconectar?".
+    limitsTapStatus = syncStatusLineTap({
+      enabled: false,
+      tapCommand: null,
+      readSettings: readClaudeSettings,
+      writeSettings: writeClaudeSettings,
+      readOriginal: readTapOriginal,
+      writeOriginal: () => {},
+      removeOriginal: removeTapOriginal,
+    });
+    log(limitsTapStatus.replaced ? 'statusLine was changed by the user: left as is on quit' : 'limits tap removed on quit (no offline runtime)');
+  } catch (error) {
+    log(`removeLimitsTapIfOnlineOnly failed: ${error}`);
   }
 }
 
@@ -5484,6 +5651,11 @@ app.whenReady().then(() => {
   taskService.start().catch((error) => log(`tasks start failed: ${error?.stack ?? error}`));
   // The scheduler's timer does not run while the machine sleeps: recheck on wake.
   powerMonitor.on('resume', () => automations.wake());
+  // A limit's alarm timer sleeps with the machine: look at the clock on wake.
+  powerMonitor.on('resume', () => limits.recheck());
+  powerMonitor.on('unlock-screen', () => limits.recheck());
+  limits.boot().catch((error) => log(`limits boot failed: ${error}`));
+  syncLimitsTap();
   autoSetupBridgeOnWayland();
   hydrateRegistry();
   reapDeadSessions();
@@ -5558,6 +5730,7 @@ app.on('before-quit', (event) => {
     const saves = Promise.allSettled([
       ...[...reviewStores.values()].map((entry) => Promise.resolve().then(() => entry.flush())),
       Promise.resolve().then(() => automations.shutdown()),
+      limits.flush(),
     ])
       .then((results) => {
         for (const result of results) if (result.status === 'rejected') log(`review state flush on quit failed: ${result.reason}`);
@@ -5573,6 +5746,8 @@ app.on('before-quit', (event) => {
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
   removeGuardIfOnlineOnly();
+  removeLimitsTapIfOnlineOnly();
+  limits.stop();
   stopVoice();
   // A question still on screen would end in a deny when the socket closes;
   // "offline" sends it to the terminal's own permission prompt instead.

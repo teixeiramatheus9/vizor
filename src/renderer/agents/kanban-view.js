@@ -74,6 +74,7 @@ function renderCard(card, projects, now, ui = {}) {
     card.thin ? '<span class="kb-badge kb-thin">pouca informação</span>' : '',
     card.planProgress ? `<span class="kb-plan">${escapeHtml(card.planProgress)}</span>` : '',
     card.branch ? `<span class="kb-branch">${escapeHtml(card.branch)}</span>` : '',
+    card.share > 0 ? `<span class="kb-share" title="Parte estimada da janela de 5h">≈${Math.round(card.share)}% das 5h</span>` : '',
     card.since ? `<span class="kb-since">${escapeHtml(agoLabel(card.since, now))}</span>` : '',
     '</div>',
     card.question ? `<p class="kb-question">${escapeHtml(card.question)}</p>` : '',

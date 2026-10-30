@@ -26,6 +26,8 @@ Claude Code (hooks globais em ~/.claude/settings.json)
         ↓ (JSON no stdin)
 src/hook/hook-emit.js  →  unix socket ~/.config/vizor/vizor.sock
         ↓                  (sem socket: fallback notify-send)
+src/hook/statusline-tap.js → mesmo socket: repassa o uso (5 h / semanal) e roda a
+                           statusLine original do dev sem alterar nada
 App Electron (src/main/index.js)
   ├── session-registry.js  → estado puro das sessões (testável)
   ├── transcript.js        → última msg/pergunta pendente no transcript .jsonl
@@ -66,6 +68,11 @@ App Electron (src/main/index.js)
   ├── automations/         → Automações: skill + `claude -p` agendado por projeto, em 3
   │                          níveis (ler / worktree / projeto), tetos por execução e
   │                          por dia, histórico e relatórios em ~/.config/vizor/automacoes/
+  ├── limits/              → Limites do Claude: modelo puro das janelas de 5 h e semanal
+  │                          (leituras da status line, avisos perto/estourou/voltou/reset,
+  │                          fatia de cada chat), serviço com estado em
+  │                          ~/.config/vizor/limites.json e um só timer de alarme,
+  │                          helpers da seção de configurações; UI em renderer/limits/
   ├── warp.js              → FALLBACK: foco de janela/aba do terminal (xdotool)
   └── renderer (app.*)     → bolha, tooltip, painel, chat, configurações
       └── workspace: shell/ (abas do topo, atalhos, barra de status), agents/ (kanban),
@@ -114,6 +121,26 @@ Pontos críticos:
   plano sem `## Contrato` é tarefa rápida, sem portões. Destravar os testes
   sempre pergunta (voz: segurar 3 s; Ctrl+K: duas confirmações). Chat que
   encerra o turno com pergunta em texto vira "esperando" só depois do Stop.
+- **Limites do Claude**: o uso vem da status line (`rate_limits` no JSON que o
+  Claude Code manda a cada refresh) porque não há credencial nem API a chamar:
+  nada de token do dev, nada de rede. O `statusline-tap.js` entra na frente da
+  `statusLine` (original guardada inteira em `~/.config/vizor/statusline-original.json`)
+  e é standalone como o hook-emit: repassa o original byte a byte (stdin e
+  stdout idênticos), nunca faz loop (`VIZOR_TAP_ACTIVE` + recusa sidecar que
+  aponta pro próprio tap), morre junto com o pai e o envio ao socket tem
+  orçamento curto, então Vizor fechado não atrasa a linha. No Linux/macOS a
+  `statusLine.command` aponta pra um shim sh (`~/.config/vizor/statusline/statusline-tap.sh`),
+  nunca pro runtime do app: se o runtime ou o tap sumiu (mount do AppImage
+  depois de um crash, pacote desinstalado), o shim roda sozinho o original
+  guardado em texto puro em `statusline-original.sh` (mesmo stdin, saída e
+  exit code). No Windows o `.cmd` ainda chama o runtime direto. Regras das janelas:
+  é a mesma janela se o `resets_at` fica a ±120 s do anterior (jitter da API);
+  o pct nunca volta dentro da janela (leitura fora de ordem é ignorada);
+  cada aviso (perto/estourou/voltou/reset) sai uma vez por janela e é gravado
+  em `limites.json` antes de tocar, então reiniciar não repete. Alarme perdido
+  com o app fechado toca uma vez no boot; avisos esperam as janelas carregarem
+  (até 10 s) e furam o lote do `notify-batch`. Projeto com `statusLine` própria
+  sobrescreve a global: a seção de configurações lista esses projetos.
 - **Sessão morta**: fechar o terminal mata o `claude` sem disparar hook nenhum,
   então a lista só descobre isso comparando com `~/.claude/sessions/`. Ausência
   ali não é prova de morte: builds sem o registro não listam nada. Só se reapa

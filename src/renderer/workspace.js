@@ -32,7 +32,8 @@ import { buildCommands, createConfirmGate, filterCommands, renderCommandList } f
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
 import { createReviewController } from './review/review-controller.js';
 import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
-import { renderStatusBar } from './shell/status-bar.js';
+import { renderStatusBar, limitsLabel } from './shell/status-bar.js';
+import { renderLimitsPanel, fiveHourShares, liveKey } from './limits/limits-panel.js';
 import { keyAction, renderShortcuts } from './shell/shortcuts.js';
 import { createAgentsController } from './agents/agents-controller.js';
 import { createGithubController } from './github/github-controller.js';
@@ -389,7 +390,8 @@ const statusBarEl = document.getElementById('status-bar');
 let statusTokens = { used: 0, cap: 0 };
 let nextAutomationAt = null; // from the state push; the status line's "próxima automação"
 function drawStatusBar() {
-  const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), nextAutomation: nextAutomationAt != null ? { at: nextLabel(nextAutomationAt, Date.now()) } : null });
+  refreshLimitsExpiry();
+  const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), limits: limitsLabel(limitsSnapshot, Date.now()), nextAutomation: nextAutomationAt != null ? { at: nextLabel(nextAutomationAt, Date.now()) } : null });
   if (statusBarEl.innerHTML !== html) statusBarEl.innerHTML = html;
   scheduleStatusClock();
 }
@@ -408,8 +410,50 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) drawStatusBar();
   else scheduleStatusClock();
 });
+// The limits panel: the status-bar item toggles it; Esc or a click outside closes it.
+let limitsSnapshot = null;
+const limitsPopover = document.getElementById('limits-popover');
+const chatNameOf = (sessionId, cwd) => {
+  const session = agentSessionList.find((item) => item.id === sessionId);
+  const name = session?.alias ?? session?.title ?? session?.promptPreview ?? session?.projectName;
+  return name || String(cwd ?? '').split(/[\\/]/).filter(Boolean).pop() || 'chat';
+};
+function drawLimitsPanel() {
+  limitsPopover.innerHTML = renderLimitsPanel(limitsSnapshot ?? { windows: {}, shares: {}, settings: {} }, Date.now(), { nameOf: chatNameOf });
+}
+function setLimitsPanel(open) {
+  limitsPopover.hidden = !open;
+  if (open) drawLimitsPanel();
+}
+// A window that passed its reset drops out (and its card shares) on the next redraw, no push needed.
+let limitsLive = '';
+function refreshLimitsExpiry() {
+  const key = liveKey(limitsSnapshot, Date.now());
+  if (key === limitsLive) return;
+  limitsLive = key;
+  agents.setShares(fiveHourShares(limitsSnapshot, Date.now()));
+  if (!limitsPopover.hidden) drawLimitsPanel();
+}
+function applyLimits(snapshot) {
+  limitsSnapshot = snapshot;
+  limitsLive = liveKey(snapshot, Date.now());
+  agents.setShares(fiveHourShares(snapshot, Date.now()));
+  drawStatusBar();
+  if (!limitsPopover.hidden) drawLimitsPanel();
+}
+window.vizor.limitsState?.().then((snapshot) => snapshot && applyLimits(snapshot)).catch(() => {});
+window.vizor.onLimitsChanged?.(applyLimits);
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || limitsPopover.hidden) return;
+  setLimitsPanel(false);
+  statusBarEl.querySelector('[data-limits-toggle]')?.focus();
+});
+document.addEventListener('mousedown', (event) => {
+  if (!limitsPopover.hidden && !limitsPopover.contains(event.target) && !event.target.closest('[data-limits-toggle]')) setLimitsPanel(false);
+});
 statusBarEl.addEventListener('click', (event) => {
   if (event.target.closest('[data-top-tab]')) setTopTab('agents');
+  else if (event.target.closest('[data-limits-toggle]')) setLimitsPanel(limitsPopover.hidden);
 });
 
 // Switching only shows and hides views: no pty is touched. Coming back to the

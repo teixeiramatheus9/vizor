@@ -264,3 +264,78 @@ describe('rule guard hooks', () => {
     expect(result.hooks.SubagentStop).toBeDefined();
   });
 });
+
+import {
+  STATUSLINE_MARKER,
+  buildStatusLineCommand,
+  ensureStatusLine,
+  isStatusLineTap,
+  removeStatusLine,
+} from '../scripts/install-hooks.js';
+
+describe('status-line tap installer', () => {
+  const TAP = 'ELECTRON_RUN_AS_NODE=1 "/app/electron" "/app/src/hook/statusline-tap.js"';
+
+  it('builds the command like the hook one, with a shim on Windows', () => {
+    const linux = buildStatusLineCommand({ platform: 'linux', execPath: '/e', tapScript: '/t/statusline-tap.js', shimDir: '/t', originalScript: '/c/statusline-original.sh' });
+    // A POSIX shim the app does not have to be around for (see statusline-shim.test.js).
+    expect(linux.command).toBe("'/t/statusline-tap.sh'");
+    expect(linux.shim).toMatchObject({ path: '/t/statusline-tap.sh', mode: 0o755 });
+    expect(linux.shim.content).toContain("runtime='/e'");
+    expect(linux.shim.content).toContain("tap='/t/statusline-tap.js'");
+    expect(linux.shim.content).toContain("original='/c/statusline-original.sh'");
+    expect(isStatusLineTap(linux.command)).toBe(true);
+    const win = buildStatusLineCommand({ platform: 'win32', execPath: 'C:\\e.exe', tapScript: 'C:\\t\\statusline-tap.js', shimDir: 'C:\\cfg' });
+    expect(win.command).toBe('"C:\\cfg\\statusline-tap.cmd"');
+    expect(win.shim.content).toContain('ELECTRON_RUN_AS_NODE=1');
+    expect(isStatusLineTap(win.command)).toBe(true);
+  });
+
+  it('recognises its own command only', () => {
+    expect(STATUSLINE_MARKER).toBe('statusline-tap');
+    expect(isStatusLineTap(TAP)).toBe(true);
+    expect(isStatusLineTap("'/home/u/.config/vizor/statusline/statusline-tap.sh'")).toBe(true);
+    expect(isStatusLineTap('~/bin/my-line.sh')).toBe(false);
+    expect(isStatusLineTap(undefined)).toBe(false);
+  });
+
+  it('ensure then remove restores the exact original', () => {
+    const settings = { model: 'opus', statusLine: { type: 'command', command: 'my-line "$X"', padding: 2 } };
+    const { settings: tapped, original } = ensureStatusLine(settings, TAP);
+    expect(original).toEqual(settings.statusLine);
+    expect(tapped.statusLine).toEqual({ type: 'command', command: TAP, padding: 2 });
+    expect(tapped.model).toBe('opus');
+    expect(removeStatusLine(tapped, original)).toEqual(settings);
+  });
+
+  it('keeps every key of the dev statusLine through a round trip', () => {
+    const settings = { statusLine: { type: 'command', command: 'mine', padding: 1, refreshInterval: 5 } };
+    const { settings: tapped, original } = ensureStatusLine(settings, TAP);
+    expect(tapped.statusLine.refreshInterval).toBe(5);
+    expect(removeStatusLine(tapped, original)).toEqual(settings);
+  });
+
+  it('does not take a user script with the tap name inside for the tap', () => {
+    expect(isStatusLineTap('~/bin/statusline-tap-foo.sh')).toBe(false);
+    expect(isStatusLineTap('node /x/statusline-tap.js')).toBe(true);
+  });
+
+  it('is a no-op on an already tapped settings', () => {
+    const { settings: tapped } = ensureStatusLine({ statusLine: { type: 'command', command: 'x' } }, TAP);
+    const again = ensureStatusLine(tapped, TAP);
+    expect(again.settings).toEqual(tapped);
+    expect(again.original).toBeUndefined();
+  });
+
+  it('creates a statusLine when there was none and removes it after', () => {
+    const { settings: tapped, original } = ensureStatusLine({ model: 'opus' }, TAP);
+    expect(original).toBeNull();
+    expect(tapped.statusLine).toEqual({ type: 'command', command: TAP });
+    expect(removeStatusLine(tapped, original)).toEqual({ model: 'opus' });
+  });
+
+  it('remove leaves a statusLine the dev changed meanwhile alone', () => {
+    const settings = { statusLine: { type: 'command', command: 'mine' } };
+    expect(removeStatusLine(settings, null)).toEqual(settings);
+  });
+});

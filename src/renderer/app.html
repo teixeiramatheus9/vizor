@@ -1723,6 +1723,38 @@
             </label>
             <div id="usage-detail"></div>
             <div id="usage-bar"><div></div></div>
+            <div class="setting-subtitle"># limites do claude</div>
+            <label class="setting-row wide-label">
+              <span>janela de 5h</span>
+              <input id="lim-five" type="checkbox" /><span class="switch"></span>
+              <span id="lim-five-state">[on]</span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>janela semanal</span>
+              <input id="lim-seven" type="checkbox" /><span class="switch"></span>
+              <span id="lim-seven-state">[on]</span>
+            </label>
+            <label class="setting-row">
+              <span>avisar a partir de</span>
+              <input id="lim-warn" type="range" min="50" max="95" step="5" />
+              <span class="slider-value" id="lim-warn-label"></span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>avisar quando o limite resetar, mesmo sem ter estourado</span>
+              <input id="lim-reset" type="checkbox" /><span class="switch"></span>
+              <span id="lim-reset-state">[on]</span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>mostrar na barra de status</span>
+              <input id="lim-bar" type="checkbox" /><span class="switch"></span>
+              <span id="lim-bar-state">[on]</span>
+            </label>
+            <div class="setting-hint" id="lim-status"></div>
+            <div class="setting-actions hidden" id="lim-reconnect-row">
+              <span class="prompt">❯</span>
+              <button id="lim-reconnect">[reconectar]</button>
+            </div>
+            <div id="lim-overrides"></div>
           </section>
           <section class="settings-section" data-section="regras">
             <div class="setting-subtitle"># regras</div>
