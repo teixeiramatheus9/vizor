@@ -80,11 +80,12 @@ describe('limits service', () => {
     const h = setup();
     const resetsAt = T0 + 3600_000;
     h.svc.ingest(msg(100, resetsAt));
+    await h.svc.flush(); // a notice waits for its own save
     expect(h.notify).toHaveBeenCalledTimes(1);
     expect(h.notify.mock.calls[0][0]).toMatchObject({ kind: 'limit-out', window: 'fiveHour' });
-    await h.svc.flush(); // the save debounce is not the alarm
     expect(vi.getTimerCount()).toBe(1);
     h.advance(3600_000);
+    await h.svc.flush();
     const kinds = h.notify.mock.calls.map((c) => c[0].kind);
     expect(kinds).toEqual(['limit-out', 'limit-back']);
     h.advance(3600_000);
@@ -119,13 +120,29 @@ describe('limits service', () => {
     expect(h2.notify).not.toHaveBeenCalled();
   });
 
-  it('recheck after a simulated suspend fires a due alarm', () => {
+  it('a firing alarm is on disk before its notice goes out, so a crash never rings it twice', async () => {
     const h = setup();
     h.svc.ingest(msg(100, T0 + 3600_000));
+    await Promise.resolve();
+    let savedBeforeNotice = null;
+    h.notify.mockImplementation((event) => {
+      if (event.kind === 'limit-back') savedBeforeNotice = h.writes.length > 0 && /"back":true/.test(h.writes.at(-1));
+    });
+    h.writes.length = 0;
+    h.jump(3600_000 + 1000);
+    h.svc.recheck();
+    await vi.waitFor(() => expect(savedBeforeNotice).toBe(true));
+  });
+
+  it('recheck after a simulated suspend fires a due alarm', async () => {
+    const h = setup();
+    h.svc.ingest(msg(100, T0 + 3600_000));
+    await h.svc.flush();
     h.notify.mockClear();
     // the machine slept: the clock jumped but the timer never ran
     h.jump(7200_000);
     h.svc.recheck();
+    await h.svc.flush();
     expect(h.notify.mock.calls.map((c) => c[0].kind)).toEqual(['limit-back']);
   });
 
@@ -169,7 +186,7 @@ describe('limits service', () => {
 describe('limitNotice', () => {
   const at = (h, m, d = 29) => new Date(2026, 9, d, h, m).getTime();
   it('warns with the percentage', () => {
-    expect(limitNotice({ kind: 'limit-near', window: 'fiveHour', pct: 82, resetsAt: at(14, 30) })).toMatchObject({ text: 'Seu limite de 5h tá em 82%, vai com calma', urgent: false });
+    expect(limitNotice({ kind: 'limit-near', window: 'fiveHour', pct: 82, resetsAt: at(14, 30) })).toMatchObject({ text: 'Seu limite de 5h tá em 82%, vai com calma', urgent: true });
   });
   it('says when the 5h limit comes back', () => {
     expect(limitNotice({ kind: 'limit-out', window: 'fiveHour', pct: 100, resetsAt: at(14, 30) }, at(10, 0))).toMatchObject({ text: 'Acabou o limite de 5h — volta às 14:30', urgent: true });
@@ -181,8 +198,8 @@ describe('limitNotice', () => {
   it('rings when it is back', () => {
     expect(limitNotice({ kind: 'limit-back', window: 'fiveHour', pct: 100, resetsAt: 0 })).toMatchObject({ text: 'Voltou! O limite de 5h zerou', urgent: true });
   });
-  it('a plain reset is not urgent', () => {
-    expect(limitNotice({ kind: 'limit-reset', window: 'sevenDay', pct: 30, resetsAt: 0 })).toMatchObject({ urgent: false });
+  it('every limit notice skips the chat batch, which would word it as chats waiting', () => {
+    expect(limitNotice({ kind: 'limit-reset', window: 'sevenDay', pct: 30, resetsAt: 0 })).toMatchObject({ urgent: true });
   });
 });
 

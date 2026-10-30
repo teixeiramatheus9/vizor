@@ -28,20 +28,17 @@ function whenBack(resetsAt, now) {
 }
 
 // A model event becomes { text, speech, urgent } in the gerente's voice.
-// Out and back are urgent: they change what the user can do right now.
+// Every limit notice is urgent: the chat batch would word it as chats waiting.
 export function limitNotice(event, now = Date.now()) {
   const name = NAMES[event.window] ?? event.window;
   let text;
-  let urgent = false;
   if (event.kind === 'limit-near') text = `Seu limite ${name} tá em ${Math.round(event.pct)}%, vai com calma`;
   else if (event.kind === 'limit-out') {
     text = `Acabou o limite ${name} — volta ${whenBack(event.resetsAt, now)}`;
-    urgent = true;
   } else if (event.kind === 'limit-back') {
     text = `Voltou! O limite ${name} zerou`;
-    urgent = true;
   } else text = `O limite ${name} virou, tá zerado de novo`;
-  return { text, speech: `${text}.`, urgent };
+  return { text, speech: `${text}.`, urgent: true };
 }
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -98,6 +95,12 @@ export function createLimitsService({
     return writing;
   }
 
+  function saveThenEmit(events) {
+    if (saveTimer !== null) clearTimer(saveTimer);
+    saveTimer = null;
+    write().then(() => emit(events));
+  }
+
   function scheduleSave() {
     dirty = true;
     if (saveTimer !== null) return;
@@ -124,9 +127,9 @@ export function createLimitsService({
     };
     const result = reduce(state, reading, now(), cfg());
     state = result.state;
-    scheduleSave();
     arm();
-    emit(result.events);
+    if (result.events.length) saveThenEmit(result.events);
+    else scheduleSave();
     onChange();
   }
 
@@ -135,9 +138,10 @@ export function createLimitsService({
     const result = due(state, now(), cfg());
     const changed = result.events.length > 0 || JSON.stringify(result.state.windows) !== JSON.stringify(state.windows);
     state = result.state;
-    if (changed) scheduleSave();
     arm();
-    if (result.events.length) emit(result.events);
+    // A fired alarm is saved before it rings: a crash in between must not ring it twice.
+    if (result.events.length) saveThenEmit(result.events);
+    else if (changed) scheduleSave();
     if (changed) onChange();
     return result.events.length;
   }
