@@ -66,6 +66,9 @@ export function createLimitsService({
   let saveTimer = null;
   let dirty = false;
   let writing = Promise.resolve();
+  // Readings that arrive while boot reads the file: folding them into the
+  // empty state would re-fire notices the file says already went out.
+  let pending = null;
 
   const cfg = () => (typeof settings === 'function' ? settings() : settings) ?? {};
 
@@ -125,6 +128,10 @@ export function createLimitsService({
 
   function ingest(message) {
     if (!isObject(message) || !isObject(message.rate_limits)) return;
+    if (pending) {
+      pending.push(message);
+      return;
+    }
     const reading = {
       sessionId: typeof message.session_id === 'string' ? message.session_id : undefined,
       cwd: typeof message.cwd === 'string' ? message.cwd : undefined,
@@ -153,6 +160,17 @@ export function createLimitsService({
   }
 
   async function boot() {
+    pending = [];
+    try {
+      await load();
+    } finally {
+      const queued = pending;
+      pending = null;
+      for (const message of queued) ingest(message);
+    }
+  }
+
+  async function load() {
     let text = null;
     try {
       text = await readFile(file);
@@ -240,6 +258,14 @@ export function syncStatusLineTap({ enabled, tapCommand, readSettings, writeSett
   const tapped = isStatusLineTap(settings.statusLine?.command);
 
   if (!enabled) {
+    // The dev swapped the line since: theirs now, and the sidecar stays so the
+    // next enable asks to reconnect instead of wrapping the new line.
+    if (!tapped) {
+      const recorded = readOriginal();
+      if (recorded !== undefined && !sameLine(settings.statusLine, recorded)) {
+        return { installed: false, replaced: true, changed: false };
+      }
+    }
     let changed = false;
     if (tapped) {
       const original = readOriginal();

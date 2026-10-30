@@ -205,6 +205,25 @@ describe('limits service', () => {
     expect(h.svc.snapshot().seenAt).toBe(null);
   });
 
+  it('a reading that arrives while boot reads the file waits for the saved state', async () => {
+    const R = T0 + 3600_000;
+    const saved = JSON.stringify({
+      windows: { fiveHour: { pct: 85, resetsAt: R, seenAt: T0 - 1000, startedAt: T0 - 9000, startPct: 10, history: [[T0 - 9000, 85]] }, sevenDay: null },
+      sessions: {},
+      fired: { [`fiveHour:${R}`]: { near: true } },
+    });
+    const h = setup({ '/cfg/limites.json': saved });
+    const booting = h.svc.boot();
+    // the socket is up in the same tick: the tap's first reading lands now
+    h.svc.ingest(msg(88, R));
+    await booting;
+    await h.svc.flush();
+    await Promise.resolve();
+    expect(h.notify).not.toHaveBeenCalled();
+    expect(h.svc.snapshot().windows.fiveHour.pct).toBe(88);
+    expect(h.svc.snapshot().windows.fiveHour.startPct).toBe(10);
+  });
+
   it('ignores malformed messages', () => {
     const h = setup();
     h.svc.ingest(null);
@@ -322,6 +341,25 @@ describe('syncStatusLineTap', () => {
     const env = tapEnv({ statusLine: dev }, undefined);
     syncStatusLineTap({ ...env.args, enabled: false });
     expect(env.writes).toHaveLength(0);
+  });
+
+  it('disabling after the dev swapped the line keeps the sidecar and reports replaced', () => {
+    const changed = { type: 'command', command: 'other.sh' };
+    const env = tapEnv({ statusLine: changed }, dev);
+    const r = syncStatusLineTap({ ...env.args, enabled: false });
+    expect(r).toMatchObject({ installed: false, replaced: true, changed: false });
+    expect(env.removed).toBe(false);
+    expect(env.sidecar).toEqual(dev);
+    expect(env.writes).toHaveLength(0);
+    // the next enable asks to reconnect instead of wrapping the new line
+    expect(syncStatusLineTap({ ...env.args, enabled: true })).toMatchObject({ installed: false, replaced: true });
+    expect(env.settings.statusLine).toEqual(changed);
+  });
+
+  it('disabling with the recorded original back in place drops the sidecar', () => {
+    const env = tapEnv({ statusLine: dev }, dev);
+    expect(syncStatusLineTap({ ...env.args, enabled: false })).toMatchObject({ replaced: false });
+    expect(env.removed).toBe(true);
   });
 
   it('does nothing when settings are unreadable', () => {

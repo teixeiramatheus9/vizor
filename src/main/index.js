@@ -341,7 +341,8 @@ const noticeBatch = createNotifyBatch({
 });
 
 // The usage limits (5 h and weekly): readings arrive from the status-line tap.
-// Out and back are urgent; the rest may wait in the batch like any other news.
+// Every limit notice is urgent: it skips the chat batch, which would word it
+// as chats waiting.
 // A notice that fires at boot (a window that reset while the app was closed)
 // would reach a renderer that is not listening yet: it waits for both windows.
 let windowsLoadedCount = 0;
@@ -4488,7 +4489,9 @@ function syncLimitsTap({ force = false } = {}) {
 function removeLimitsTapIfOnlineOnly() {
   if (limitsTapOffline || !limitsTapStatus.installed) return;
   try {
-    syncStatusLineTap({
+    // Re-reads settings.json: a line the dev swapped while the app ran is
+    // theirs, and the sidecar stays for the next boot's "reconectar?".
+    limitsTapStatus = syncStatusLineTap({
       enabled: false,
       tapCommand: null,
       readSettings: readClaudeSettings,
@@ -4497,7 +4500,7 @@ function removeLimitsTapIfOnlineOnly() {
       writeOriginal: () => {},
       removeOriginal: () => fs.rmSync(statusLineSidecar, { force: true }),
     });
-    log('limits tap removed on quit (no offline runtime)');
+    log(limitsTapStatus.replaced ? 'statusLine was changed by the user: left as is on quit' : 'limits tap removed on quit (no offline runtime)');
   } catch (error) {
     log(`removeLimitsTapIfOnlineOnly failed: ${error}`);
   }
