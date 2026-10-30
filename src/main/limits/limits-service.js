@@ -80,7 +80,9 @@ export function createLimitsService({
   function arm() {
     if (alarm !== null) clearTimer(alarm);
     alarm = null;
-    const at = nextAlarm(state, cfg());
+    // The next reset of any window: it may ring, and either way the window leaves the screen.
+    let at = nextAlarm(state, cfg());
+    for (const win of Object.values(state.windows)) if (win && (at === null || win.resetsAt < at)) at = win.resetsAt;
     if (at === null) return;
     alarm = setTimer(() => {
       alarm = null;

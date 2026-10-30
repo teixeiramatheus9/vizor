@@ -134,6 +134,18 @@ describe('limits service', () => {
     await vi.waitFor(() => expect(savedBeforeNotice).toBe(true));
   });
 
+  it('a window that ends with nothing to ring still leaves the screen on time', async () => {
+    const h = setup();
+    h.svc.ingest(msg(40, T0 + 3600_000));
+    await h.svc.flush();
+    h.onChange.mockClear();
+    expect(vi.getTimerCount()).toBe(1);
+    h.advance(3600_000);
+    expect(h.svc.snapshot().windows.fiveHour).toBeNull();
+    expect(h.onChange).toHaveBeenCalled();
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
   it('recheck after a simulated suspend fires a due alarm', async () => {
     const h = setup();
     h.svc.ingest(msg(100, T0 + 3600_000));
