@@ -1,5 +1,6 @@
 import { bracketedPaste, flattenForTyping } from './comment-message.js';
 import { safeToTypeIdle } from './bubble-routing.js';
+import { blocksTyping } from './session-status.js';
 
 // Sends queued 💬 comments to their session (#95), one at a time, in order.
 //
@@ -51,7 +52,7 @@ export function createCommentDelivery({
     if (peer === 'failed') return { outcome: 'failed', channel: null };
     if (!idle) return { outcome: 'hold', channel: null };
     // A Vizor session whose notice hasn't settled yet: try again shortly.
-    if (ptyId && !safeToTypeIdle(session, now()) && !session.needsPermission && !session.question)
+    if (ptyId && !safeToTypeIdle(session, now()) && !blocksTyping(session))
       return { outcome: 'hold', channel: null };
     if (!ptyId && immediate) {
       const typed = await typeReply(session, flattenForTyping(comment.message));

@@ -60,8 +60,20 @@ const LINES = {
     planSent: { approve: 'Mandei seguir com o plano.', pr: 'Pedi pra rodar os testes e abrir a PR.' },
     whichPlanChat: 'De qual chat? Diga o número da task.',
     planFailed: 'Não consegui falar com esse chat.',
+    planRefused: { approve: (reason) => `Não aprovei o plano: ${reason}.`, pr: (reason) => `Ainda não dá pra abrir a PR: ${reason}.` },
     planNone: 'Esse chat não tem plano.',
     planBusy: 'Já estou esperando ele ficar livre.',
+    atLine: (file, line) => `${file} linha ${line}`,
+    task: {
+      sent: { 'approve-contract': 'Contrato aprovado.', 'approve-tests': 'Testes aprovados.', 'next-step': 'Mandei seguir pro próximo passo.', 'unlock-tests': 'Testes destravados.' },
+      refused: (reason) => `Não rolou: ${reason}`,
+      noTask: 'Esse chat não tem tarefa com contrato.',
+      wrongPhase: { 'approve-contract': 'O contrato já foi aprovado.', 'approve-tests': 'Os testes não estão esperando aprovação.', 'next-step': 'Ainda não há passos: aprove o contrato e os testes antes.', 'unlock-tests': 'Os testes não estão travados.' },
+      noHold: 'Não consigo segurar essa ordem agora; destrave pelo card.',
+      blocked: 'Esse chat tem uma pergunta na tela: responda antes.',
+      myTurn: (step, where) => `Sua vez no passo ${step.n}, ${step.text}${where ? `: ${where}` : ''}.`,
+      notMine: 'Não tem passo seu agora.',
+    },
     understood: (label) => `Entendi: ${label}.`,
     // Memory (#163).
     stoppedAt: (number, where) => `Na ${number}: ${where}`,
@@ -106,6 +118,10 @@ const LINES = {
         const who = !musician ? 'do chat' : musician.number !== null ? `da ${musician.number}` : `do ${musician.name}`;
         return action === 'approve' ? `aprovar o plano ${who}` : `abrir a PR ${who}`;
       },
+      task: (musician, action) => {
+        const who = !musician ? 'do chat' : musician.number !== null ? `da ${musician.number}` : `do ${musician.name}`;
+        return { 'approve-contract': `aprovar o contrato ${who}`, 'approve-tests': `aprovar os testes ${who}`, 'next-step': `seguir pro próximo passo ${who}`, 'unlock-tests': 'destravar os testes' }[action];
+      },
       guard: { liberar: 'liberar', 'liberar-sessao': 'liberar nesta sessão', barrar: 'barrar' },
     },
   },
@@ -147,8 +163,20 @@ const LINES = {
     planSent: { approve: 'Told it to go ahead with the plan.', pr: 'Asked it to run the tests and open the PR.' },
     whichPlanChat: 'Which chat? Say the task number.',
     planFailed: "Couldn't reach that chat.",
+    planRefused: { approve: (reason) => `I didn't approve the plan: ${reason}.`, pr: (reason) => `The PR can't be opened yet: ${reason}.` },
     planNone: "That chat has no plan.",
     planBusy: "I'm already waiting for it to be free.",
+    atLine: (file, line) => `${file} line ${line}`,
+    task: {
+      sent: { 'approve-contract': 'Contract approved.', 'approve-tests': 'Tests approved.', 'next-step': 'Told it to go to the next step.', 'unlock-tests': 'Tests unlocked.' },
+      refused: (reason) => `It didn't work: ${reason}`,
+      noTask: "That chat has no task with a contract.",
+      wrongPhase: { 'approve-contract': 'The contract is already approved.', 'approve-tests': "The tests aren't waiting for approval.", 'next-step': 'No steps yet: approve the contract and the tests first.', 'unlock-tests': "The tests aren't locked." },
+      noHold: "I can't hold that order right now; unlock from the card.",
+      blocked: 'That chat has a question on screen: answer it first.',
+      myTurn: (step, where) => `Your turn on step ${step.n}, ${step.text}${where ? `: ${where}` : ''}.`,
+      notMine: 'No step of yours right now.',
+    },
     understood: (label) => `Got it: ${label}.`,
     stoppedAt: (number, where) => `On ${number}: ${where}`,
     noTask: (number) => `I didn't find a chat for ${number}.`,
@@ -235,6 +263,7 @@ export function createVoiceSession(deps) {
     const info = deps.sessionInfo(sessionId) ?? {};
     const where = info.lastMessage ? ` ${firstSentence(info.lastMessage)}` : '';
     say(lines().opened(number, info.title, where));
+    return sessionId;
   }
 
   async function resumeTask(number) {
@@ -270,8 +299,8 @@ export function createVoiceSession(deps) {
   // which is where held() is called.
   let directStep = false;
   let routineRun = null; // { name, stopped }
-  const held = (label, run) => {
-    if (!deps.maestro?.() || !deps.pendingOrder || directStep) return run();
+  const held = (label, run, { always = false } = {}) => {
+    if ((!always && !deps.maestro?.()) || !deps.pendingOrder || directStep) return run();
     // Said out loud too: a wrong number is heard at once, and "cancela" is right there.
     say(lines().understood(label), 1, { kind: 'filler' });
     deps.pendingOrder.hold({ label }, () =>
@@ -288,19 +317,57 @@ export function createVoiceSession(deps) {
 
   // The plan card's buttons by voice: of the task named, else of the chat the
   // voice talks to, else of the músico in focus. It types into the chat: held.
+  const planSession = (number) =>
+    number !== null
+      ? deps.linkedSessions?.(number)?.[0] ?? findMusicians(deps.orchestra?.() ?? [], number)[0]?.sessionId
+      : target.kind === 'chat'
+        ? target.sessionId
+        : deps.focusedSession?.();
+
+  // The contract flow's buttons by voice. The phase is checked now (a wrong
+  // one is said at once, nothing typed); what types into the chat is held like
+  // any order, and never goes to a chat with a dialog on screen. Unlocking the
+  // tests is held 3 s even off the Maestro: it opens what was approved.
+  const TASK_ACTION = { 'approve-contract': 'approveContract', 'approve-tests': 'approveTests', 'next-step': 'okNext', 'unlock-tests': 'unlockTests' };
+  const PHASE_OK = {
+    'approve-contract': (state) => state.phase === 'contract',
+    'approve-tests': (state) => state.phase === 'tests',
+    'next-step': (state) => state.phase === 'steps' || state.phase === 'pr',
+    'unlock-tests': (state) => (state.tests?.locked?.length ?? 0) > 0,
+  };
+  async function taskOrder(action, number) {
+    const sessionId = planSession(number);
+    if (!sessionId) return say(lines().whichPlanChat);
+    const state = await deps.taskState?.(sessionId);
+    if (!state || state.phase === 'quick') return say(lines().task.noTask);
+    if (action === 'my-turn') {
+      const step = state.phase === 'steps' ? (state.steps ?? []).find((item) => item.n === state.current) : null;
+      if (!step?.dev) return say(lines().task.notMine);
+      const todo = state.devTodos?.[0];
+      return say(lines().task.myTurn(step, todo ? lines().atLine(todo.file, todo.line) : ''));
+    }
+    if (!PHASE_OK[action](state)) return say(lines().task.wrongPhase[action]);
+    if (action !== 'unlock-tests' && deps.sessionBlocked?.(sessionId)) return say(lines().task.blocked);
+    // Fail closed: unlocking without a hold to cancel in never runs.
+    if (action === 'unlock-tests' && !deps.pendingOrder) return say(lines().task.noHold);
+    // Typing waits out a dialog on screen in deliverWhenFree (index.js); the check above is the early refusal.
+    return held(
+      ORDER.task(musicianOfSession(sessionId), action),
+      async () => {
+        const result = await deps.taskAction(sessionId, TASK_ACTION[action]);
+        say(result?.error ? lines().task.refused(result.error) : result?.ok ? lines().task.sent[action] : lines().planFailed);
+      },
+      { always: action === 'unlock-tests' },
+    );
+  }
+
   function planOrder(action, number) {
-    const bound = target;
-    const sessionId =
-      number !== null
-        ? deps.linkedSessions?.(number)?.[0] ?? findMusicians(deps.orchestra?.() ?? [], number)[0]?.sessionId
-        : bound.kind === 'chat'
-          ? bound.sessionId
-          : deps.focusedSession?.();
+    const sessionId = planSession(number);
     if (!sessionId) return say(lines().whichPlanChat);
     return held(ORDER.plan(musicianOfSession(sessionId), action), async () => {
       const result = await deps.planAction(sessionId, action);
       const said = { sent: lines().planSent[action], 'no-plan': lines().planNone, busy: lines().planBusy };
-      say(said[result] ?? lines().planFailed);
+      say(result?.error ? lines().planRefused[action](result.error) : said[result] ?? lines().planFailed);
     });
   }
 
@@ -357,10 +424,17 @@ export function createVoiceSession(deps) {
 
   async function pickIssue(number) {
     const found = await deps.resolveTask(number);
-    if (found.sessionId) return openFound(number, found);
-    const opened = await deps.openNew({ cwd: found.cwd ?? deps.projectRoot(), prompt: startIssuePrompt(number), task: number });
+    // Picking an issue is starting it: a task the dev ended begins again.
+    if (found.sessionId) {
+      const sessionId = await openFound(number, found);
+      deps.startTask?.(number, sessionId, found.cwd);
+      return;
+    }
+    const cwd = found.cwd ?? deps.projectRoot();
+    const opened = await deps.openNew({ cwd, prompt: startIssuePrompt(number), task: number });
     if (!opened?.sessionId) return say(lines().newChatFailed);
     deps.linkTask(number, opened.sessionId);
+    deps.startTask?.(number, opened.sessionId, cwd);
     bind(opened.sessionId, number);
     return say(lines().picked(number));
   }
@@ -434,6 +508,7 @@ export function createVoiceSession(deps) {
       return;
     }
     deps.linkTask(pending.number, opened.sessionId);
+    deps.startTask?.(pending.number, opened.sessionId, pending.cwd);
     bind(opened.sessionId, pending.number);
     say(lines().newChat(pending.number));
   }
@@ -465,6 +540,8 @@ export function createVoiceSession(deps) {
         if (number === null) return say(lines().whichIssue);
         return pickIssue(number);
       }
+      case 'task-action':
+        return taskOrder(intent.action, intent.number);
       case 'approve-plan':
       case 'open-pr':
         return planOrder(intent.type === 'approve-plan' ? 'approve' : 'pr', intent.number);

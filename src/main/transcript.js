@@ -216,10 +216,63 @@ function isUserEntry(entry) {
   return entry?.type === 'user' || entry?.message?.role === 'user';
 }
 
+const TEXT_QUESTION_TAIL_CHARS = 8 * 1024;
+const TEXT_QUESTION_MAX_CHARS = 300;
+
+// A chat that ends its turn with "Quer que eu siga?" is waiting too, with no
+// AskUserQuestion. Only the LAST paragraph of the message counts, it must end
+// in "?" (closing paren / bold / quotes allowed after it), and a "?" inside
+// code, or in a heading, is not a question.
+export function lastParagraphQuestion(message) {
+  let text = String(message ?? '');
+  if (text.length > TEXT_QUESTION_TAIL_CHARS) {
+    text = text.slice(-TEXT_QUESTION_TAIL_CHARS);
+    text = text.slice(text.indexOf('\n') + 1); // drop the line the cut landed in
+  }
+  // Fenced blocks collapse to a placeholder line, so code can never be the question.
+  const lines = [];
+  let fence = null;
+  for (const line of text.split('\n')) {
+    const marker = /^\s*(```+|~~~+)/.exec(line)?.[1];
+    if (fence) {
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+      continue;
+    }
+    if (marker) {
+      fence = marker;
+      lines.push('[code]');
+      continue;
+    }
+    lines.push(line);
+  }
+  const paragraphs = lines
+    .join('\n')
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const last = paragraphs.at(-1);
+  if (!last) return null;
+  if (/^#{1,6}\s/.test(last.split('\n').at(-1).trim())) return null;
+  if (!/\?[)\]}"'”’*_~\s]*$/.test(last.replace(/`[^`\n]*`/g, ''))) return null;
+  return last.length > TEXT_QUESTION_MAX_CHARS ? `${last.slice(0, TEXT_QUESTION_MAX_CHARS - 1)}…` : last;
+}
+
+function entryText(entry) {
+  const content = entry.message?.content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n');
+}
+
 // A question is "pending" when an AskUserQuestion tool call appears after the
-// last user entry — i.e. Claude asked and nobody answered yet.
+// last user entry — i.e. Claude asked and nobody answered yet — or, failing
+// that, when the turn's last assistant message ends on a plain question
+// ({ kind: 'text', text }, no options: it is answered by typing).
 export function parsePendingQuestion(jsonlText) {
   const lines = jsonlText.split('\n');
+  let textQuestion;
   for (let index = lines.length - 1; index >= 0; index--) {
     const line = lines[index].trim();
     if (!line) continue;
@@ -229,14 +282,25 @@ export function parsePendingQuestion(jsonlText) {
     } catch {
       continue;
     }
-    if (isUserEntry(entry)) return null;
+    if (isUserEntry(entry)) return textQuestion ?? null;
     if (!isAssistantEntry(entry)) continue;
     const content = entry.message?.content;
     if (!Array.isArray(content)) continue;
     const ask = content.find(
       (block) => block?.type === 'tool_use' && block.name === 'AskUserQuestion',
     );
-    if (!ask?.input?.questions?.length) continue;
+    if (!ask?.input?.questions?.length) {
+      // Only the newest assistant message is "the last one", and it must end
+      // the turn: prose followed by a tool call is mid-work, not a question.
+      if (textQuestion === undefined && entry.isSidechain !== true) {
+        if (content.some((block) => block?.type === 'tool_use')) textQuestion = null;
+        else if (entryText(entry).trim()) {
+          const text = lastParagraphQuestion(entryText(entry));
+          textQuestion = text ? { kind: 'text', text } : null;
+        }
+      }
+      continue;
+    }
     return {
       questions: ask.input.questions.map((item) => ({
         question: String(item.question ?? ''),
@@ -245,7 +309,7 @@ export function parsePendingQuestion(jsonlText) {
       })),
     };
   }
-  return null;
+  return textQuestion ?? null;
 }
 
 // The conversation as the user had it: their prompts and the assistant's

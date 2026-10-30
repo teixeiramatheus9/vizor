@@ -26,9 +26,9 @@ import {
   onTask,
   stillWanted,
 } from './inspector-state.js';
-import { renderPlan } from './plan-view.js';
+import { createPlanController } from './work/plan-controller.js';
 import { averageColor, nudgeColor } from './project-accent.js';
-import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
+import { buildCommands, createConfirmGate, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
 import { createReviewController } from './review/review-controller.js';
 import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
@@ -58,7 +58,7 @@ function commandBarOpen() {
   return document.getElementById('command-bar')?.hidden === false;
 }
 let plans = {}; // sessionId → { steps, approved }
-let planNote = null; // { sessionId, text } after a button that did not land
+let agentSessionList = []; // the registry's sessions, for the card's pending question
 const planCardEl = document.getElementById('plan-card');
 let selectedWorktree = null;
 let activeTab = null;
@@ -726,26 +726,18 @@ const planSessionId = () => {
   if (!activeTab) return null;
   return treeSessions().find((session) => session.ptyId === activeTab)?.id ?? null;
 };
-function renderPlanCard() {
-  const sessionId = planSessionId();
-  const note = planNote?.sessionId === sessionId ? `<div class="plan-note">${planNote.text}</div>` : '';
-  planCardEl.innerHTML = sessionId ? renderPlan(plans[sessionId]) + (plans[sessionId] ? note : '') : '';
-}
-const PLAN_NOTES = {
-  failed: 'não achei a aba desse chat',
-  timeout: 'o chat não ficou livre em 1 minuto; tente de novo quando ele parar',
-  busy: 'já estou esperando o chat ficar livre pra mandar',
-  'no-plan': 'esse chat não tem plano',
-};
-planCardEl.addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-plan]');
-  const sessionId = planSessionId();
-  if (!button || !sessionId) return;
-  button.disabled = true;
-  const result = await window.vizor.planAction(sessionId, button.dataset.plan);
-  planNote = PLAN_NOTES[result] ? { sessionId, text: PLAN_NOTES[result] } : null;
-  renderPlanCard();
+const planCard = createPlanController({
+  el: planCardEl,
+  api: window.vizor,
+  sessionId: planSessionId,
+  getSession: (id) => agentSessionList.find((session) => session.id === id) ?? null,
+  plans: () => plans,
+  onStepDiff: (n, task) => review.openStep(n, task ?? {}),
+  // The review opens the file at its diff; the line is not scrolled to yet.
+  onOpenFile: (file) => review.showFile(file),
 });
+const renderPlanCard = () => planCard.render();
+window.vizor.onTaskChanged(() => planCard.refresh());
 
 async function savePrefs(change) {
   Object.assign(prefs, change);
@@ -806,6 +798,7 @@ guardHost.addEventListener('click', (event) => {
 window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars, tokens, automationRuns, nextAutomationAt: nextAt }) => {
   if (avatars) avatarUris = avatars;
   plans = planState ?? {};
+  agentSessionList = agentSessions ?? [];
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;
@@ -1278,6 +1271,8 @@ function refreshCommandList() {
     issuesLoading: !commandCatalog,
     chats: commandChats(),
     plans,
+    tasks: Object.fromEntries(commandChats().map((chat) => [chat.sessionId, planCard.taskOf(chat.sessionId)]).filter(([, task]) => task)),
+    blocked: agentSessionList.filter((session) => session.blocksTyping).map((session) => session.id),
     focusedId: planSessionId(),
     maestroOn: maestro.on,
     automations: automations.list(),
@@ -1319,9 +1314,14 @@ function toast(text) {
   commandToastTimer = setTimeout(() => (commandToast.hidden = true), 5000);
 }
 
+const unlockGate = createConfirmGate();
 async function runCommandItem(item) {
   if (!item || item.disabled) return;
   const { action } = item;
+  // Unlocking the tests asks twice, like the card: the bar stays open meanwhile.
+  if (action.type === 'task' && action.name === 'unlockTests') {
+    if (unlockGate.press(item.id) === 'armed') return toast('Enter de novo pra destravar os testes');
+  } else unlockGate.reset();
   // Everything but "ir pra <tela>" acts on the Workspace (drawer, chat, plan):
   // show it first so the user sees the result.
   const onAutomations = action.type === 'new-automation' || action.type === 'run-automation';
@@ -1336,9 +1336,24 @@ async function runCommandItem(item) {
     else selectSession(action.sessionId);
     return;
   }
+  if (action.type === 'task') {
+    // "Sua vez" only reads; the rest are the card's own actions.
+    if (action.name === 'myTurn') {
+      const task = planCard.taskOf(action.sessionId);
+      const todo = task?.devTodos?.[0];
+      toast(todo ? `Sua vez: ${todo.file}:${todo.line}` : 'Sua vez no passo [dev] atual');
+      return;
+    }
+    const result = await window.vizor.task(action.sessionId, action.name);
+    const note = result?.error ?? (result?.delivery && !['sent', 'pasted'].includes(result.delivery) ? PLAN_NOTES[result.delivery] ?? String(result.delivery) : null);
+    if (note) toast(note);
+    planCard.refresh(action.sessionId);
+    return;
+  }
   if (action.type === 'approve' || action.type === 'open-pr') {
     const result = await window.vizor.planAction(action.sessionId, action.type === 'approve' ? 'approve' : 'pr');
-    if (PLAN_NOTES[result]) toast(PLAN_NOTES[result]);
+    const note = PLAN_NOTES[result] ?? result?.error;
+    if (note) toast(note);
     return;
   }
   if (action.type === 'pick-issue') toast(`abrindo a #${action.number}…`);

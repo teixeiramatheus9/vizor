@@ -12,6 +12,13 @@ describe('buildAgentSessions', () => {
     expect(entry).toMatchObject({ id: 's1', ptyId: 'pty-1', project: { root: '/p/a', branch: 'feat/x' }, title: 'Tarefa', seenAt: 0 });
     expect(entry.term).toEqual({ VIZOR_PTY_ID: 'pty-1' });
   });
+  it('tells the task card when typing would hit a dialog', () => {
+    const blocks = (question) => buildAgentSessions({ sessions: [{ ...base, question }], tree })[0].blocksTyping;
+    expect(blocks(null)).toBe(false);
+    expect(blocks({ kind: 'text', text: 'qual?' })).toBe(false);
+    expect(blocks({ kind: 'text', text: 'qual?', unconfirmed: true })).toBe(true);
+    expect(blocks({ questions: [{ question: 'qual?' }] })).toBe(true);
+  });
   it('leaves outside sessions without a project or a pty', () => {
     const [entry] = buildAgentSessions({ sessions: [{ ...base, id: 's9', term: null }], tree });
     expect(entry.project).toBeNull();
@@ -28,6 +35,7 @@ describe('buildAgentSessions', () => {
   });
   it('turns the pending question into text', () => {
     expect(questionText({ questions: [{ question: 'Qual?' }] })).toBe('Qual?');
+    expect(questionText({ kind: 'text', text: 'Quer que eu siga?' })).toBe('Quer que eu siga?');
     expect(questionText(null)).toBeNull();
     expect(questionText({})).toBe('Esperando sua resposta.');
   });

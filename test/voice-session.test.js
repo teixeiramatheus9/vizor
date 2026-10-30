@@ -15,6 +15,7 @@ function setup(overrides = {}) {
     openOrFocus: async (target) => (calls.push(['open', target]), { sessionId: target.sessionId }),
     openNew: async (request) => (calls.push(['new', request]), { sessionId: 'snew' }),
     linkTask: (number, sessionId) => calls.push(['link', number, sessionId]),
+    startTask: (number, sessionId, cwd) => calls.push(['start', number, sessionId, cwd]),
     sessionInfo: () => ({ title: 'Login com senha', lastMessage: 'Paramos na criptografia de senha. Faltava escolher o algoritmo.', cwd: '/r' }),
     deliverPrompt: async (sessionId, text) => (calls.push(['deliver', sessionId, text]), 'sent'),
     askManager: async () => 'Tem 2 chats rodando.',
@@ -513,8 +514,9 @@ describe('voice session — the gerente reads, the músicos act', () => {
     expect(opened[1].cwd).toBe('/r');
     expect(opened[1].prompt).toContain('issue #142');
     expect(opened[1].prompt).toContain('gh issue view 142');
-    expect(opened[1].prompt).toContain('espere meu ok antes de mexer');
+    expect(opened[1].prompt).toContain('espere eu aprovar o contrato antes de mexer');
     expect(calls).toContainEqual(['link', 142, 'snew']);
+    expect(calls).toContainEqual(['start', 142, 'snew', '/r']);
     expect(texts().at(-1)).toBe('Puxei a 142: o músico vai ler a issue e propor um plano.');
   });
 
@@ -524,6 +526,8 @@ describe('voice session — the gerente reads, the músicos act', () => {
     await tick();
     expect(calls).toContainEqual(['open', { sessionId: 's22', cwd: '/r' }]);
     expect(calls.some(([name]) => name === 'new')).toBe(false);
+    // Picking it is starting it: an ended task begins again.
+    expect(calls).toContainEqual(['start', 22, 's22', '/r']);
   });
 
   it('"Quer que eu peça revisão da PR 166?" → a reviewer músico that reports and changes nothing', async () => {
@@ -630,6 +634,20 @@ describe('voice session — the plan by voice', async () => {
     await session.onUtterance('aprova o plano');
     await tick();
     expect(texts().at(-1)).toBe('Não consegui falar com esse chat.');
+  });
+
+  it('the old ok on a task with a contract is refused with the reason', async () => {
+    const { session, texts } = setup({ focusedSession: () => 's169', planAction: async () => ({ error: 'esta tarefa tem contrato: aprove o contrato no card' }) });
+    await session.onUtterance('aprova o plano');
+    await tick();
+    expect(texts().at(-1)).toBe('Não aprovei o plano: esta tarefa tem contrato: aprove o contrato no card.');
+  });
+
+  it('a PR the task is not ready for is refused with the reason', async () => {
+    const { session, texts } = setup({ focusedSession: () => 's169', planAction: async () => ({ error: 'o teste do contrato mudou' }) });
+    await session.onUtterance('abre a PR');
+    await tick();
+    expect(texts().at(-1)).toBe('Ainda não dá pra abrir a PR: o teste do contrato mudou.');
   });
 
   it('a chat with no plan, or one already waited on, is said so', async () => {
@@ -1037,5 +1055,100 @@ describe('voice session — understanding a garbled order (live test)', async ()
     const { session, texts } = setup({ interpret: async () => null, askManager: async () => 'Tem 2 chats rodando.' });
     await session.onUtterance('bora começar aquela coisa');
     expect(texts().at(-1)).toBe('Tem 2 chats rodando.');
+  });
+});
+
+describe('voice session — the contract flow', async () => {
+  const { createPendingOrder } = await import('../src/main/maestro/pending-order.js');
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const build = (state, extra = {}) => {
+    let timer = null;
+    const pendingOrder = createPendingOrder({ setTimer: (callback) => (timer = callback), clearTimer: () => (timer = null) });
+    const actions = [];
+    const made = setup({
+      focusedSession: () => 's1',
+      pendingOrder,
+      taskState: async () => state,
+      taskAction: async (sessionId, name) => (actions.push([sessionId, name]), { ok: true, delivery: 'sent' }),
+      ...extra,
+    });
+    return { ...made, actions, pendingOrder, fire: () => timer?.() };
+  };
+
+  it('approves the contract only in the contract phase', async () => {
+    const ok = build({ phase: 'contract' });
+    await ok.session.onUtterance('aprova o contrato');
+    await tick();
+    expect(ok.actions).toEqual([['s1', 'approveContract']]);
+    const wrong = build({ phase: 'steps' });
+    await wrong.session.onUtterance('aprova o contrato');
+    await tick();
+    expect(wrong.actions).toEqual([]);
+    expect(wrong.texts().at(-1)).toBe('O contrato já foi aprovado.');
+  });
+
+  it('approves the tests and goes to the next step by phase', async () => {
+    const tests = build({ phase: 'tests' });
+    await tests.session.onUtterance('aprova os testes');
+    await tick();
+    expect(tests.actions).toEqual([['s1', 'approveTests']]);
+    const steps = build({ phase: 'steps' });
+    await steps.session.onUtterance('ok segue');
+    await tick();
+    expect(steps.actions).toEqual([['s1', 'okNext']]);
+    const early = build({ phase: 'contract' });
+    await early.session.onUtterance('ok segue');
+    await tick();
+    expect(early.actions).toEqual([]);
+    expect(early.texts().at(-1)).toBe('Ainda não há passos: aprove o contrato e os testes antes.');
+  });
+
+  it('a chat with a dialog on screen gets nothing typed', async () => {
+    const blocked = build({ phase: 'contract' }, { sessionBlocked: () => true });
+    await blocked.session.onUtterance('aprova o contrato');
+    await tick();
+    expect(blocked.actions).toEqual([]);
+    expect(blocked.texts().at(-1)).toBe('Esse chat tem uma pergunta na tela: responda antes.');
+  });
+
+  it('"sua vez" reads the pending [dev] step and types nothing', async () => {
+    const mine = build({ phase: 'steps', current: 2, steps: [{ n: 2, text: 'validar entrada', dev: true, done: false }], devTodos: [{ file: 'src/a.js', line: 12 }] }, { sessionBlocked: () => true });
+    await mine.session.onUtterance('sua vez');
+    await tick();
+    expect(mine.actions).toEqual([]);
+    expect(mine.texts().at(-1)).toBe('Sua vez no passo 2, validar entrada: src/a.js linha 12.');
+    const none = build({ phase: 'steps', current: 1, steps: [{ n: 1, text: 'x', dev: false, done: false }], devTodos: [] });
+    await none.session.onUtterance('sua vez');
+    await tick();
+    expect(none.texts().at(-1)).toBe('Não tem passo seu agora.');
+  });
+
+  it('unlocking the tests is held 3 s even off the Maestro, and can be cancelled', async () => {
+    const held = build({ phase: 'steps', tests: { locked: ['a.test.js'] } });
+    await held.session.onUtterance('destrava os testes');
+    await tick();
+    expect(held.actions).toEqual([]);
+    expect(held.pendingOrder.pending().label).toBe('destravar os testes');
+    held.fire();
+    await tick();
+    expect(held.actions).toEqual([['s1', 'unlockTests']]);
+
+    const cancelled = build({ phase: 'steps', tests: { locked: ['a.test.js'] } });
+    await cancelled.session.onUtterance('destrava os testes');
+    await cancelled.session.onUtterance('cancela');
+    cancelled.fire();
+    await tick();
+    expect(cancelled.actions).toEqual([]);
+
+    const noHold = build({ phase: 'steps', tests: { locked: ['a.test.js'] } }, { pendingOrder: undefined });
+    await noHold.session.onUtterance('destrava os testes');
+    await tick();
+    expect(noHold.actions).toEqual([]);
+    expect(noHold.texts().at(-1)).toBe('Não consigo segurar essa ordem agora; destrave pelo card.');
+
+    const free = build({ phase: 'steps', tests: { locked: [] } });
+    await free.session.onUtterance('destrava os testes');
+    await tick();
+    expect(free.texts().at(-1)).toBe('Os testes não estão travados.');
   });
 });

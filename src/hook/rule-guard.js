@@ -3,6 +3,7 @@
 // tool call, and it must keep working with the Vizor closed (it is copied to
 // ~/.config/vizor/guard/). Node builtins only, ALWAYS exit 0, and decisions go
 // out only as the hook's JSON on stdout.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
@@ -206,7 +207,8 @@ function joinDir(base, next) {
 // Each git action in the command with every directory it may run in: the
 // cwd plus each cd before it. A subshell or a failed cd can undo a cd, so all
 // of them count — a guard that is unsure asks.
-function gitActions(command) {
+// parse(segment, tokens) names an action ({ dir } relative to the shell's) or null.
+function actionsWithDirs(command, parse) {
   const actions = [];
   const dirs = [''];
   let current = '';
@@ -218,10 +220,14 @@ function gitActions(command) {
       if (!dirs.includes(current)) dirs.push(current);
       continue;
     }
-    const parsed = parseGitAction(segment);
+    const parsed = parse(segment, tokens);
     if (parsed) actions.push({ parsed, dirs: dirs.map((dir) => joinDir(dir, parsed.dir)) });
   }
   return actions;
+}
+
+function gitActions(command) {
+  return actionsWithDirs(command, (segment) => parseGitAction(segment));
 }
 
 function branchName(ref) {
@@ -459,8 +465,9 @@ const AUTOMATION_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Skill', 'LS', 'TodoWr
 // The line as segments of words (quotes removed: { text, plain }), split on
 // && || ; and |, with /dev/null-style redirections dropped; null for
 // anything else: $, `, \, globs, braces, subshells, heredocs, other
-// redirections, &, newlines, a dangling quote.
-function plainLine(command) {
+// redirections, &, newlines, a dangling quote. With writes, a redirection
+// to a plain word (> f, >> f, >| f) is kept instead, as a { redirect } word.
+function plainLine(command, { writes = false } = {}) {
   if (typeof command !== 'string' || /[\n\r\0]/.test(command)) return null;
   const segments = [[]];
   let word = null;
@@ -498,12 +505,15 @@ function plainLine(command) {
         index = at + 1;
         continue;
       }
+      if (writes && command[at] === '|') at++;
       while (command[at] === ' ') at++;
       let end = at;
       while (end < command.length && WORD_CHAR.test(command[end])) end++;
-      if (!DEVICE.test(command.slice(at, end))) return null;
+      const sink = command.slice(at, end);
+      if (!DEVICE.test(sink) && !(writes && sink)) return null;
       // >/dev/null'x' writes to /dev/nullx: the sink must end the word.
       if (end < command.length && !/[\s;|&]/.test(command[end])) return null;
+      if (!DEVICE.test(sink)) segments.at(-1).push({ text: sink, plain: true, redirect: true });
       index = end - 1;
     } else if (WORD_CHAR.test(char)) {
       // A leading ~ only as ~ or ~/…; inside a word only where bash keeps it
@@ -688,17 +698,23 @@ function isProtected(file, home) {
   return roots.some((root) => within(root, file) || within(realTarget(root) ?? root, file));
 }
 
-function editReason(rules, call, home) {
-  if (rules.denyEdits || !rules.allowEditsUnder) return 'editar arquivos não é permitido neste nível';
-  // One path per edit: a notebook's notebook_path, else file_path; two
-  // different ones are refused rather than guessed.
+// The file an edit writes, links followed. One path per edit: a notebook's
+// notebook_path, else file_path; two different ones are refused rather than
+// guessed (conflict). real is null for a path that cannot be read exactly.
+function editTarget(call) {
   const named = [call.input?.notebook_path, call.input?.file_path].filter((value) => value !== undefined);
-  if (named.length === 2 && named[0] !== named[1]) return 'edição com dois caminhos diferentes';
+  if (named.length === 2 && named[0] !== named[1]) return { file: null, real: null, conflict: true };
   const file = call.tool === 'NotebookEdit' ? (named[0] ?? '') : (call.input?.file_path ?? named[0] ?? '');
   // A path ending in / names a directory, never a file to write. A `..`
   // is refused: the kernel follows a link before it, path.resolve does not.
   const plain = typeof file === 'string' && path.isAbsolute(file) && !/[\\/]$/.test(file) && !file.split(/[\\/]/).includes('..');
-  const real = plain ? realTarget(path.resolve(file)) : null;
+  return { file, real: plain ? realTarget(path.resolve(file)) : null, conflict: false };
+}
+
+function editReason(rules, call, home) {
+  if (rules.denyEdits || !rules.allowEditsUnder) return 'editar arquivos não é permitido neste nível';
+  const { file, real, conflict } = editTarget(call);
+  if (conflict) return 'edição com dois caminhos diferentes';
   if (real === null) return `edição fora do permitido para esta automação (${file})`;
   const root = realTarget(rules.allowEditsUnder) ?? rules.allowEditsUnder;
   if (!within(root, real)) return `editar fora da worktree da automação (${file})`;
@@ -862,6 +878,344 @@ export function loadAutomationRules(readFile, file, id) {
   }
 }
 
+// --- Tarefa (tarefas/regras.json) -------------------------------------------
+// A task's chat is held to its phase, and the contract tests the dev locked
+// stay as approved. The Vizor writes <configDir>/tarefas/regras.json:
+//   { "version": 1,
+//     "sessions": { "<session_id>": { "phase", "allowEdits": [abs], "planFile": abs } },
+//     "folders": { "<abs worktree>": { "locked": [{ "path", "sha256" }] } } }
+// Not an allowlist: an interactive chat may run anything. Only the bound
+// session's edits follow its phase, and no session writes a locked test or
+// pushes / opens the PR while one differs from its approved hash. The line
+// checks catch the plain ways of writing; the hash is the proof.
+
+const TASK = 'Tarefa do Vizor:';
+const HASH_CAP = 8 * 1024 * 1024; // a contract test is never this big
+const isObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+// The rules, normalized; null without the file. A corrupt one is logged and
+// skipped: this protects an interactive chat, which keeps working without it.
+export function loadTaskRules(readFile, file, log = () => {}) {
+  let raw;
+  try {
+    raw = readFile(file);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') log(`tarefas/regras.json unreadable (${error?.code ?? error}); task mode skipped`);
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    const sessionsIn = parsed?.sessions ?? {};
+    const foldersIn = parsed?.folders ?? {};
+    if (!isObject(parsed) || parsed.version !== 1 || !isObject(sessionsIn) || !isObject(foldersIn)) throw new Error('bad shape');
+    const sessions = new Map();
+    for (const [id, entry] of Object.entries(sessionsIn)) {
+      if (!isObject(entry) || typeof entry.phase !== 'string') continue;
+      sessions.set(id, {
+        phase: entry.phase,
+        allowEdits: (stringList(entry.allowEdits) ?? []).filter((file) => path.isAbsolute(file)),
+        planFile: typeof entry.planFile === 'string' && path.isAbsolute(entry.planFile) ? entry.planFile : null,
+      });
+    }
+    const folders = [];
+    for (const [key, entry] of Object.entries(foldersIn)) {
+      if (!path.isAbsolute(key) || !isObject(entry) || !Array.isArray(entry.locked)) continue;
+      const root = path.resolve(key);
+      // The filesystem root or the home itself is never a worktree.
+      if (path.parse(root).root === root || root === path.resolve(os.homedir())) continue;
+      const locked = entry.locked
+        .filter((item) => isObject(item) && typeof item.path === 'string' && item.path)
+        .map((item) => ({ path: path.resolve(root, item.path), sha256: typeof item.sha256 === 'string' ? item.sha256.toLowerCase() : '' }));
+      folders.push({ root, locked });
+    }
+    return { sessions, folders };
+  } catch (error) {
+    log(`tarefas/regras.json corrupt (${error?.message ?? error}); task mode skipped`);
+    return null;
+  }
+}
+
+function statOf(file) {
+  try {
+    return fs.statSync(file);
+  } catch {
+    return null;
+  }
+}
+
+// Every locked file with where it really lives: a link to it is it.
+function lockedFiles(rules) {
+  return rules.folders.flatMap((folder) =>
+    folder.locked.map((item) => {
+      const real = realTarget(item.path) ?? item.path;
+      return { ...item, folder, real, stat: statOf(real), name: path.basename(item.path) };
+    }),
+  );
+}
+
+// The same file: the same path once links are followed, or the same inode
+// (a hard link writes wherever its other names live).
+function isLocked(item, real) {
+  if (item.real === real) return true;
+  if (!item.stat) return false;
+  const stat = statOf(real);
+  return Boolean(stat) && stat.ino === item.stat.ino && stat.dev === item.stat.dev;
+}
+
+const inFolder = (folder, dir) => dir !== null && within(realTarget(folder.root) ?? folder.root, realTarget(dir) ?? dir);
+const shown = (item) => path.relative(item.folder.root, item.path) || item.path;
+const lockedMessage = (item) => `${TASK} ${shown(item)} é um teste travado do contrato; só o dev destrava, pelo card do plano.`;
+
+function taskEditReason(rules, call, sessionId) {
+  const locked = lockedFiles(rules);
+  const session = typeof sessionId === 'string' && rules.sessions.has(sessionId) ? rules.sessions.get(sessionId) : null;
+  const gate = session?.phase === 'contract' || session?.phase === 'tests' ? session : null;
+  if (!gate && locked.length === 0) return null;
+  const { file, real, conflict } = editTarget(call);
+  if (conflict) return `${TASK} edição com dois caminhos diferentes.`;
+  if (real === null) {
+    // Not checkable exactly: the gate holds, and a locked test's name too.
+    const hit = typeof file === 'string' && locked.find((item) => path.basename(file) === item.name);
+    if (hit) return lockedMessage(hit);
+  } else {
+    const hit = locked.find((item) => isLocked(item, real));
+    if (hit) return lockedMessage(hit);
+  }
+  if (!gate) return null;
+  const same = (other) => real !== null && other !== null && (realTarget(other) ?? other) === real;
+  if (same(gate.planFile)) return null;
+  if (gate.phase === 'contract') return `${TASK} aprove o contrato antes de mexer no código.`;
+  if (gate.allowEdits.some(same)) return null;
+  return `${TASK} só os testes do contrato agora.`;
+}
+
+// A word of the line as an absolute path, in the directory it runs in
+// (null: a directory the guard cannot follow).
+function resolveWord(dir, word, home) {
+  if (word === '~' || word.startsWith('~/')) return path.join(home, word.slice(1));
+  if (path.isAbsolute(word)) return path.resolve(word);
+  return dir === null ? null : path.resolve(dir, word);
+}
+
+// Positional arguments: the ones that are not options, all of them after --.
+function positionals(args) {
+  const dashdash = args.indexOf('--');
+  const before = dashdash === -1 ? args : args.slice(0, dashdash);
+  const after = dashdash === -1 ? [] : args.slice(dashdash + 1);
+  return [...before.filter((arg) => !arg.startsWith('-') || arg === '-'), ...after];
+}
+
+// cp/mv/ln/install -t DIR, -tDIR, --target-directory=DIR.
+function targetDirectory(args) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '-t' || arg === '--target-directory') return args[index + 1] ?? null;
+    if (arg.startsWith('--target-directory=')) return arg.slice('--target-directory='.length);
+    if (/^-t./.test(arg)) return arg.slice(2);
+  }
+  return null;
+}
+
+const DELETERS = new Set(['rm', 'unlink', 'shred']);
+const FILE_WRITERS = new Set(['tee', 'truncate']);
+const COPIERS = new Set(['cp', 'install']);
+const GIT_PATH_WRITERS = new Set(['checkout', 'restore', 'rm', 'mv']);
+
+// What a segment writes: { names, tree } — tree when a directory named takes
+// whatever is under it (rm -r, git restore .), else only the file named.
+// extraDirs: directories this segment alone runs in (git -C).
+function segmentWrites(program, args) {
+  const writes = { names: [], tree: [], extraDirs: [] };
+  if (DELETERS.has(program)) writes.tree.push(...positionals(args));
+  else if (FILE_WRITERS.has(program)) writes.names.push(...positionals(args));
+  else if (program === 'sed' && args.some((arg) => /^-[A-Za-z]*i/.test(arg) || arg.startsWith('--in-place')))
+    writes.names.push(...positionals(args));
+  else if (program === 'dd') writes.names.push(...args.filter((arg) => arg.startsWith('of=')).map((arg) => arg.slice(3)));
+  else if (program === 'mv') writes.tree.push(...positionals(args), ...[targetDirectory(args)].filter(Boolean));
+  else if (program === 'ln') writes.names.push(...positionals(args), ...[targetDirectory(args)].filter(Boolean));
+  else if (COPIERS.has(program)) {
+    const named = positionals(args);
+    const into = targetDirectory(args);
+    const dest = into ?? named.at(-1);
+    const sources = into ? named : named.slice(0, -1);
+    if (dest) writes.names.push(dest, ...sources.map((source) => `${dest}/${path.basename(source)}`));
+  } else if (program === 'git') {
+    let index = 0;
+    while (index < args.length && args[index].startsWith('-')) {
+      const name = args[index].split('=')[0];
+      if (name === '-C' && args[index + 1] !== undefined) writes.extraDirs.push(args[index + 1]);
+      index += GIT_VALUE_OPTIONS.has(name) && !args[index].includes('=') ? 2 : 1;
+    }
+    if (GIT_PATH_WRITERS.has(args[index])) writes.tree.push(...positionals(args.slice(index + 1)));
+  }
+  return writes;
+}
+
+// The locked file a readable line writes, or null. Relative words count in
+// the cwd and after every cd before them (a subshell can undo a cd), and by
+// name alone in a locked test's folder (env -C, xargs and the like).
+function lockedWrite(segments, locked, cwd, home) {
+  const dirs = [cwd];
+  let current = cwd;
+  for (const segment of segments) {
+    const redirects = segment.filter((word) => word.redirect).map((word) => word.text);
+    const rest = unwrap(segment.filter((word) => !word.redirect));
+    const [program, ...args] = rest.map((word) => word.text);
+    if (program === 'cd' || program === 'pushd') {
+      const target = args.find((arg) => !arg.startsWith('-') || arg === '-') ?? '~';
+      current = target === '-' ? null : resolveWord(current, target, home);
+      if (!dirs.includes(current)) dirs.push(current);
+    }
+    const writes = program ? segmentWrites(program, args) : { names: [], tree: [], extraDirs: [] };
+    writes.names.push(...redirects);
+    const here = [...dirs, ...writes.extraDirs.flatMap((extra) => dirs.map((dir) => resolveWord(dir, extra, home)))];
+    for (const [words, tree] of [[writes.names, false], [writes.tree, true]]) {
+      for (const word of words) {
+        for (const item of locked) {
+          const byName = !path.isAbsolute(word) && !word.startsWith('~') && path.basename(word) === item.name && inFolder(item.folder, cwd);
+          if (byName) return item;
+          for (const dir of here) {
+            const named = resolveWord(dir, word, home);
+            if (named === null) continue;
+            const real = realTarget(named) ?? named;
+            if (isLocked(item, real) || (tree && within(real, item.real))) return item;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// sha256 of a regular file, read up to HASH_CAP; null when it cannot be read.
+function sha256Of(file) {
+  let fd = null;
+  try {
+    if (!fs.statSync(file).isFile()) return null; // a FIFO would block the read
+    fd = fs.openSync(file, 'r');
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.alloc(64 * 1024);
+    let total = 0;
+    let read;
+    while ((read = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      total += read;
+      if (total > HASH_CAP) return null;
+      hash.update(buffer.subarray(0, read));
+    }
+    return hash.digest('hex');
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // already gone
+      }
+    }
+  }
+}
+
+const PR_CREATE = new Set(['create', 'new']);
+const GH_VALUE_OPTIONS = new Set(['-R', '--repo']);
+// gh by name or by its full path (/usr/bin/gh).
+const isGh = (token) => typeof token === 'string' && path.basename(token) === 'gh';
+function isPrCreate(tokens) {
+  if (!isGh(tokens[0])) return false;
+  let index = 1;
+  while (index < tokens.length && tokens[index].startsWith('-')) index += GH_VALUE_OPTIONS.has(tokens[index]) ? 2 : 1;
+  return tokens[index] === 'pr' && PR_CREATE.has(tokens[index + 1]);
+}
+
+// gh api that opens a pull request: a write (fields, --input or POST) to
+// repos/<o>/<r>/pulls, or the createPullRequest mutation.
+const GH_API_VALUE_OPTIONS = new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']);
+// Also as a full URL, on github.com or an Enterprise host (/api/v3).
+const PULLS_ENDPOINT = /^(?:https?:\/\/[^/\s]+(?:\/api\/v3)?)?\/?repos\/[^/\s]+\/[^/\s]+\/pulls\/?(?:\?.*)?$/;
+function isPrApi(tokens) {
+  if (!isGh(tokens[0])) return false;
+  let index = 1;
+  while (index < tokens.length && tokens[index].startsWith('-')) index += GH_VALUE_OPTIONS.has(tokens[index]) ? 2 : 1;
+  if (tokens[index] !== 'api') return false;
+  let endpoint = null;
+  let method = null;
+  let sends = false;
+  // A graphql query read from a file or stdin cannot be checked for the mutation.
+  let queryUnseen = false;
+  for (let i = index + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token.startsWith('-')) {
+      endpoint ??= token;
+      continue;
+    }
+    const equals = token.startsWith('--') ? token.indexOf('=') : -1;
+    const name = equals === -1 ? token : token.slice(0, equals);
+    // Short options may carry their value glued: -XPOST, -ftitle=x.
+    const short = /^-[XfF]./.test(token) ? token.slice(0, 2) : null;
+    const value = short ? token.slice(2) : equals !== -1 ? token.slice(equals + 1) : GH_API_VALUE_OPTIONS.has(name) ? (tokens[++i] ?? '') : null;
+    const option = short ?? name;
+    if (option === '-X' || option === '--method') method = String(value).toUpperCase();
+    else if (['-f', '--raw-field', '-F', '--field', '--input'].includes(option)) {
+      sends = true;
+      if (option === '--input' || (['-F', '--field'].includes(option) && /^query=@/.test(String(value)))) queryUnseen = true;
+    }
+  }
+  if (endpoint === 'graphql') return queryUnseen || tokens.some((token) => /\bcreatePullRequest\b/.test(token));
+  if (!endpoint || !PULLS_ENDPOINT.test(endpoint)) return false;
+  return method ? method === 'POST' : sends;
+}
+
+// The directories a push or a PR of this line may ship from (resolved; null
+// = one the guard cannot follow), or an empty list when it ships nothing.
+// A cd or pushd before gh counts, as it does for git push.
+function shipDirs(command, readable, cwd) {
+  const dirs = [];
+  for (const { parsed, dirs: where } of gitActions(command))
+    if (parsed.action === 'push') dirs.push(...where.map((dir) => resolveDir(cwd, dir)));
+  const prs = actionsWithDirs(command, (segment, tokens) => (isPrCreate(tokens) || isPrApi(tokens) ? { dir: '' } : null));
+  for (const { dirs: where } of prs) dirs.push(...where.map((dir) => resolveDir(cwd, dir)));
+  // A line the guard cannot read that still says push or pr create ships from here.
+  if (dirs.length === 0 && !readable && /\bgit\b[\s\S]*\bpush\b|\bgh\b[\s\S]*\b(?:pr\s+(?:create|new)|api\b[\s\S]*(?:\/pulls\b|createPullRequest))/.test(command)) dirs.push(cwd);
+  return dirs;
+}
+
+function taskBashReason(rules, command, cwd, home) {
+  const locked = lockedFiles(rules);
+  const segments = plainLine(command, { writes: true });
+  if (segments === null) {
+    // By name inside its folder; from anywhere else, by its full path.
+    const named = locked.find((item) => command.includes(inFolder(item.folder, cwd) ? item.name : item.path));
+    if (named) return `${TASK} não consigo ler este comando e ele cita um teste travado do contrato (${shown(named)}); rode de um jeito simples, sem escrever nesse arquivo.`;
+  } else {
+    const hit = lockedWrite(segments, locked, cwd, home);
+    if (hit) return lockedMessage(hit);
+  }
+  const dirs = shipDirs(command, segments !== null, cwd);
+  if (dirs.length === 0) return null;
+  // A directory the guard cannot follow may be any of them.
+  const folders = rules.folders.filter((folder) => dirs.some((dir) => dir === null || inFolder(folder, dir)));
+  for (const folder of folders) {
+    for (const item of folder.locked) {
+      if (sha256Of(item.path) !== item.sha256)
+        return `${TASK} o teste do contrato mudou; destrave ou volte o arquivo (${path.relative(folder.root, item.path) || item.path}).`;
+    }
+  }
+  return null;
+}
+
+// The deny reason for a call under the task rules, or null. Never throws: a
+// call the guard fails to check is denied.
+export function taskVerdict({ rules, call, cwd = null, sessionId = null, home = os.homedir() }) {
+  if (!rules) return null;
+  try {
+    if (EDIT_TOOLS.has(call.tool)) return taskEditReason(rules, call, sessionId);
+    if (call.tool === 'Bash') return taskBashReason(rules, String(call.input?.command ?? ''), cwd, home);
+  } catch {
+    return `${TASK} um passo que a trava não conseguiu conferir.`;
+  }
+  return null;
+}
+
 // --- Decision ---------------------------------------------------------------
 
 export const ASK_WAIT_MS = 540000; // under the hook's 600 s timeout
@@ -923,7 +1277,9 @@ function resolveDir(cwd, dir) {
 // per directory; the facts themselves are read lazily (gitContextOf).
 // automation: this automação's rules (loadAutomationRules), held before the
 // user's; automationId goes with every question so the Vizor can tell.
-export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {}, automation = null, automationId = null }) {
+// task: the task rules (loadTaskRules), held after the automação's and before
+// the user's.
+export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {}, automation = null, automationId = null, task = null }) {
   const call = toolCall(event);
   const summary = () => (call.tool === 'Bash' ? String(call.input.command ?? '') : `${call.tool} ${editPath(call.input)}`.trim()).slice(0, 200);
   const barred = automationVerdict({ rules: automation, call, cwd: event.cwd ?? null });
@@ -938,6 +1294,18 @@ export async function decide({ event, rules, repoRoot, gitContext, ask, headless
       automationId,
     });
     return deny(barred);
+  }
+  const held = taskVerdict({ rules: task, call, cwd: event.cwd ?? null, sessionId: event.session_id ?? null });
+  if (held) {
+    notify({
+      type: 'guard-event',
+      sessionId: event.session_id ?? null,
+      cwd: event.cwd ?? null,
+      ruleSource: held,
+      outcome: 'barrado',
+      summary: summary(),
+    });
+    return deny(held);
   }
   if (!rules) return null;
   const list = applicable(rules, repoRoot);
@@ -1021,6 +1389,8 @@ export function contextFor({ event, rules, repoRoot, seenVersion }) {
 const configDir = path.join(os.homedir(), '.config', 'vizor');
 const rulesDir = path.join(configDir, 'regras');
 const automationsFile = path.join(configDir, 'automacoes', 'regras.json');
+const taskRulesFile = path.join(configDir, 'tarefas', 'regras.json');
+const logFile = path.join(configDir, 'log'); // mirrors logFile in src/main/paths.js
 const socketPath =
   process.env.VIZOR_SOCKET ??
   (process.platform === 'win32'
@@ -1154,6 +1524,14 @@ function writeSeen(sessionId, version) {
   }
 }
 
+function logLine(message) {
+  try {
+    fs.appendFileSync(logFile, `${new Date().toISOString()} rule-guard: ${message}\n`);
+  } catch {
+    // nowhere to say it
+  }
+}
+
 function print(output) {
   if (!output) process.exit(0);
   process.stdout.write(JSON.stringify(output), () => process.exit(0));
@@ -1175,8 +1553,10 @@ async function main(raw) {
     automationId && event.hook_event_name === 'PreToolUse'
       ? (loadAutomationRules(readFile, automationsFile, automationId) ?? MISSING_AUTOMATION_RULES)
       : null;
+  // The task mode is for interactive chats: an automação has its own rules.
+  const task = !automationId && event.hook_event_name === 'PreToolUse' ? loadTaskRules(readFile, taskRulesFile, logLine) : null;
   const rules = loadRules(readFile, rulesDir);
-  if (!rules && !automation) return null;
+  if (!rules && !automation && !task) return null;
   const hasRepos = rules ? Object.keys(rules.repos).length > 0 : false;
   const repoRoot = hasRepos ? repoRootOf(event.cwd) : null;
   if (event.hook_event_name === 'PreToolUse') {
@@ -1194,6 +1574,7 @@ async function main(raw) {
       headless: Boolean(entrypoint?.startsWith('sdk')),
       automation,
       automationId,
+      task,
     });
   }
   if (!rules) return null;

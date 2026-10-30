@@ -260,3 +260,92 @@ describe('remembering where you were', () => {
     expect(sets.some((set) => 'scrollAnchor' in set)).toBe(false);
   });
 });
+
+describe('one step at a time', () => {
+  function stepSetup(answer) {
+    globalThis.CSS ??= { escape: (value) => value };
+    const doc = fakeDoc();
+    const out = { files: '', diff: '' };
+    Object.defineProperty(doc.getElementById('changes-files'), 'innerHTML', { get: () => out.files, set: (v) => { out.files = v; } });
+    Object.defineProperty(doc.getElementById('changes-diff'), 'innerHTML', { get: () => out.diff, set: (v) => { out.diff = v; } });
+    const asked = [];
+    const api = {
+      reviewPrefs: async (worktree, set) => (set ? {} : {}),
+      reviewSummary: async () => ({ files: [], order: [], verdict: [], contract: [] }),
+      reviewSlice: async () => ({ status: 'building', done: 0, total: 0 }),
+      reviewFile: async () => null,
+      reviewStepDiff: async (...args) => { asked.push(args); return answer; },
+      onReviewChanged() {},
+    };
+    const review = createReviewController({ api, doc });
+    review.setContext({ worktree: '/a', sessions: [] });
+    return { review, out, asked };
+  }
+  const added = { path: 'n<b>.js', status: 'added', added: 1, removed: 0, hunks: [{ id: 'h1', header: '@@ -0,0 +1 @@', newStart: 1, newLines: 1, lines: [{ kind: '+', text: 'x', oldNo: null, newNo: 1 }] }] };
+
+  it('shows the step diff with a new file, escaped, and no action buttons', async () => {
+    const { review, out, asked } = stepSetup({ n: 2, files: [added], together: false });
+    await flush();
+    review.openStep(2, { issue: 7, worktree: '/a' });
+    await flush();
+    expect(asked).toEqual([['/a', 7, 2]]);
+    expect(out.files).toContain('passo 2');
+    expect(out.files).toContain('ver o diff inteiro');
+    expect(out.files).toContain('n&lt;b&gt;.js');
+    expect(out.diff).toContain('data-hunk-id="h1"');
+    expect(out.diff).not.toContain('data-hunk-action');
+    expect(review.tab()).toBe('changes');
+  });
+
+  it('an empty step shows the "passos marcados juntos" notice', async () => {
+    const { review, out } = stepSetup({ n: 1, files: [], together: true });
+    await flush();
+    review.openStep(1, { issue: 7, worktree: '/a' });
+    await flush();
+    expect(out.diff).toContain('passos marcados juntos');
+  });
+
+  it('asks for nothing without an issue', async () => {
+    const { review, asked } = stepSetup({});
+    await flush();
+    review.openStep(1, {});
+    await flush();
+    expect(asked).toEqual([]);
+  });
+
+  it('a file load finishing late never paints over the step view', async () => {
+    globalThis.CSS ??= { escape: (value) => value };
+    const doc = fakeDoc();
+    let html = '';
+    Object.defineProperty(doc.getElementById('changes-diff'), 'innerHTML', { get: () => html, set: (v) => { html = v; } });
+    let release;
+    const late = new Promise((resolve) => { release = resolve; });
+    const whole = { path: 'a.js', status: 'modified', tscErrors: [], hunks: [{ id: 'w1', header: '@@ -1 +1 @@', newStart: 1, newLines: 1, lines: [{ kind: '+', text: 'x', oldNo: null, newNo: 1 }] }] };
+    const api = {
+      reviewPrefs: async (worktree, set) => (set ? {} : { tab: 'changes', openFiles: ['a.js'] }),
+      reviewSummary: async () => ({ files: [{ path: 'a.js', status: 'modified' }], order: ['a.js'], verdict: [], contract: [] }),
+      reviewSlice: async () => ({ status: 'building', done: 0, total: 0 }),
+      reviewFile: () => late,
+      reviewStepDiff: async () => ({ n: 1, files: [added], together: false }),
+      onReviewChanged() {},
+    };
+    const review = createReviewController({ api, doc });
+    review.setContext({ worktree: '/a', sessions: [] });
+    await flush();
+    review.openStep(1, { issue: 7, worktree: '/a', total: 2 });
+    await flush();
+    release(whole);
+    await flush();
+    expect(html).toContain('data-hunk-id="h1"');
+    expect(html).not.toContain('w1');
+    expect(html).not.toContain('data-hunk-action');
+  });
+
+  it('disables the next step past the last one the task has', async () => {
+    const { review, out } = stepSetup({ n: 2, files: [added], together: false });
+    await flush();
+    review.openStep(2, { issue: 7, worktree: '/a', total: 2 });
+    await flush();
+    expect(out.files).toMatch(/step-next"[^>]*disabled/);
+  });
+});

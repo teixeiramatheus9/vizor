@@ -39,7 +39,10 @@ import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
 import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
 import { createConductor } from './maestro/conductor.js';
 import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
-import { excludeWithPlan, isPlanEdit } from './work/plan.js';
+import { excludeWithPlan, isPlanEdit, planFileName, planFileOf, planIssueOf } from './work/plan.js';
+import { createTaskService } from './work/task-service.js';
+import { createTaskStore } from './work/task-state.js';
+import { createCheckpoints, execGit } from './work/checkpoints.js';
 import { createPlanActions, createPlanTracker } from './work/plans.js';
 import { catalogFrom, catalogStale } from './work/catalog.js';
 import { columnOf } from './agents/columns.js';
@@ -56,6 +59,8 @@ import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
+import { blocksTyping } from './session-status.js';
+import { readSnapshotWithQuestionRetry } from './question-retry.js';
 import { runClaude } from './claude-cli.js';
 import { ASR_MODELS, KWS_MODEL, VAD_MODEL, installVoiceModels, missingVoiceModels, voiceModelPaths } from './voice/models.js';
 import { otherRecorders, parsePwDump } from './voice/meeting.js';
@@ -930,10 +935,11 @@ const graphIndexers = new Map(); // checkout root → indexer
 const graphRefreshTimers = new Map();
 const maestroPlans = new Map(); // sessionId → the plan its "Vizor-plano:" line declared
 const taskTitles = new Map(); // ptyId → '#169 Menu de ação…', the tab of a chat opened for a task
+const workspaceKnowsCwd = (cwd) => workspaceProjects().includes(cwd) || [...worktreeCache.values()].some((trees) => (trees ?? []).some((tree) => tree.path === cwd));
 // The checklist each chat keeps in .vizor/plano.md, shown live (the core flow).
 const workPlans = createPlanTracker({
   readFile: (file) => fs.promises.readFile(file, 'utf8'),
-  knownCwd: (cwd) => workspaceProjects().includes(cwd) || [...worktreeCache.values()].some((trees) => (trees ?? []).some((tree) => tree.path === cwd)),
+  knownCwd: workspaceKnowsCwd,
 });
 const touchCache = new Map(); // memo of touchedFunctions, cleared when a graph changes
 
@@ -1178,11 +1184,13 @@ async function startIssue(number, { root: given = null, title = null } = {}) {
   if (existing?.sessionId) {
     await voiceOpenOrFocus({ sessionId: existing.sessionId, cwd: existing.cwd });
     taskLinks.link(root, number, existing.sessionId);
+    startTask(existing.sessionId, existing.cwd ?? root, number);
     return { sessionId: existing.sessionId };
   }
   const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number, root, title });
   if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
   taskLinks.link(root, number, opened.sessionId);
+  startTask(opened.sessionId, found.cwd ?? root, number);
   workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
   return { sessionId: opened.sessionId };
 }
@@ -1236,12 +1244,84 @@ const planActions = createPlanActions({
   planOf: (sessionId) => workPlans.planOf(sessionId),
   approve: (sessionId) => {
     workPlans.approve(sessionId);
+    // A quick task's baseline checkpoint: step 1 then has a diff and a way back.
+    taskService.approvePlan(sessionId).catch((error) => log(`task baseline failed: ${error?.stack ?? error}`));
     pushWorkspaceState();
   },
   deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
+  // The card, Ctrl+K and the voice alike: a task opens its PR only from its pr phase.
+  refusePr: (sessionId) => taskService.prRefusal(sessionId),
+  // A task with a contract is approved on its card, never by the old ok.
+  refuseApprove: (sessionId) => taskService.approveRefusal(sessionId),
 });
 const planAction = (sessionId, action) => planActions.run(sessionId, action);
 ipcMain.handle('workspace:plan', (event, { sessionId, action } = {}) => (fromWorkspace(event) ? planAction(sessionId, action) : 'failed'));
+
+// The task flow of an issue's chat (contract → tests → steps → PR): the logic
+// lives in work/task-service.js; this is its IO.
+const tasksDir = path.join(configDir, 'tarefas');
+let taskGuardSynced = false;
+const taskService = createTaskService({
+  store: createTaskStore({
+    dir: tasksDir,
+    readFile: fs.promises.readFile,
+    writeFile: fs.promises.writeFile,
+    rename: fs.promises.rename,
+    mkdir: fs.promises.mkdir,
+    readdir: fs.promises.readdir,
+    unlink: fs.promises.unlink,
+    log,
+    onError: (error) => log(`task state save failed: ${error}`),
+  }),
+  checkpoints: createCheckpoints({ git: execGit }),
+  verifier: createVerifier({ spawn }),
+  writeGuardRules: (doc) => writeFileAtomic(path.join(tasksDir, 'regras.json'), JSON.stringify(doc, null, 2)),
+  sha256File: async (file) => createHash('sha256').update(await fs.promises.readFile(file)).digest('hex'),
+  deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
+  git: (args, options) => runText('git', args, options),
+  readPlan: (worktree, issue) => fs.promises.readFile(path.join(worktree, planFileName(issue)), 'utf8'),
+  isWorking: (sessionId) => registry.sessions.get(sessionId)?.status === 'working',
+  issueClosed: async (worktree, issue) =>
+    (await runText('gh', ['issue', 'view', String(issue), '--json', 'state', '-q', '.state'], { cwd: worktree })).trim() === 'CLOSED',
+  notify: (text) =>
+    noticeBatch.push({ kind: 'waiting', urgent: true, sessionId: null, tooltip: { projectName: 'Tarefa', text, kind: 'hint', sessionId: null, speech: text } }),
+  changed: () => {
+    // A task with a gate or a locked test is enough to need the guard hook installed.
+    if (taskService.hasActive() !== taskGuardSynced) {
+      taskGuardSynced = !taskGuardSynced;
+      syncGuardHook();
+    }
+    pushWorkspaceState();
+    workspaceWindow?.send('task:changed');
+  },
+  log,
+});
+function bindTask(sessionId, cwd, number) {
+  if (sessionId && cwd) taskService.bind(sessionId, cwd, number).catch((error) => log(`task bind failed: ${error?.stack ?? error}`));
+}
+// The dev started the issue (Ctrl+K, voice, "Puxar"): a task ended on its card begins again.
+function startTask(sessionId, cwd, number) {
+  if (!sessionId || !cwd) return;
+  taskService
+    .reopen(cwd, number)
+    .then(() => taskService.bind(sessionId, cwd, number))
+    .catch((error) => log(`task start failed: ${error?.stack ?? error}`));
+}
+// The plan card's task actions, and what it shows.
+ipcMain.handle('workspace:task', async (event, { sessionId, action, arg } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof action !== 'string') return { error: 'Ação desconhecida.' };
+  try {
+    const result = await taskService.run(sessionId, action, arg);
+    // A quick task gets the old plan's ok: the card stops asking for it.
+    if (action === 'quick' && result.delivery === 'sent') workPlans.approve(sessionId);
+    return result;
+  } catch (error) {
+    log(`task ${action} failed: ${error?.stack ?? error}`);
+    return { error: 'Deu erro, veja o log.' };
+  }
+});
+ipcMain.handle('workspace:task-state', (event, sessionId) =>
+  (fromWorkspace(event) && typeof sessionId === 'string' ? taskService.state(sessionId).catch((error) => { log(`task state failed: ${error}`); return null; }) : null));
 ipcMain.on('maestro:focus', (_event, sessionId) => {
   if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
 });
@@ -2099,6 +2179,20 @@ async function generateVoiceForStop(session) {
     await voiceSession.onSessionStop({ id: session.id, lastMessage: snapshot.lastAssistantMessage });
     return;
   }
+  // A turn that ends on a plain question is urgent like an AskUserQuestion: the
+  // question itself is the notice, no Haiku tokens for a paraphrase.
+  const textQuestion = snapshot.pendingQuestion?.kind === 'text' ? snapshot.pendingQuestion.text : null;
+  if (textQuestion) {
+    registry.setManagerMessage(session.id, { message: textQuestion });
+    await bark(session, 'question', textQuestion, {
+      projectName: displayNameOf(session),
+      text: textQuestion,
+      kind: 'question',
+      optionsCount: 0,
+      sessionId: session.id,
+    });
+    return;
+  }
   let voice;
   // Mid-conversation, another chat finishing is a short fixed line: no
   // Haiku tokens for an alert that only interrupts (#161).
@@ -2121,32 +2215,27 @@ async function generateVoiceForStop(session) {
   });
 }
 
-// The Notification hook often fires BEFORE Claude Code flushes the ask entry
-// to the transcript — reading immediately misses the question and the card
-// shows no options. Retry a few times before giving up.
-const QUESTION_RETRY_DELAYS_MS = [0, 600, 1500];
-
-async function readSnapshotWithQuestionRetry(transcriptPath) {
-  let snapshot = { lastAssistantMessage: null, pendingQuestion: null };
-  for (const delayMs of QUESTION_RETRY_DELAYS_MS) {
-    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-    snapshot = await readTranscriptSnapshot(transcriptPath);
-    if (snapshot.pendingQuestion) return snapshot;
-  }
-  return snapshot;
-}
-
 async function enrichNotification(session) {
   const snapshot = session.transcriptPath
-    ? await readSnapshotWithQuestionRetry(session.transcriptPath)
+    ? await readSnapshotWithQuestionRetry(() => readTranscriptSnapshot(session.transcriptPath))
     : { pendingQuestion: null };
-  registry.setQuestion(session.id, snapshot.pendingQuestion);
-  const firstQuestion = snapshot.pendingQuestion?.questions?.[0];
+  // The Stop already announced a text question: the idle Notification that
+  // follows must not repeat it, nor drop it.
+  if (snapshot.pendingQuestion?.kind === 'text' && session.question?.kind === 'text' && !session.question.unconfirmed) {
+    registry.setManagerMessage(session.id, { message: session.question.text }); // the Notification overwrote it
+    return;
+  }
+  // Only a Stop confirms a text question (the turn ended): from here it shows
+  // as "needs you" but keeps typing blocked.
+  const pending = snapshot.pendingQuestion;
+  registry.setQuestion(session.id, pending?.kind === 'text' ? { ...pending, unconfirmed: true } : pending);
+  const firstQuestion = pending?.questions?.[0];
   // The card shows exactly what the tooltip showed — one message per chat.
-  const text = firstQuestion?.question ?? session.managerMessage;
+  const asked = firstQuestion?.question ?? (pending?.kind === 'text' ? pending.text : null);
+  const text = asked ?? session.managerMessage;
   if (!text) return;
-  if (firstQuestion) registry.setManagerMessage(session.id, { message: text });
-  const kind = firstQuestion ? 'question' : 'waiting';
+  if (asked) registry.setManagerMessage(session.id, { message: text });
+  const kind = asked ? 'question' : 'waiting';
   await bark(session, kind, text, {
     projectName: displayNameOf(session),
     text,
@@ -3103,6 +3192,8 @@ function reviewStoreFor(worktree) {
 const reviewSessionsIn = (worktree) => registry.list().filter((session) => sessionWorktree(session.id) === worktree);
 
 const reviewService = createReviewService({
+  checkpoints: createCheckpoints({ git: execGit }),
+  stepRefsOf: (worktree, issue) => taskService.checkpointsOf(worktree, issue),
   git: reviewGit,
   readFile: (file, encoding) => fs.promises.readFile(file, encoding),
   stat: (file) => fs.promises.stat(file),
@@ -3221,6 +3312,8 @@ reviewHandle('review:summary', () => null, ({ worktree }) => (reviewWorktreeOk(w
 // force: the dev clicked "abrir mesmo assim" on a diff over 3,000 lines.
 reviewHandle('review:file', () => null, ({ worktree, path: rel, force }) =>
   reviewWorktreeOk(worktree) && safeRelPath(rel) ? reviewService.file(worktree, rel, { force: force === true }) : null);
+reviewHandle('review:step-diff', (reason) => ({ error: reason }), ({ worktree, issue, n }) =>
+  reviewWorktreeOk(worktree) ? reviewService.stepDiff(worktree, Number(issue), Number(n)) : { error: BAD_REVIEW_REQUEST });
 reviewHandle('review:approve', reviewFail, async ({ worktree, hunkId, on }) => {
   if (!reviewWorktreeOk(worktree) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
   await reviewService.approve(worktree, hunkId, Boolean(on));
@@ -3372,6 +3465,11 @@ function onHookEvent(event, reply) {
       pushWorkspaceState();
     })
     .catch((error) => log(`plan follow failed: ${error}`));
+  // The task flow: a plan file written binds its chat to the issue; a Stop re-reads it and checks the locked tests.
+  const taskIssue = event?.hook_event_name === 'PostToolUse' && workspaceKnowsCwd(event.cwd) ? planIssueOf(planFileOf(event)) : null;
+  if (taskIssue) bindTask(event.session_id, event.cwd, taskIssue);
+  if (event?.hook_event_name === 'Stop' && typeof event.session_id === 'string')
+    taskService.onStop(event.session_id, event.cwd).catch((error) => log(`task stop failed: ${error?.stack ?? error}`));
   if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event?.hook_event_name)) {
     voiceSession?.onToolEvent(event);
     maestroNarrate(event);
@@ -4231,7 +4329,7 @@ function syncGuardHook() {
     if (!settings) return;
     let next;
     // An automação's guard rules need the hook even with no rule of the user's.
-    if (managerConfig.guardEnabled !== false && (approvedRuleCount() > 0 || automations.count() > 0)) {
+    if (managerConfig.guardEnabled !== false && (approvedRuleCount() > 0 || automations.count() > 0 || taskService.hasActive())) {
       const { command, offline, shim } = guardCommand({
         platform: process.platform,
         execPath: process.execPath,
@@ -4931,7 +5029,10 @@ function createVoiceSessionForApp() {
     linkTask: (number, sessionId) => {
       const root = voiceRoot();
       if (root && sessionId) taskLinks.link(root, number, sessionId);
+      // A resumed chat is bound to its task now; a new one when it writes its plan.
+      bindTask(sessionId, registry.sessions.get(sessionId)?.cwd, number);
     },
+    startTask: (number, sessionId, cwd) => startTask(sessionId, cwd ?? voiceRoot(), number),
     sessionInfo: voiceSessionInfo,
     deliverPrompt: voiceDeliverPrompt,
     askManager: voiceAskManager,
@@ -4967,12 +5068,15 @@ function createVoiceSessionForApp() {
     },
     interpret: voiceInterpret,
     planAction: async (sessionId, action) => planAction(sessionId, action),
+    taskState: (sessionId) => taskService.state(sessionId).catch(() => null),
+    taskAction: (sessionId, name) => taskService.run(sessionId, name),
+    sessionBlocked: (sessionId) => blocksTyping(registry.sessions.get(sessionId)),
     focusedSession: () => (maestroOn() ? maestroFocusId : workspaceSelectedSession ?? null),
     conductor: maestroConductor,
     // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
     startOrderNow: (sessionId) => {
       const session = registry.sessions.get(sessionId);
-      if (!session || session.question || session.needsPermission) return;
+      if (!session || blocksTyping(session)) return;
       if (session.status === 'done' || session.status === 'waiting') runConductor(maestroConductor.turnEnded(sessionId, { tests: null }));
     },
     linkedSessions: (number) => {
@@ -5376,6 +5480,8 @@ app.whenReady().then(() => {
     })
     .catch((error) => log(`automations start failed: ${error?.stack ?? error}`))
     .finally(() => markAutomationsReady());
+  // The tasks' guard rules are rewritten from their saved state, and the idle ones expire.
+  taskService.start().catch((error) => log(`tasks start failed: ${error?.stack ?? error}`));
   // The scheduler's timer does not run while the machine sleeps: recheck on wake.
   powerMonitor.on('resume', () => automations.wake());
   autoSetupBridgeOnWayland();

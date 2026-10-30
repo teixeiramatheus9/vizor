@@ -20,7 +20,7 @@ function hunkActions(hunk, untracked) {
   }).join('');
 }
 
-function renderHunk(hunk, { highlight, untracked, selected, errorsByLine }) {
+function renderHunk(hunk, { highlight, untracked, selected, errorsByLine, readOnly }) {
   // Removed lines belong to the old file and added ones to the new, so each
   // side keeps its own state; context lines advance both.
   let oldState = initialState();
@@ -51,11 +51,12 @@ function renderHunk(hunk, { highlight, untracked, selected, errorsByLine }) {
     return html;
   });
   return `<section class="hunk${selected ? ' selected' : ''}${hunk.approved ? ' approved' : ''}" data-hunk-id="${escapeHtml(hunk.id)}">`
-    + `<header class="hunk-head"><span class="hunk-header">${escapeHtml(hunk.header)}</span><span class="hunk-actions">${hunkActions(hunk, untracked)}</span></header>`
+    + `<header class="hunk-head"><span class="hunk-header">${escapeHtml(hunk.header)}</span><span class="hunk-actions">${readOnly ? '' : hunkActions(hunk, untracked)}</span></header>`
     + `${rows.join('')}</section>`;
 }
 
-export function renderFileDiff(file, { highlight, selectedHunk, forceOpen } = {}) {
+// readOnly: a step's diff, a view of what was; nothing to approve or reject.
+export function renderFileDiff(file, { highlight, selectedHunk, forceOpen, readOnly = false } = {}) {
   const path = file.path ?? '';
   const useHighlight = highlight ?? /\.(m|c)?[jt]sx?$/.test(path);
   const head = `<div class="diff-file-head" title="${escapeHtml(path)}">${escapeHtml(path)}</div>`;
@@ -71,10 +72,22 @@ export function renderFileDiff(file, { highlight, selectedHunk, forceOpen } = {}
     errorsByLine.get(err.line).push(err);
   }
   const hunks = (file.hunks ?? []).map((hunk) => renderHunk(hunk, {
-    highlight: useHighlight, untracked: !!file.untracked, selected: hunk.id === selectedHunk, errorsByLine,
+    highlight: useHighlight, untracked: !!file.untracked, selected: hunk.id === selectedHunk, errorsByLine, readOnly,
   }));
   return `${head}${hunks.join('') || '<div class="diff-note">sem mudanças</div>'}`;
 }
+
+// The bar on top of a step's file list: which step, and the way back to the whole diff.
+export function renderStepBar(n, total = null) {
+  const step = escapeHtml(n);
+  return '<div class="step-bar">'
+    + `<button class="hunk-btn" data-review-action="step-prev" title="Passo anterior"${n <= 1 ? ' disabled' : ''}>‹</button>`
+    + `<span class="step-label">passo ${step}</span>`
+    + `<button class="hunk-btn" data-review-action="step-next" title="Próximo passo"${total != null && n >= total ? ' disabled' : ''}>›</button>`
+    + '<button class="hunk-btn" data-review-action="whole-diff">ver o diff inteiro</button></div>';
+}
+
+export const STEP_TOGETHER_NOTE = 'passos marcados juntos: este passo foi marcado junto com outro, então as mudanças aparecem no último deles';
 
 // files: summary files; order: paths in reading order; approvedByFile:
 // { [path]: { approved, total } }; filter: case-insensitive path substring.

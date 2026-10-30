@@ -46,6 +46,10 @@ describe('replyRoute', () => {
   it('a fresh notice may still become a question: no typing for its first seconds (#96 review)', () => {
     expect(replyRoute({ session: inside({ status: 'waiting', updatedAt: 9000 }), claudeInFront: true, now: 10000 })).toBe('default');
   });
+  it('types into a chat that ended on a text question: its input box is free', () => {
+    const asked = inside({ status: 'done', question: { kind: 'text', text: 'Quer?' } });
+    expect(replyRoute({ session: asked, claudeInFront: true })).toBe('pty');
+  });
   it('keeps the old path otherwise', () => {
     expect(replyRoute({ session: inside({ needsPermission: true, status: 'waiting' }), claudeInFront: true })).toBe('default');
     expect(replyRoute({ session: inside({ status: 'waiting', question: question() }), claudeInFront: true })).toBe('default');

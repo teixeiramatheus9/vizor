@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { excludeWithPlan, planFileName, planFileOf, isPlanEdit, parseChecklist, planProgress } from '../src/main/work/plan.js';
+import { excludeWithPlan, planFileName, planIssueOf, planFileOf, isPlanEdit, parseChecklist, planProgress } from '../src/main/work/plan.js';
 
 describe('the músico plan file', () => {
   it('reads a markdown checklist, done and pending, ignoring the rest', () => {
@@ -18,6 +18,12 @@ describe('the músico plan file', () => {
     const steps = parseChecklist(huge);
     expect(steps).toHaveLength(30);
     expect(steps[0].text.length).toBe(200);
+  });
+
+  it('with sections, only the Passos section holds steps; without, every line does', () => {
+    const md = '## Contrato\n- [ ] solto\n\n## Passos\n- [ ] um\n- [x] dois\n\n## Notas\n- [ ] fora';
+    expect(parseChecklist(md)).toEqual([{ text: 'um', done: false }, { text: 'dois', done: true }]);
+    expect(parseChecklist('## Contrato\n- [ ] sem Passos')).toEqual([{ text: 'sem Passos', done: false }]);
   });
 
   it('progress counts the done steps and points at the first pending one', () => {
@@ -49,5 +55,13 @@ describe('the músico plan file', () => {
     expect(excludeWithPlan('')).toBe('.vizor/\n');
     expect(excludeWithPlan('node_modules')).toBe('node_modules\n.vizor/\n');
     expect(excludeWithPlan('a\n.vizor/\n')).toBeNull();
+  });
+
+  it('a task plan file names its issue; plano.md and anything else name none', () => {
+    expect(planIssueOf('plano-169.md')).toBe(169);
+    expect(planIssueOf('plano.md')).toBeNull();
+    expect(planIssueOf('plano-0.md')).toBeNull();
+    expect(planIssueOf(null)).toBeNull();
+    expect(planIssueOf('x/plano-1.md')).toBeNull();
   });
 });

@@ -63,6 +63,7 @@ export function issueNumberIn(text) {
   const verb = tokens.findIndex((token) => PICK_VERB.test(token));
   return verb !== -1 ? spokenNumber(tokens.slice(verb + 1)) : null;
 }
+const taskAction = (action, number = null) => ({ type: 'task-action', action, number: number ? Number(number) : null });
 const HANDOVER = /\b(da|de|passa|passe|manda|mande|entrega|entregue)\b.*\b(ela|essa|isso|esta)\b.*\b(musico|chat|agente)\b/;
 
 const NOT_A_NAME = new Set(['e', 'me', 'pra', 'para', 'que', 'com', 'mas', 'depois', 'ai', 'entao', 've', 'olha']);
@@ -85,6 +86,14 @@ const ALWAYS = [
   // The plan card's buttons, of the chat in front or of a task.
   [/^(aprova|aprovo|aprovar|aprove) (o )?plano( d[ao] (task |tarefa |issue )?(\d+))?$/, (match) => ({ type: 'approve-plan', number: match[5] ? Number(match[5]) : null })],
   [/^(o )?plano (ta |esta )?aprovado$/, () => ({ type: 'approve-plan', number: null })],
+  // The contract flow (the plan card's buttons): of the chat in front or of a task.
+  [/^(aprova|aprovo|aprovar|aprove) (o )?contrato( d[ao] (task |tarefa |issue )?(\d+))?$/, (match) => taskAction('approve-contract', match[5])],
+  [/^(o )?contrato (ta |esta )?aprovado$/, () => taskAction('approve-contract')],
+  [/^(aprova|aprovo|aprovar|aprove) (os )?testes( d[ao] (task |tarefa |issue )?(\d+))?$/, (match) => taskAction('approve-tests', match[5])],
+  // Bare "segue"/"pode seguir" may be an answer to the chat: only "ok" or the step named.
+  [/^(ok (segue|seguir|pode seguir|segue em frente)|(segue pro |vai pro )?proximo passo)$/, () => taskAction('next-step')],
+  [/^(qual (e )?)?(a )?(minha|sua) vez$/, () => taskAction('my-turn')],
+  [/^(destrava|destrave|destravar|libera|liberar) (os )?testes( d[ao] (task |tarefa |issue )?(\d+))?$/, (match) => taskAction('unlock-tests', match[5])],
   [/^(abre|abrir|abra) (a )?(pr|pull request)( d[ao] (task |tarefa |issue )?(\d+))?$/, (match) => ({ type: 'open-pr', number: match[6] ? Number(match[6]) : null })],
   [/^(retoma|retomar|volta (pra|para)|abre|abrir|continua|continuar) (a |o )?(task|tarefa|issue|pr|demanda) (numero )?(\d+)$/, (match) => ({ type: 'resume-task', number: Number(match[6]) })],
   [/^(fala|falar|conversa) com o chat (da |do |de )?(.+)$/, (match, raw) => ({ type: 'talk-to-chat', query: rawTail(raw, match[3]) })],

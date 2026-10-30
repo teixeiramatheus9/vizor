@@ -20,6 +20,7 @@ describe('comment store', () => {
     add(store, 'a');
     expect(store.nextToSend('s1', { status: 'waiting', needsPermission: true })).toBeNull();
     expect(store.nextToSend('s1', { status: 'waiting', question: { questions: [{}] } })).toBeNull();
+    expect(store.nextToSend('s1', { status: 'done', question: { kind: 'text', text: 'Quer?' } })?.status).toBe('queued');
     expect(store.nextToSend('s1', { status: 'waiting' }).id).toBe('c1');
     expect(store.nextToSend('s1', null)).toBeNull();
   });

@@ -1,3 +1,5 @@
+import { blocksTyping } from './session-status.js';
+
 // Where bubble clicks and panel actions go once the workspace exists (#96).
 // Pure: index.js feeds the facts, tests pin the rules.
 
@@ -22,7 +24,7 @@ const NOTICE_SETTLE_MS = 3000;
 // (done), or idle-waiting once the notice settled with no question or
 // permission prompt — never into a dialog (#96 review; shared with #95).
 export function safeToTypeIdle(session, now) {
-  if (!session || session.needsPermission || session.question) return false;
+  if (!session || blocksTyping(session)) return false;
   if (session.status === 'done') return true;
   return session.status === 'waiting' && now - (session.updatedAt ?? now) > NOTICE_SETTLE_MS;
 }

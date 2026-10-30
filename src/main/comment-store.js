@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { blocksTyping } from './session-status.js';
 
 // 💬 comments per session (#95), in memory like the edits they point at.
 // The hold rule lives here: nothing goes out while a permission prompt or a
@@ -34,7 +35,7 @@ export function createCommentStore({ now = Date.now, newId = randomUUID } = {}) 
   store.list = (sessionId) => [...(bySession.get(sessionId) ?? [])];
 
   store.nextToSend = (sessionId, session) => {
-    if (!session || session.needsPermission || session.question) return null;
+    if (!session || blocksTyping(session)) return null;
     const comments = bySession.get(sessionId) ?? [];
     if (comments.some((comment) => comment.status === 'sending')) return null;
     return comments.find((comment) => comment.status === 'queued') ?? null;

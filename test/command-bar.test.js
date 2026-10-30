@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCommands, filterCommands, renderCommandList } from '../src/renderer/command-bar.js';
+import { buildCommands, createConfirmGate, filterCommands, renderCommandList } from '../src/renderer/command-bar.js';
 
 const issues = [
   { number: 169, title: 'Menu de ação ao clicar no ícone do Vizor' },
@@ -92,5 +92,43 @@ describe('automações in the command bar', () => {
     expect(runs[0].action).toEqual({ type: 'run-automation', id: 'a1' });
     expect(filterCommands(items, 'rodar prs').map((item) => item.id)).toEqual(['automation:run:a1']);
     expect(filterCommands(items, 'ir pra automacoes').map((item) => item.action.tab)).toEqual(['automations']);
+  });
+});
+
+describe('the Ctrl+K bar — the contract flow', () => {
+  const chats2 = [{ sessionId: 's1', name: '#169 menu', status: 'done' }];
+  const labelsOf = (task, extra = {}) => buildCommands({ chats: chats2, focusedId: 's1', tasks: { s1: task }, ...extra }).filter((i) => i.action?.type === 'task');
+
+  it('offers what the phase allows, by the service action name', () => {
+    expect(labelsOf({ phase: 'contract' }).map((i) => i.action)).toEqual([{ type: 'task', sessionId: 's1', name: 'approveContract' }]);
+    expect(labelsOf({ phase: 'tests' }).map((i) => i.action.name)).toEqual(['approveTests']);
+    expect(labelsOf({ phase: 'steps', steps: [{ n: 1, done: false }], tests: { locked: ['a.test.js'] } }).map((i) => i.action.name)).toEqual(['okNext', 'unlockTests']);
+  });
+
+  it('"sua vez" points at the pending [dev] step, read only', () => {
+    const items = labelsOf({ phase: 'steps', current: 2, steps: [{ n: 2, dev: true, done: false }], devTodos: [{ file: 'src/a.js', line: 12 }] });
+    expect(items.find((i) => i.action.name === 'myTurn')).toMatchObject({ label: expect.stringContaining('src/a.js:12') });
+  });
+
+  it('offers nothing for a quick task, and never types into a chat with a dialog', () => {
+    expect(labelsOf({ phase: 'quick' })).toEqual([]);
+    expect(labelsOf({ phase: 'contract' }, { blocked: ['s1'] })).toEqual([]);
+  });
+});
+
+describe('the confirm gate', () => {
+  it('runs only on a second press of the same item within the window', () => {
+    let t = 0;
+    const gate = createConfirmGate({ now: () => t, windowMs: 4000 });
+    expect(gate.press('a')).toBe('armed');
+    t = 1000;
+    expect(gate.press('a')).toBe('run');
+    expect(gate.press('a')).toBe('armed'); // consumed
+    t = 6000;
+    expect(gate.press('a')).toBe('armed'); // window passed
+    expect(gate.press('b')).toBe('armed');
+    expect(gate.press('a')).toBe('armed'); // another item disarmed it
+    gate.reset();
+    expect(gate.press('a')).toBe('armed');
   });
 });
