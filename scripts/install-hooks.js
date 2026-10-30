@@ -197,6 +197,61 @@ export function ensureGuard(settings, command) {
   return next;
 }
 
+// The status-line tap (src/hook/statusline-tap.js) wraps the dev's own
+// statusLine: the original command and padding live in a sidecar file in the
+// config dir, and settings.json only carries the tap command.
+export const STATUSLINE_MARKER = 'statusline-tap';
+
+export const isStatusLineTap = (command) => String(command ?? '').includes(STATUSLINE_MARKER);
+
+export function buildStatusLineCommand({ platform, execPath, tapScript, shimDir }) {
+  if (platform === 'win32') {
+    const shimPath = path.win32.join(shimDir, 'statusline-tap.cmd');
+    const content = [
+      '@echo off',
+      'set ELECTRON_RUN_AS_NODE=1',
+      `"${execPath}" "${tapScript}" %*`,
+      '',
+    ].join('\r\n');
+    return { command: `"${shimPath}"`, shim: { path: shimPath, content } };
+  }
+  return { command: `ELECTRON_RUN_AS_NODE=1 "${execPath}" "${tapScript}"`, shim: null };
+}
+
+// original: { command, padding? } the dev had, null when there was none, or
+// undefined when already tapped (the sidecar keeps what it has).
+export function ensureStatusLine(settings, tapCommand) {
+  const current = settings.statusLine;
+  if (isStatusLineTap(current?.command)) {
+    if (current.command === tapCommand) return { settings, original: undefined };
+    return { settings: { ...settings, statusLine: { ...current, command: tapCommand } }, original: undefined };
+  }
+  const hasOriginal = typeof current?.command === 'string' && current.command.trim() !== '';
+  const original = hasOriginal
+    ? { command: current.command, ...(current.padding !== undefined ? { padding: current.padding } : {}) }
+    : null;
+  const statusLine = {
+    type: 'command',
+    command: tapCommand,
+    ...(original?.padding !== undefined ? { padding: original.padding } : {}),
+  };
+  return { settings: { ...settings, statusLine }, original };
+}
+
+export function removeStatusLine(settings, original) {
+  if (!isStatusLineTap(settings.statusLine?.command)) return settings;
+  const { statusLine, ...rest } = settings;
+  if (!original) return rest;
+  return {
+    ...rest,
+    statusLine: {
+      type: 'command',
+      command: original.command,
+      ...(original.padding !== undefined ? { padding: original.padding } : {}),
+    },
+  };
+}
+
 function main() {
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const hookScript = path.resolve(scriptDir, '..', 'src', 'hook', 'hook-emit.js');
