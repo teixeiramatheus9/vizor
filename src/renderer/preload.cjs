@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld('manager', {
   getInboundPolicy: () => ipcRenderer.invoke('inbound:get'),
   setInboundPolicy: (value) => ipcRenderer.invoke('inbound:set', value),
   limitsSettings: () => ipcRenderer.invoke('limits:settings'),
-  limitsReconnect: () => ipcRenderer.invoke('limits:reconnect'),
+  limitsReconnect: () => ipcRenderer.invoke('limits:reconnect', { confirmed: true }),
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (partial) => ipcRenderer.invoke('config:set', partial),
   onState: (callback) => ipcRenderer.on('state', (_event, state) => callback(state)),

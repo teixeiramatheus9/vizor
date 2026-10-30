@@ -3779,9 +3779,12 @@ function limitsSettingsInfo() {
     overrides: projectStatusLineOverrides(workspaceProjects()),
   };
 }
-ipcMain.handle('limits:settings', () => limitsSettingsInfo());
+const fromSettings = (event) => Boolean(settingsWindow && !settingsWindow.isDestroyed() && event.sender === settingsWindow.webContents);
+ipcMain.handle('limits:settings', (event) => (fromSettings(event) ? limitsSettingsInfo() : null));
 // "reconectar": the user confirmed, so the CURRENT statusLine becomes the original.
-ipcMain.handle('limits:reconnect', () => {
+// It writes ~/.claude/settings.json: only the settings window, and only confirmed.
+ipcMain.handle('limits:reconnect', (event, options) => {
+  if (!fromSettings(event) || options?.confirmed !== true) return null;
   syncLimitsTap({ force: true });
   limits.reconfigure();
   return limitsSettingsInfo();

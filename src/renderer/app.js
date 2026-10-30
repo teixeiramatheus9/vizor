@@ -870,7 +870,7 @@ function renderLimitsInfo(info) {
   );
 }
 
-const refreshLimitsInfo = () => window.manager.limitsSettings().then(renderLimitsInfo).catch(() => {});
+const refreshLimitsInfo = () => window.manager.limitsSettings().then((info) => info && renderLimitsInfo(info)).catch(() => {});
 window.manager.getConfig().then((config) => renderLimitsConfig(config.limits));
 document.querySelector('[data-section="limites"].nav-item')?.addEventListener('click', refreshLimitsInfo);
 refreshLimitsInfo();
@@ -891,7 +891,10 @@ limWarn.addEventListener('input', () => {
 limWarn.addEventListener('change', () => window.manager.setConfig({ limits: { warnAt: Number(limWarn.value) } }));
 document.getElementById('lim-reconnect').addEventListener('click', () => {
   if (!window.confirm('Reconectar troca a sua status line atual pela do Vizor (a sua é guardada e volta ao desligar). Continuar?')) return;
-  window.manager.limitsReconnect().then(renderLimitsInfo);
+  window.manager
+    .limitsReconnect()
+    .then((info) => info && renderLimitsInfo(info))
+    .catch(() => {});
 });
 
 // Settings › voz (#161). Linux only: elsewhere the section and its
