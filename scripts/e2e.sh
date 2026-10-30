@@ -19,4 +19,5 @@ DISPLAY="$display" node test/e2e/review.e2e.mjs
 DISPLAY="$display" node test/e2e/contract.e2e.mjs
 DISPLAY="$display" node test/e2e/tabs.e2e.mjs
 DISPLAY="$display" node test/e2e/automations.e2e.mjs
+DISPLAY="$display" node test/e2e/limits.e2e.mjs
 DISPLAY="$display" node test/e2e/perf.e2e.mjs
