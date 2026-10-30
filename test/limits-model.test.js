@@ -71,11 +71,9 @@ describe('limits-model', () => {
   it('an older lower reading never lowers the window', () => {
     const R = T0 + 4 * H;
     let r = read(emptyState(), rl(60, R), T0);
-    const before = JSON.stringify(r.state);
     r = read(r.state, rl(40, R), T0 + 1000);
     expect(r.state.windows.fiveHour.pct).toBe(60);
     expect(r.state.windows.fiveHour.history).toEqual([[T0, 60]]);
-    expect(JSON.stringify(emptyState())).not.toBe(before);
   });
 
   it('a disabled window updates but emits nothing', () => {
@@ -104,10 +102,11 @@ describe('limits-model', () => {
   it('does not mutate its input', () => {
     const R = T0 + 4 * H;
     const st = read(emptyState(), rl(10, R), T0, { costUsd: 1 }).state;
-    const snap = JSON.stringify(st);
+    const snap = structuredClone(st);
     read(st, rl(90, R), T0 + 1, { costUsd: 2 });
+    read(st, rl(5, R + 5 * H), T0 + 2, { costUsd: 3 });
     due(st, R + 1, S);
-    expect(JSON.stringify(st)).toBe(snap);
+    expect(st).toEqual(snap);
   });
 
   it('shares split the window gain by in-window spend and never go negative', () => {
@@ -150,5 +149,53 @@ describe('limits-model', () => {
     expect(byId.old).toBeCloseTo(15); // gain 25 (30 - 5), 3/5
     expect(byId.new).toBeCloseTo(10);
     expect(shares(st).outside).toBeCloseTo(5);
+  });
+
+  it('a new window closes an exhausted old one with back, once', () => {
+    const R1 = T0 + H;
+    let r = read(emptyState(), rl(100, R1), T0);
+    r = read(r.state, rl(3, R1 + 5 * H), R1 + 1000);
+    expect(r.events).toEqual([{ kind: 'limit-back', window: 'fiveHour', pct: 100, resetsAt: R1 }]);
+    expect(kinds(due(r.state, R1 + 2000, S))).toEqual([]);
+  });
+
+  it('a new window closes a non-exhausted old one with reset only when enabled', () => {
+    const R1 = T0 + H;
+    const on = { ...S, resetNotice: true };
+    let r = read(emptyState(), rl(30, R1), T0, {}, on);
+    r = read(r.state, rl(3, R1 + 5 * H), R1 + 1000, {}, on);
+    expect(r.events).toEqual([{ kind: 'limit-reset', window: 'fiveHour', pct: 30, resetsAt: R1 }]);
+    r = read(r.state, rl(4, R1 + 5 * H), R1 + 2000, {}, on);
+    expect(r.events).toEqual([]);
+    const off = read(emptyState(), rl(30, R1), T0);
+    expect(kinds(read(off.state, rl(3, R1 + 5 * H), R1 + 1000))).toEqual([]);
+    const dis = { ...on, fiveHour: false };
+    const d = read(emptyState(), rl(100, R1), T0, {}, dis);
+    expect(read(d.state, rl(3, R1 + 5 * H), R1 + 1000, {}, dis).events).toEqual([]);
+  });
+
+  it('the share baseline survives more than 300 fractional changes', () => {
+    const R = T0 + 4 * H;
+    let st = read(emptyState(), rl(10, R), T0, { costUsd: 1 }).state;
+    for (let i = 1; i <= 350; i++) st = read(st, rl(10 + i * 0.1, R), T0 + i, { costUsd: 1 + i }).state;
+    expect(st.windows.fiveHour.startPct).toBe(10);
+    expect(st.windows.fiveHour.history).toHaveLength(300);
+    const s = shares(st);
+    expect(s.chats[0].pct).toBeCloseTo(35);
+    expect(s.outside).toBeCloseTo(10);
+  });
+
+  it('a chat whose last reading is exactly 5 h before resetsAt counts as in-window', () => {
+    const R1 = T0 + H;
+    const R2 = R1 + 5 * H;
+    let st = read(emptyState(), rl(50, R1), T0, { costUsd: 10 }).state;
+    st = read(st, null, R1, { costUsd: 11 }).state; // lastAt === R2 - 5h
+    st = read(st, rl(5, R2), R1 + 1000, { costUsd: 12 }).state;
+    expect(st.sessions.a.firstCost).toBe(12);
+    // one ms earlier it would count as before the window
+    let early = read(emptyState(), rl(50, R1), T0, { costUsd: 10 }).state;
+    early = read(early, null, R1 - 1, { costUsd: 11 }).state;
+    early = read(early, rl(5, R2), R1 + 1000, { costUsd: 12 }).state;
+    expect(early.sessions.a.firstCost).toBe(11);
   });
 });

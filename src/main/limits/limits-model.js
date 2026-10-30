@@ -35,7 +35,7 @@ function foldWindow(old, raw, now) {
   const resetsAt = Number(raw?.resets_at) * 1000;
   if (!Number.isFinite(pct) || !Number.isFinite(resetsAt) || resetsAt <= now) return { win: old };
   if (!old || Math.abs(resetsAt - old.resetsAt) > SAME_WINDOW_MS) {
-    return { win: { pct, resetsAt, seenAt: now, startedAt: now, history: [[now, pct]] }, fresh: true, prev: old };
+    return { win: { pct, resetsAt, seenAt: now, startedAt: now, startPct: pct, history: [[now, pct]] }, fresh: true, prev: old };
   }
   const next = Math.max(old.pct, pct);
   const history = next === old.pct ? old.history : [...old.history, [now, next]].slice(-HISTORY_CAP);
@@ -76,10 +76,10 @@ export function reduce(state, reading, now, settings) {
     const on = enabled(settings, w);
     // A new window proves the old one is over: close its pending notice now.
     if (fresh && prev && on) {
-      const st = { fired };
-      if (prev.pct >= 100 && !isFired(st, w, prev.resetsAt, 'back')) {
-        events.push(event('limit-back', w, prev));
-        fired = markFired(fired, w, prev.resetsAt, 'back');
+      const kind = pendingKind({ fired }, w, prev, settings);
+      if (kind) {
+        events.push(event(kind, w, prev));
+        fired = markFired(fired, w, prev.resetsAt, kind === 'limit-back' ? 'back' : 'reset');
       }
     }
     windows[w] = win;
@@ -139,7 +139,7 @@ export function shares(state) {
   const win = state.windows.fiveHour;
   if (!win) return { chats: [], outside: 0 };
   const key = String(win.resetsAt);
-  const base = win.history[0]?.[1] ?? 0;
+  const base = win.startPct ?? win.history[0]?.[1] ?? 0;
   const gain = Math.max(0, win.pct - base);
   const rows = Object.entries(state.sessions)
     .filter(([, s]) => s.windowKey === key)
