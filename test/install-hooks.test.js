@@ -295,10 +295,22 @@ describe('status-line tap installer', () => {
   it('ensure then remove restores the exact original', () => {
     const settings = { model: 'opus', statusLine: { type: 'command', command: 'my-line "$X"', padding: 2 } };
     const { settings: tapped, original } = ensureStatusLine(settings, TAP);
-    expect(original).toEqual({ command: 'my-line "$X"', padding: 2 });
+    expect(original).toEqual(settings.statusLine);
     expect(tapped.statusLine).toEqual({ type: 'command', command: TAP, padding: 2 });
     expect(tapped.model).toBe('opus');
     expect(removeStatusLine(tapped, original)).toEqual(settings);
+  });
+
+  it('keeps every key of the dev statusLine through a round trip', () => {
+    const settings = { statusLine: { type: 'command', command: 'mine', padding: 1, refreshInterval: 5 } };
+    const { settings: tapped, original } = ensureStatusLine(settings, TAP);
+    expect(tapped.statusLine.refreshInterval).toBe(5);
+    expect(removeStatusLine(tapped, original)).toEqual(settings);
+  });
+
+  it('does not take a user script with the tap name inside for the tap', () => {
+    expect(isStatusLineTap('~/bin/statusline-tap-foo.sh')).toBe(false);
+    expect(isStatusLineTap('node /x/statusline-tap.js')).toBe(true);
   });
 
   it('is a no-op on an already tapped settings', () => {

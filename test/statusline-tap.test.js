@@ -167,4 +167,68 @@ describe('statusline-tap', () => {
     const result = await runTap(PAYLOAD, ctx);
     expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
   });
+
+  it('does not loop when the sidecar points at the tap', async () => {
+    const ctx = await makeHome({ command: `node "${tapScript}"` });
+    const started = Date.now();
+    const result = await runTap(PAYLOAD, ctx);
+    expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('prints nothing and sends nothing when already inside a tap', async () => {
+    const ctx = await makeHome({ command: 'echo hi' });
+    const result = await runTap(PAYLOAD, { ...ctx, env: { VIZOR_TAP_ACTIVE: '1' } });
+    expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
+  });
+
+  it('keeps the tap runtime switches out of the original env', async () => {
+    const ctx = await makeHome({ command: 'echo "[${ELECTRON_RUN_AS_NODE-unset}]"' });
+    const result = await runTap(PAYLOAD, { ...ctx, env: { ELECTRON_RUN_AS_NODE: '1' } });
+    expect(result.stdout).toBe('[unset]\n');
+  });
+
+  it('adds almost nothing when the socket never reads', async () => {
+    const ctx = await makeHome({ command: 'true' });
+    const socketPath = path.join(ctx.home, 's.sock');
+    const server = net.createServer((conn) => conn.pause());
+    await new Promise((r) => server.listen(socketPath, r));
+    const time = async (env) => {
+      const t = Date.now();
+      await runTap(PAYLOAD, { ...ctx, env });
+      return Date.now() - t;
+    };
+    await time({});
+    const base = Math.min(await time({}), await time({}));
+    const withSocket = Math.min(...[await time({ VIZOR_SOCKET: socketPath }), await time({ VIZOR_SOCKET: socketPath })]);
+    server.close();
+    expect(withSocket - base).toBeLessThan(80);
+  });
+
+  it.skipIf(process.platform === 'win32')('kills the whole original on SIGTERM', async () => {
+    const ctx = await makeHome({ command: 'sleep 30 & echo $! > "$PIDFILE"; wait' });
+    const pidFile = path.join(ctx.home, 'pid');
+    const child = spawn(process.execPath, [tapScript], {
+      env: { ...process.env, HOME: ctx.home, USERPROFILE: ctx.home, VIZOR_INTERNAL: '', VIZOR_SOCKET: '', PIDFILE: pidFile },
+    });
+    child.stdin.end(PAYLOAD);
+    const closed = new Promise((resolve) => child.on('close', (code) => resolve(code)));
+    const { readFile } = await import('node:fs/promises');
+    let pid = 0;
+    for (let i = 0; i < 100 && !pid; i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      pid = Number(await readFile(pidFile, 'utf8').catch(() => '')) || 0;
+    }
+    expect(pid).toBeGreaterThan(0);
+    child.kill('SIGTERM');
+    expect(await closed).toBe(143);
+    await new Promise((r) => setTimeout(r, 200));
+    let alive = true;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+    expect(alive).toBe(false);
+  });
 });

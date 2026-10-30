@@ -202,7 +202,10 @@ export function ensureGuard(settings, command) {
 // config dir, and settings.json only carries the tap command.
 export const STATUSLINE_MARKER = 'statusline-tap';
 
-export const isStatusLineTap = (command) => String(command ?? '').includes(STATUSLINE_MARKER);
+// The tap script (or its Windows shim) as a path segment: a user's own
+// ~/bin/statusline-tap-foo.sh is not ours.
+const STATUSLINE_TAP = /(^|[\\/"'\s])statusline-tap\.(js|cmd)(["'\s]|$)/;
+export const isStatusLineTap = (command) => STATUSLINE_TAP.test(String(command ?? ''));
 
 export function buildStatusLineCommand({ platform, execPath, tapScript, shimDir }) {
   if (platform === 'win32') {
@@ -218,8 +221,8 @@ export function buildStatusLineCommand({ platform, execPath, tapScript, shimDir 
   return { command: `ELECTRON_RUN_AS_NODE=1 "${execPath}" "${tapScript}"`, shim: null };
 }
 
-// original: { command, padding? } the dev had, null when there was none, or
-// undefined when already tapped (the sidecar keeps what it has).
+// original: the whole statusLine object the dev had (every key), null when
+// there was none, or undefined when already tapped (the sidecar keeps what it has).
 export function ensureStatusLine(settings, tapCommand) {
   const current = settings.statusLine;
   if (isStatusLineTap(current?.command)) {
@@ -227,29 +230,15 @@ export function ensureStatusLine(settings, tapCommand) {
     return { settings: { ...settings, statusLine: { ...current, command: tapCommand } }, original: undefined };
   }
   const hasOriginal = typeof current?.command === 'string' && current.command.trim() !== '';
-  const original = hasOriginal
-    ? { command: current.command, ...(current.padding !== undefined ? { padding: current.padding } : {}) }
-    : null;
-  const statusLine = {
-    type: 'command',
-    command: tapCommand,
-    ...(original?.padding !== undefined ? { padding: original.padding } : {}),
-  };
+  const original = hasOriginal ? { ...current } : null;
+  const statusLine = { ...(original ?? {}), type: 'command', command: tapCommand };
   return { settings: { ...settings, statusLine }, original };
 }
 
 export function removeStatusLine(settings, original) {
   if (!isStatusLineTap(settings.statusLine?.command)) return settings;
   const { statusLine, ...rest } = settings;
-  if (!original) return rest;
-  return {
-    ...rest,
-    statusLine: {
-      type: 'command',
-      command: original.command,
-      ...(original.padding !== undefined ? { padding: original.padding } : {}),
-    },
-  };
+  return original ? { ...rest, statusLine: { ...original } } : rest;
 }
 
 function main() {
