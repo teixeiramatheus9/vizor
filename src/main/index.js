@@ -13,7 +13,7 @@ import {
   systemPreferences,
   Tray,
 } from 'electron';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -62,9 +62,16 @@ import {
   readConversationTail,
   readEditReason,
   readLastBashCommand,
+  readFirstPrompt,
   readInterrupted,
   readTranscriptSnapshot,
 } from './transcript.js';
+import { createHash } from 'node:crypto';
+import { createReviewService } from './review/service.js';
+import { createReviewStore, storeKey } from './review/review-store.js';
+import { createVerifier } from './review/verify.js';
+import { composeMessage, rejectNotice } from './review/compose.js';
+import { safeRelPath, sanitizePrefs } from './review/ipc-guard.js';
 import { EditTracker } from './edit-tracker.js';
 import { createEditPipeline } from './edit-pipeline.js';
 import { readIndexVersion } from './git-files.js';
@@ -660,9 +667,9 @@ function graphFor(root) {
       parse: (source, relPath) => parser.parse(source, relPath),
     });
     indexer.on('graph', (graph) => {
-      if (graphIndexers.get(root) !== indexer) return; // from before the Maestro went off
+      if (graphIndexers.get(root) !== indexer) return; // dropped while it was parsing
       touchCache.clear();
-      workspaceWindow?.send('maestro:graph', { root, graph });
+      notifyReview(root); // the Impacto tab polls again: the indexer reports no progress
       pushWorkspaceState();
     });
     graphIndexers.set(root, indexer);
@@ -671,16 +678,39 @@ function graphFor(root) {
   return indexer;
 }
 
-// A músico's edit: that file is parsed again, at most every 0.5 s per checkout.
+// The graphs outlive the Maestro (the review screen reads them too): they are
+// dropped only after the workspace window stayed hidden or minimized this long,
+// and never while the Maestro is on (it reads them with the window hidden).
+const GRAPH_DISCARD_MS = 10 * 60 * 1000;
+let graphDiscardTimer = null;
+function armGraphDiscard() {
+  clearTimeout(graphDiscardTimer);
+  graphDiscardTimer = setTimeout(() => {
+    graphDiscardTimer = null;
+    if (maestroOn()) return;
+    for (const timer of graphRefreshTimers.values()) clearTimeout(timer);
+    graphRefreshTimers.clear();
+    graphIndexers.clear();
+    graphParser?.close();
+    graphParser = null;
+  }, GRAPH_DISCARD_MS);
+}
+function disarmGraphDiscard() {
+  clearTimeout(graphDiscardTimer);
+  graphDiscardTimer = null;
+}
+
+// An edit by any session whose worktree has a graph: that file is parsed
+// again, at most every 0.5 s per checkout.
 function graphTouched(event) {
-  const musician = maestroOrchestra.find((item) => item.sessionId === event?.session_id);
+  const root = sessionWorktree(event?.session_id);
   const filePath = event?.tool_input?.file_path ?? event?.tool_input?.notebook_path;
-  const indexer = musician?.root && graphIndexers.get(musician.root);
+  const indexer = root && graphIndexers.get(root);
   if (!indexer || !filePath) return;
-  indexer.touch(path.relative(musician.root, filePath).split(path.sep).join('/'));
-  clearTimeout(graphRefreshTimers.get(musician.root));
+  indexer.touch(path.relative(root, filePath).split(path.sep).join('/'));
+  clearTimeout(graphRefreshTimers.get(root));
   graphRefreshTimers.set(
-    musician.root,
+    root,
     setTimeout(() => indexer.refreshTouched().catch((error) => log(`graph refresh failed: ${error}`)), 500),
   );
 }
@@ -705,8 +735,6 @@ function maestroImpacts() {
   }
   return impacts;
 }
-
-ipcMain.handle('maestro:graph', (_event, root) => (typeof root === 'string' ? graphFor(root)?.graph() ?? null : null));
 
 // --- the conducting gerente (#162): your orders, kept until a músico's turn ends
 const maestroConductor = createConductor({ lang: () => spokenLang() });
@@ -1862,6 +1890,7 @@ workspaceWindow = workspaceAvailable(process.platform)
           log(`workspace bounds save failed: ${error}`);
         }
       },
+      onFocus: () => onWorkspaceFocus(),
       onShow: () => {
         refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
       },
@@ -2408,7 +2437,10 @@ const commandWatcher = createCommandWatcher({
   // A change is explained by an edit still in flight in ANY session; landed
   // edits are matched by content in recordCommandChange.
   explained: (_owners, abs) => editTracker.explains(abs, realPathOf),
-  onChange: (change) => recordCommandChange(change).catch((error) => log(`command change failed: ${error}`)),
+  onChange: (change) => {
+    reviewService.invalidate(change.root);
+    recordCommandChange(change).catch((error) => log(`command change failed: ${error}`));
+  },
   // The user's uncommitted work at task start: a later command change is
   // diffed against THIS, never against the index (#94 review).
   onBaseline: ({ root, files }) => {
@@ -2662,6 +2694,252 @@ ipcMain.on('workspace:selected', (event, sessionId) => {
   if (fromWorkspace(event)) workspaceSelectedSession = typeof sessionId === 'string' ? sessionId : null;
 });
 
+// --- review screen (#revisão, phase 1) --------------------------------------
+// Wiring only: the logic lives in src/main/review/. The renderer asks through
+// IPC, and a worktree it names must be one the workspace already knows.
+const reviewRoots = new Set(); // worktrees the verifier may have processes in
+
+// git for the review service: stdin for `apply`/`cat-file --batch`, room for a
+// whole `git diff`. --no-optional-locks: it must never block the AI's own git.
+const reviewGit = (args, cwd, stdin) =>
+  new Promise((resolve, reject) => {
+    const child = execFile(
+      'git',
+      ['--no-optional-locks', ...args],
+      { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 30000 },
+      (error, stdout) => (error ? reject(error) : resolve(stdout)),
+    );
+    child.stdin?.on('error', () => {}); // git exited before reading all of it
+    child.stdin?.end(stdin ?? '');
+  });
+
+const reviewVerifier = createVerifier({ spawn });
+const reviewStores = new Map(); // worktree → { load, approve, prune, setPrefs, prefs }
+function reviewStoreFor(worktree) {
+  let entry = reviewStores.get(worktree);
+  if (!entry) {
+    const store = createReviewStore({
+      readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+      writeFile: (file, data) => fs.promises.writeFile(file, data),
+      rename: (from, to) => fs.promises.rename(from, to),
+      mkdir: (dir, options) => fs.promises.mkdir(dir, options),
+      onError: (error) => log(`review state save failed: ${error}`),
+      dir: path.join(configDir, 'revisao'),
+      key: storeKey(worktree),
+      setTimeout,
+      clearTimeout,
+    });
+    // load() resets what is in memory: it runs once, for the service and for prefs alike.
+    let loaded = null;
+    let prefs = {};
+    const load = () => (loaded ??= store.load().then((result) => { prefs = result.prefs; return result; }));
+    entry = {
+      load,
+      approve: (id, on) => store.approve(id, on),
+      prune: (ids) => store.prune(ids),
+      flush: () => store.flush(),
+      setPrefs(partial) { prefs = { ...prefs, ...partial }; store.setPrefs(partial); },
+      async prefs() { await load(); return prefs; },
+    };
+    reviewStores.set(worktree, entry);
+  }
+  return entry;
+}
+
+const reviewSessionsIn = (worktree) => registry.list().filter((session) => sessionWorktree(session.id) === worktree);
+
+const reviewService = createReviewService({
+  git: reviewGit,
+  readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+  stat: (file) => fs.promises.stat(file),
+  graphFor,
+  graphBuilt: (root) => graphIndexers.get(root)?.graph() ?? null,
+  verifier: reviewVerifier,
+  storeFor: reviewStoreFor,
+  sessionsOf: reviewSessionsIn,
+  // Nothing runs before the workspace window first shows (its 'show' resumes it).
+  startPaused: true,
+  log,
+});
+
+const sendReviewChanged = (worktree) => {
+  if (workspaceWindow?.isReady()) workspaceWindow.send('review:changed', { worktree });
+};
+// The service holds its own notices while paused; the rest (a graph batch,
+// an issue body, a first prompt landing) wait here while the window is hidden
+// and go out once when it shows again.
+let reviewWindowHidden = true; // until the workspace window first shows
+const reviewHeldNotices = new Set();
+const notifyReview = (worktree) => {
+  if (reviewWindowHidden) reviewHeldNotices.add(worktree);
+  else sendReviewChanged(worktree);
+};
+reviewService.on('changed', sendReviewChanged);
+
+// What the dev asked for: the linked issue, else the chat's first prompt (read
+// off the main loop once; the screen is told when it lands).
+const firstPrompts = new Map(); // sessionId → text | null
+const ISSUE_BODY_MAX = 4000;
+const issueBodies = new Map(); // `${repo}#${number}` → body ('' while loading or on failure)
+const issueRepos = new Map(); // project root → owner/repo | null
+function issueBodyFor(project, number, worktree) {
+  const known = issueRepos.get(project);
+  if (known === undefined) {
+    issueRepos.set(project, null);
+    runText('git', ['remote', 'get-url', 'origin'], { cwd: project })
+      .then((remote) => { issueRepos.set(project, githubRepoOf(remote)); notifyReview(worktree); })
+      .catch((error) => log(`review: no origin for ${project}: ${error}`));
+    return '';
+  }
+  if (!known) return '';
+  const key = `${known}#${number}`;
+  if (!issueBodies.has(key)) {
+    issueBodies.set(key, '');
+    runText('gh', ['issue', 'view', String(number), '--json', 'body', '-q', '.body', '-R', known], { cwd: project })
+      .then((body) => { issueBodies.set(key, body.trim().slice(0, ISSUE_BODY_MAX)); notifyReview(worktree); })
+      .catch((error) => log(`review: issue body ${key} failed: ${error}`));
+  }
+  return issueBodies.get(key);
+}
+
+function reviewRequestOf(worktree) {
+  const sessions = reviewSessionsIn(worktree);
+  const project = [...worktreeCache].find(([, trees]) => (trees ?? []).some((tree) => tree.path === worktree))?.[0] ?? worktree;
+  for (const session of sessions) {
+    const number = taskLinks.numberOf(project, session.id);
+    const issue = number && lastGhResultsRoot === project ? lastGhResults?.openIssues?.find((item) => item.number === number) : null;
+    if (issue) return { kind: 'issue', number, title: issue.title ?? '', body: issueBodyFor(project, number, worktree) };
+  }
+  const session = sessions.find((item) => item.id === workspaceSelectedSession && item.transcriptPath) ?? sessions.find((item) => item.transcriptPath);
+  if (!session) return null;
+  if (!firstPrompts.has(session.id)) {
+    firstPrompts.set(session.id, null);
+    readFirstPrompt(session.transcriptPath).then((text) => {
+      if (!text) return;
+      firstPrompts.set(session.id, text);
+      notifyReview(worktree);
+    });
+  }
+  const text = firstPrompts.get(session.id);
+  return text ? { kind: 'prompt', text } : null;
+}
+reviewService.setRequestSource(reviewRequestOf);
+
+function reviewInvalidate(sessionId) {
+  const worktree = sessionWorktree(sessionId);
+  if (worktree) reviewService.invalidate(worktree);
+}
+function reviewAgentStopped(sessionId) {
+  const worktree = sessionWorktree(sessionId);
+  if (!worktree) return;
+  reviewService.invalidate(worktree);
+  reviewRoots.add(worktree);
+  reviewService.onAgentStop(worktree).catch((error) => log(`review tsc after stop failed: ${error}`));
+}
+
+function reviewWorktreeOk(worktree) {
+  if (typeof worktree !== 'string' || !path.isAbsolute(worktree)) return false;
+  const known = workspaceProjects().includes(worktree)
+    || [...worktreeCache.values()].some((trees) => (trees ?? []).some((tree) => tree.path === worktree))
+    || registry.list().some((session) => sessionWorktree(session.id) === worktree);
+  if (known) reviewRoots.add(worktree);
+  return known;
+}
+
+// Every handler answers a safe value: a git failure never reaches the renderer as a throw.
+function reviewHandle(channel, fallback, run) {
+  ipcMain.handle(channel, async (event, args = {}) => {
+    if (!fromWorkspace(event)) return fallback('pedido inválido');
+    try {
+      return await run(args ?? {});
+    } catch (error) {
+      log(`${channel} failed: ${error}`);
+      return fallback('não deu pra ler o repositório');
+    }
+  });
+}
+const reviewFail = (error) => ({ ok: false, error });
+const BAD_REVIEW_REQUEST = 'pedido inválido';
+
+reviewHandle('review:summary', () => null, ({ worktree }) => (reviewWorktreeOk(worktree) ? reviewService.summary(worktree) : null));
+// force: the dev clicked "abrir mesmo assim" on a diff over 3,000 lines.
+reviewHandle('review:file', () => null, ({ worktree, path: rel, force }) =>
+  reviewWorktreeOk(worktree) && safeRelPath(rel) ? reviewService.file(worktree, rel, { force: force === true }) : null);
+reviewHandle('review:approve', reviewFail, async ({ worktree, hunkId, on }) => {
+  if (!reviewWorktreeOk(worktree) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
+  await reviewService.approve(worktree, hunkId, Boolean(on));
+  return { ok: true };
+});
+reviewHandle('review:slice', (reason) => ({ status: 'unavailable', reason }), ({ worktree, expanded, showHidden }) =>
+  reviewWorktreeOk(worktree)
+    ? reviewService.slice(worktree, { expanded: Array.isArray(expanded) ? expanded.filter((id) => typeof id === 'string') : [], showHidden: Boolean(showHidden) })
+    : { status: 'unavailable', reason: BAD_REVIEW_REQUEST });
+reviewHandle('review:verify', reviewFail, async ({ worktree, kind }) => {
+  if (!reviewWorktreeOk(worktree) || (kind !== 'tsc' && kind !== 'tests')) return reviewFail(BAD_REVIEW_REQUEST);
+  return reviewService.verify(worktree, kind);
+});
+reviewHandle('review:prefs', () => ({}), async ({ worktree, set }) => {
+  if (!reviewWorktreeOk(worktree)) return {};
+  const store = reviewStoreFor(worktree);
+  await store.prefs(); // load() resets the store: a set before it lands would be wiped
+  const clean = sanitizePrefs(set);
+  if (Object.keys(clean).length) store.setPrefs(clean);
+  return store.prefs();
+});
+
+// The composer and the "Desfiz" notice ride the 💬 channel: same queue, same
+// guarantee of never typing into a dialog; immediate because the dev just clicked.
+function sendReviewMessage(sessionId, text, message) {
+  commentStore.add({ sessionId, editId: `review:${createHash('sha1').update(message).digest('hex').slice(0, 12)}`, text, message });
+  commentDelivery
+    .flush(sessionId, { immediate: true })
+    .then(() => flushHeldComments())
+    .catch((error) => log(`comment flush failed: ${error}`));
+}
+
+reviewHandle('review:compose', reviewFail, ({ sessionId, context, text }) => {
+  if (typeof sessionId !== 'string' || !registry.sessions.has(sessionId)) return reviewFail('chat não encontrado');
+  const composed = composeMessage(context ?? null, text);
+  if (!composed.ok) return composed;
+  sendReviewMessage(sessionId, composed.text, composed.message);
+  return { ok: true };
+});
+
+reviewHandle('review:reject', reviewFail, async ({ worktree, path: rel, hunkId, sessionId }) => {
+  if (!reviewWorktreeOk(worktree) || !safeRelPath(rel) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
+  // The line has to be read before the hunk is gone.
+  // force: over 3,000 lines the view is cut, but the hunk still has to be found.
+  const hunk = (await reviewService.file(worktree, rel, { force: true }))?.hunks?.find((item) => item.id === hunkId);
+  const result = await reviewService.reject(worktree, rel, hunkId);
+  if (result.ok && hunk && typeof sessionId === 'string' && registry.sessions.has(sessionId)) {
+    const notice = rejectNotice(rel, hunk.newStart);
+    sendReviewMessage(sessionId, notice, notice);
+  }
+  return result;
+});
+
+// Hidden or minimized: no recompute, and the graphs are dropped after 10 min.
+workspaceWindow?.onVisibility((visible) => {
+  reviewWindowHidden = !visible;
+  if (visible) {
+    disarmGraphDiscard();
+    reviewService.resume();
+    // What landed while hidden, plus the worktree on screen (its graph may have been dropped and rebuilt),
+    // ride the service's debounce: with the dirty flush and the focus invalidate, one recompute each.
+    const selected = workspaceSelectedSession ? sessionWorktree(workspaceSelectedSession) : null;
+    if (selected) reviewHeldNotices.add(selected);
+    for (const worktree of reviewHeldNotices) reviewService.notify(worktree);
+    reviewHeldNotices.clear();
+  } else {
+    reviewService.pause();
+    armGraphDiscard();
+  }
+});
+
+function onWorkspaceFocus() {
+  if (workspaceSelectedSession) reviewInvalidate(workspaceSelectedSession);
+}
+
 // Edit-tool hooks feed the workspace's edit tracking, never the session
 // registry: they say nothing about whether the session is waiting or done.
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -2743,7 +3021,10 @@ function onHookEvent(event, reply) {
     maestroNarrate(event);
     const verdict = testOutcomeOf(event);
     if (verdict && event.session_id) turnTests.set(event.session_id, verdict);
-    if (maestroOn() && event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name) && !isPlanEdit(event)) graphTouched(event);
+    if (event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name) && !isPlanEdit(event)) {
+      graphTouched(event);
+      reviewInvalidate(event.session_id);
+    }
   }
   // The chat speaks for itself now: its own term says which tab (if any) it
   // runs in, so the resume mapping would only go stale (review I-2).
@@ -2763,6 +3044,7 @@ function onHookEvent(event, reply) {
   }
   // Task boundaries ride the same per-session chain as the edits, so an
   // edit still queued from this prompt can't land in the next one.
+  if (event?.hook_event_name === 'Stop') reviewAgentStopped(event.session_id);
   if (event?.hook_event_name === 'UserPromptSubmit' || event?.hook_event_name === 'Stop')
     editPipeline.push(event).catch((error) => log(`edit task tracking failed: ${error}`));
   const session = registry.applyEvent(event);
@@ -2968,10 +3250,7 @@ function applyConfig(partial) {
     if (!allowed.maestroEnabled) {
       maestroOrder.cancel();
       maestroConductor.clear(); // no order left to fire on a later, unrelated stop
-      // The graphs go with the stage: rebuilt (from cache-less parse) on the next one.
-      graphIndexers.clear();
-      graphParser?.close();
-      graphParser = null;
+      // The graphs stay: the review screen uses them; the hidden-window timer drops them.
     }
     pushWorkspaceState();
   }
@@ -4643,7 +4922,21 @@ async function requestQuit() {
   app.quit();
 }
 
-app.on('before-quit', () => {
+// The review state saves 500 ms after a click: a quit inside that window
+// would lose an approval, so the first quit waits for the writes and asks again.
+let reviewSaved = false;
+app.on('before-quit', (event) => {
+  if (!reviewSaved) {
+    reviewSaved = true;
+    event.preventDefault();
+    // A stalled disk must not hold a logout or SIGTERM hostage: give up after 1.5 s.
+    const saves = Promise.allSettled([...reviewStores.values()].map((entry) => Promise.resolve().then(() => entry.flush())))
+      .then((results) => {
+        for (const result of results) if (result.status === 'rejected') log(`review state flush on quit failed: ${result.reason}`);
+      });
+    Promise.race([saves, new Promise((resolve) => setTimeout(resolve, 1500))]).finally(() => app.quit());
+    return;
+  }
   appQuitting = true;
   // Before will-quit kills the terminals: their chats are still alive here.
   // A quit cancelled after this point thaws the saves again (#157).
@@ -4658,6 +4951,8 @@ app.on('before-quit', () => {
   guardAsks.releaseAll('offline');
   tts.stopSpeaking();
   killPendingClaude();
+  // verify.js runs detached process groups: they would outlive the app.
+  for (const root of reviewRoots) reviewVerifier.cancelAll(root);
   stopSocketServer(socketServer, socketPath);
   tray?.destroy();
   tray = null;

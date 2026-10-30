@@ -30,6 +30,16 @@ contextBridge.exposeInMainWorld('vizor', {
   copyComment: (sessionId, commentId) => ipcRenderer.invoke('comments:copy', { sessionId, commentId }),
   onFocusSession: (callback) => ipcRenderer.on('workspace:focus', (_event, payload) => callback(payload)),
   reportSelection: (sessionId) => ipcRenderer.send('workspace:selected', sessionId ?? null),
+  // The review screen: every call names the worktree it is about.
+  reviewSummary: (worktree) => ipcRenderer.invoke('review:summary', { worktree }),
+  reviewFile: (worktree, path, force = false) => ipcRenderer.invoke('review:file', { worktree, path, force }),
+  reviewApprove: (worktree, hunkId, on) => ipcRenderer.invoke('review:approve', { worktree, hunkId, on }),
+  reviewReject: (worktree, path, hunkId, sessionId) => ipcRenderer.invoke('review:reject', { worktree, path, hunkId, sessionId }),
+  reviewSlice: (worktree, expanded, showHidden) => ipcRenderer.invoke('review:slice', { worktree, expanded, showHidden }),
+  reviewVerify: (worktree, kind) => ipcRenderer.invoke('review:verify', { worktree, kind }),
+  reviewCompose: (sessionId, context, text) => ipcRenderer.invoke('review:compose', { sessionId, context, text }),
+  reviewPrefs: (worktree, set) => ipcRenderer.invoke('review:prefs', { worktree, set }),
+  onReviewChanged: (callback) => ipcRenderer.on('review:changed', (_event, payload) => callback(payload)),
   onEditsChanged: (callback) => ipcRenderer.on('edits:changed', (_event, payload) => callback(payload)),
   // The Maestro (#159).
   onMaestroSay: (callback) => ipcRenderer.on('maestro:say', (_event, payload) => callback(payload)),
@@ -37,8 +47,6 @@ contextBridge.exposeInMainWorld('vizor', {
   onMaestroOrder: (callback) => ipcRenderer.on('maestro:order', (_event, payload) => callback(payload)),
   setMaestro: (on) => ipcRenderer.send('maestro:set', Boolean(on)),
   focusMusician: (sessionId) => ipcRenderer.send('maestro:focus', sessionId),
-  onMaestroGraph: (callback) => ipcRenderer.on('maestro:graph', (_event, payload) => callback(payload)),
-  maestroGraph: (root) => ipcRenderer.invoke('maestro:graph', root),
   // The core flow: the músico's plan and the Ctrl+K bar.
   planAction: (sessionId, action) => ipcRenderer.invoke('workspace:plan', { sessionId, action }),
   commandCatalog: () => ipcRenderer.invoke('workspace:catalog'),

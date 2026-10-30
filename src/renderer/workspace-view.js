@@ -102,7 +102,9 @@ function foldSummary(sessions) {
   )}</span>${alert}`;
 }
 
-function renderSession(session, worktreePath, selectedId, folds) {
+// musicians: sessionId → { color, name } while the Maestro is on — the
+// orchestra lives in the sidebar as a dot of each músico's color.
+function renderSession(session, worktreePath, selectedId, folds, musicians = {}) {
   const key = statusKey(session);
   const where = session.inside ? 'inside' : 'outside';
   const filesOpen = isOpen(folds, `s:${session.id}`, session.files.length <= FILES_OPEN_BY_DEFAULT);
@@ -115,19 +117,23 @@ function renderSession(session, worktreePath, selectedId, folds) {
     session.files.length && filesOpen
       ? `<ul class="files">${session.files.map((file) => renderFile(file, worktreePath)).join('')}</ul>`
       : '';
+  const musician = musicians[session.id];
+  const dot = musician
+    ? `<span class="session-dot" style="background:${escapeHtml(musician.color)}" title="${escapeHtml(musician.name)}"></span>`
+    : '';
   return `<li class="session status-${key}${session.unread ? ' unread' : ''}" data-session="${escapeHtml(session.id)}" aria-selected="${
     session.id === selectedId
-  }"><span class="status" title="${STATUS_LABEL[key]}">${ICONS[key]}</span><span class="session-name">${escapeHtml(
+  }"><span class="status" title="${STATUS_LABEL[key]}">${ICONS[key]}</span>${dot}<span class="session-name">${escapeHtml(
     session.name,
   )}</span>${filesToggle}<span class="where" title="${session.inside ? 'no Vizor' : 'em outro terminal'}">${ICONS[where]}</span>${files}</li>`;
 }
 
-function renderWorktree(worktree, selectedId, selectedWorktree, folds) {
+function renderWorktree(worktree, selectedId, selectedWorktree, folds, musicians) {
   const branch = worktree.branch === null ? '(sem branch)' : worktree.branch;
   const open = isOpen(folds, `w:${worktree.path}`, true);
   const sessions = open
     ? `<ul class="sessions">${worktree.sessions
-        .map((session) => renderSession(session, worktree.path, selectedId, folds))
+        .map((session) => renderSession(session, worktree.path, selectedId, folds, musicians))
         .join('')}</ul>`
     : '';
   return `<li class="worktree${worktree.prunable ? ' prunable' : ''}" title="${escapeHtml(worktree.path)}"><div class="worktree-head" data-worktree="${escapeHtml(worktree.path)}"${
@@ -139,12 +145,12 @@ function renderWorktree(worktree, selectedId, selectedWorktree, folds) {
   }</div>${sessions}</li>`;
 }
 
-function renderProject(project, selectedId, selectedWorktree, folds) {
+function renderProject(project, selectedId, selectedWorktree, folds, musicians) {
   const open = isOpen(folds, `p:${project.root}`, true);
   const all = project.worktrees.flatMap((worktree) => worktree.sessions);
   const worktrees = open
     ? `<ul class="worktrees">${project.worktrees
-        .map((worktree) => renderWorktree(worktree, selectedId, selectedWorktree, folds))
+        .map((worktree) => renderWorktree(worktree, selectedId, selectedWorktree, folds, musicians))
         .join('')}</ul>`
     : '';
   return `<section class="project${open ? '' : ' folded'}"><header class="project-head" title="${escapeHtml(
@@ -162,11 +168,11 @@ export function renderEmpty() {
 
 // Sessions whose folder belongs to no project (a chat opened in ~ or /tmp):
 // never hidden, just listed apart.
-function renderUnplaced(sessions, selectedId, folds) {
+function renderUnplaced(sessions, selectedId, folds, musicians) {
   if (!sessions?.length) return '';
   const open = isOpen(folds, 'p:', true);
   const list = open
-    ? `<ul class="sessions">${sessions.map((session) => renderSession(session, '', selectedId, folds)).join('')}</ul>`
+    ? `<ul class="sessions">${sessions.map((session) => renderSession(session, '', selectedId, folds, musicians)).join('')}</ul>`
     : '';
   return `<section class="project unplaced${open ? '' : ' folded'}"><header class="project-head">${foldToggle(
     'p:',
@@ -175,11 +181,11 @@ function renderUnplaced(sessions, selectedId, folds) {
   )}${ICONS.outside}<span class="project-name">Fora de projetos</span>${open ? '' : foldSummary(sessions)}</header>${list}</section>`;
 }
 
-export function renderSidebar(tree, selectedId, selectedWorktree = null, folds = {}) {
+export function renderSidebar(tree, selectedId, selectedWorktree = null, folds = {}, musicians = {}) {
   const projects = tree.projects.length
-    ? tree.projects.map((project) => renderProject(project, selectedId, selectedWorktree, folds)).join('')
+    ? tree.projects.map((project) => renderProject(project, selectedId, selectedWorktree, folds, musicians)).join('')
     : renderEmpty();
-  return projects + renderUnplaced(tree.unplacedSessions, selectedId, folds);
+  return projects + renderUnplaced(tree.unplacedSessions, selectedId, folds, musicians);
 }
 
 const VOICE_STATES = {
@@ -193,9 +199,8 @@ const VOICE_STATES = {
   'sem-modelos': 'baixando modelos',
 };
 
-// voice: { state, target } while the voice mode is on (#161); chatHidden:
-// the terminal folded away so code and diff take the screen.
-export function renderTopBar(tree, { chatHidden = false, voice = null, maestro = false } = {}) {
+// voice: { state, target } while the voice mode is on (#161).
+export function renderTopBar(tree, { voice = null, maestro = false } = {}) {
   const voiceLabel = voice
     ? `<span class="voice-state" data-voice="${escapeHtml(voice.state)}" title="modo voz">🎙 ${escapeHtml(
         VOICE_STATES[voice.state] ?? voice.state,
@@ -204,10 +209,8 @@ export function renderTopBar(tree, { chatHidden = false, voice = null, maestro =
   return `<button class="brand" data-action-menu title="Menu do Vizor">vzr · workspace</button><span class="count-item" title="rodando">${ICONS.working}${
     tree.counts.working
   } rodando</span><span class="count-item" title="esperando você">${ICONS.waiting}${tree.counts.waiting} esperando</span>${voiceLabel}<span class="spacer"></span><button class="toggle-maestro" data-toggle-maestro aria-pressed="${maestro}" title="${
-    maestro ? 'Sair do modo Maestro' : 'Modo Maestro: o código no centro, você rege pela voz'
-  }">♪ Maestro</button><button class="toggle-chat" data-toggle-chat title="${
-    chatHidden ? 'Mostrar o terminal do chat' : 'Esconder o terminal: código e diff ocupam a tela'
-  }">${chatHidden ? 'Mostrar chat' : 'Esconder chat'}</button><button class="add-project" data-add-project>Abrir projeto…</button>`;
+    maestro ? 'Sair do modo Maestro' : 'Modo Maestro: você rege pela voz, o Vizor segue o músico em foco'
+  }">♪ Maestro</button><button class="add-project" data-add-project>Abrir projeto…</button>`;
 }
 
 // Tabs of the selected worktree's terminals, oldest first. Titles come from

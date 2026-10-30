@@ -60,12 +60,52 @@ de dev (GitHub, PR, push, deploy…) saem com a pronúncia que dev brasileiro us
 | **Santa** | Kokoro (`pm_santa`) | ~350MB |
 | **Inglês (EUA) 1–10** | Supertonic em inglês americano (mesmo modelo da Clara) | — |
 
+### Tela de revisão
+
+No workspace, a tela principal é a **revisão** do worktree selecionado: a IA
+escreve, você acompanha e entende. O que mudou vem do git (o worktree contra o
+merge-base com a branch base, com o que ainda não foi commitado), nunca do
+texto do terminal. Quatro abas:
+
+- **Resumo**: uma faixa de veredito (arquivos e +/−, tsc, testes, funções
+  alteradas sem teste por perto, mudanças de contrato, progresso de revisão),
+  o pedido (a issue ou o primeiro prompt), o plano do chat e os bastidores.
+- **Mudanças**: arquivos na ordem de leitura (contrato primeiro, depois os mais
+  chamados, por último testes e estilos) e o diff de cada um. Por trecho:
+  **aprovar**, **rejeitar**, **comentar** e **explicar**. Rejeitar desfaz o
+  trecho no worktree e avisa o agente, mas só vale pra trecho ainda não
+  commitado, com todas as sessões do worktree paradas, e nunca pra arquivo novo;
+  quando não dá, o botão diz o motivo. Comentar e explicar vão pro agente.
+  Mudanças de contrato (exports, parâmetros, tipos, dependências, schema e
+  migrations) são detectadas sem IA.
+- **Impacto**: o recorte da mudança no grafo, com no máximo 20 nós (o resto
+  colapsa em "+N outras"): funções alteradas em vermelho, quem chama e o que
+  elas chamam em laranja.
+- **Ao vivo**: as edições do agente conforme acontecem.
+
+O **tsc** roda sozinho quando o agente para, nos worktrees que você já abriu
+na revisão (só se o projeto tem `tsconfig.json`
+e `typescript` próprio; quando não dá pra confiar, o veredito diz "tsc: não
+verificado" em vez de um ✓ falso), e o botão **rodar testes** usa o script
+`test` do `package.json`. Os padrões se ajustam por projeto em
+`.vizor/projeto.json` (`{ "base": "...", "test": "...", "tsc": false }`).
+
+À direita, o **compositor** manda texto pra sessão do agente levando a seleção
+(arquivo, trecho ou nó do grafo) como contexto. Embaixo, o terminal fica numa
+**gaveta**: **Ctrl+`** abre e fecha, e a altura é arrastável. Seu progresso de
+revisão fica guardado em `~/.config/vizor/revisao/`.
+
+Leve por desenho: nada roda antes de você abrir a janela do workspace nem
+enquanto ela está escondida (o que chegou nesse meio-tempo vira um recálculo só
+quando ela volta), o grafo só é lido quando as Mudanças ou o Impacto precisam
+dele e nenhuma dependência nova foi adicionada.
+
 ### Fluxo principal: issue → plano → PR (Ctrl+K)
 
 No workspace, **Ctrl+K** abre a barra de comandos: digite o número ou um pedaço
 do título de uma issue e Enter. O Vizor abre um chat do Claude pra ela (a aba
 leva o nome da issue), que lê a issue e escreve o **plano** como checklist em
-`.vizor/plano-<issue>.md` (fora do git). O plano aparece no topo do painel da direita e
+`.vizor/plano-<issue>.md` (fora do git). O plano aparece no Resumo da revisão e
 se marca sozinho conforme o chat avança. "Aprovar plano" manda ele seguir;
 com tudo feito, "Abrir PR" pede pra rodar os testes e abrir a PR. A mesma barra
 leva a qualquer chat, interrompe um que está rodando, chama a revisão de uma PR
@@ -73,21 +113,20 @@ e liga o Maestro. Por voz: "aprova o plano" e "abre a PR da 169".
 
 ### Modo Maestro
 
-No workspace, o **Maestro** tira o chat da frente: você rege os chats do Claude
-(os músicos) pela voz e vê o código sendo escrito, com o que a IA diz num balão
-por cima. Diga "Vizor, ative o modo Maestro" (ou clique em "♪ Maestro"); "vai
-pra 22" foca um músico e "Vizor, interrompa a task 22" para a tarefa dele.
+O **Maestro** é uma camada por cima da tela de revisão, sem layout próprio: você
+rege os chats do Claude (os músicos) pela voz, com o que a IA diz num balão
+sobre a aba ativa, e a tela segue o músico em foco. Diga "Vizor, ative o modo
+Maestro" (ou clique em "♪ Maestro"); "vai pra 22" foca um músico e "Vizor,
+interrompa a task 22" para a tarefa dele.
 Ordem que não dá pra desfazer (interromper, digitar num músico, aprovar um
 plano, ordens e rotinas) aparece como "entendi: …" e espera 3 s, pra você
 dizer "cancela" se ele entendeu errado; abrir trabalho (puxar ou retomar uma
-issue, revisar uma PR) vai na hora. À direita, o **grafo** do projeto
-(JS/TS): as pastas e seus arquivos; aproxime (roda do mouse ou clique) e o
-arquivo se abre nas funções. Cada músico acende o que mexeu e o que planejou
-mexer, na cor dele. O gerente guarda ordens ("quando a 22 terminar, roda os
+issue, revisar uma PR) vai na hora. Cada músico tem a sua cor na barra lateral,
+o impacto é a aba Impacto e os bastidores (sub-agentes, comandos em segundo
+plano com log ao vivo, portas abertas) ficam numa seção recolhível do Resumo.
+O gerente guarda ordens ("quando a 22 terminar, roda os
 testes e abre a PR", com até duas tentativas de correção) e chama um avaliador
-quando a mudança é grande ou mexe em algo crítico. Embaixo do código, os
-bastidores do músico: sub-agentes, comandos em segundo plano com log ao vivo e
-as portas que ele abriu.
+quando a mudança é grande ou mexe em algo crítico.
 
 Com uma voz em inglês, o Vizor **fala em inglês** — recados, modo voz, resumos,
 narração — e você continua falando com ele em português. A interface segue em

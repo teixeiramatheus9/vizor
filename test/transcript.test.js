@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  readFirstPrompt,
   parseLastAssistantMessage,
   parsePendingQuestion,
   parseAiTitle,
@@ -299,5 +300,35 @@ describe('meta entries in the transcript (#133)', () => {
     const say = JSON.stringify({ type: 'assistant', message: { id: 'm0', role: 'assistant', content: [{ type: 'text', text: 'vou mudar' }] } });
     const edit = JSON.stringify({ type: 'assistant', message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 'e1', name: 'Edit', input: {} }] } });
     expect(parseEditReason([userLine('faz'), say, meta, edit].join('\n'), 'e1')).toBe('vou mudar');
+  });
+});
+
+describe('readFirstPrompt', () => {
+  const write = async (lines) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'first-prompt-'));
+    const file = path.join(dir, 't.jsonl');
+    await writeFile(file, lines.join('\n'));
+    return file;
+  };
+  const user = (content, extra = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content }, ...extra });
+
+  it('skips meta entries, commands and tool results', async () => {
+    const file = await write([
+      user('Caveat: local commands', { isMeta: true }),
+      user('<command-name>/clear</command-name>'),
+      user([{ type: 'tool_result', tool_use_id: 't', content: 'ok' }]),
+      user([{ type: 'text', text: 'conserta o login' }]),
+      user('outra coisa'),
+    ]);
+    expect(await readFirstPrompt(file)).toBe('conserta o login');
+  });
+
+  it('cuts at 2000 characters', async () => {
+    expect((await readFirstPrompt(await write([user('x'.repeat(5000))]))).length).toBe(2000);
+  });
+
+  it('is null without a prompt or a file', async () => {
+    expect(await readFirstPrompt(await write([user('<command-name>/x</command-name>')]))).toBeNull();
+    expect(await readFirstPrompt('/nope/none.jsonl')).toBeNull();
   });
 });

@@ -115,6 +115,18 @@ describe('sessions outside every project', () => {
   });
 });
 
+describe('renderSidebar with the Maestro on', () => {
+  it('marks each músico with a dot of its color, escaped', () => {
+    const html = renderSidebar(tree([session('s1'), session('s2')]), null, null, {}, { s1: { color: 'red"><b>', name: 'Ana' } });
+    expect(html).toMatch(/data-session="s1"[^]*class="session-dot" style="background:red&quot;&gt;&lt;b&gt;" title="Ana"/);
+    expect(html.split('session-dot').length).toBe(2);
+  });
+
+  it('draws no dots without músicos', () => {
+    expect(renderSidebar(tree([session('s1')]), null)).not.toContain('session-dot');
+  });
+});
+
 describe('renderTopBar', () => {
   it('shows how many sessions run and wait', () => {
     const html = renderTopBar(tree([]));
@@ -122,10 +134,9 @@ describe('renderTopBar', () => {
     expect(html).toContain('1 esperando');
   });
 
-  it('toggles the chat away so the code takes the screen (#161)', () => {
-    expect(renderTopBar(tree([]), { chatHidden: false })).toContain('data-toggle-chat');
-    expect(renderTopBar(tree([]), { chatHidden: false })).toContain('Esconder chat');
-    expect(renderTopBar(tree([]), { chatHidden: true })).toContain('Mostrar chat');
+  it('has no chat toggle: the terminal is a drawer of its own now', () => {
+    expect(renderTopBar(tree([]))).not.toContain('data-toggle-chat');
+    expect(renderTopBar(tree([]))).not.toContain('Esconder chat');
   });
 
   it('the "vzr" label opens the same menu as the tray (#169)', () => {

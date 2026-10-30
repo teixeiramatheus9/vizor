@@ -49,6 +49,8 @@ emit({ hook_event_name: 'Stop' });
 let typed = '';
 process.stdin.setRawMode?.(true);
 process.stdin.on('data', (chunk) => {
+  // Everything the app types into this chat, for the scenarios to read back.
+  fs.appendFileSync(path.join(home, 'claude-received.log'), chunk.toString());
   typed += chunk.toString();
   if (!typed.includes('\r')) return;
   const line = typed;

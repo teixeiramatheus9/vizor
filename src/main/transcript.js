@@ -479,3 +479,41 @@ export async function readInterrupted(transcriptPath) {
     return false;
   }
 }
+
+const FIRST_PROMPT_READ_BYTES = 64 * 1024;
+const FIRST_PROMPT_MAX_CHARS = 2000;
+
+// What the dev asked first: the earliest user entry that is their own text —
+// not a meta note, a slash command or a tool result. Only the head of the file
+// is read: the opening request sits there however long the chat grew.
+export function parseFirstPrompt(jsonlText) {
+  for (const line of jsonlText.split('\n')) {
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // blank, or the cut tail of the 64 KB window
+    }
+    if (entry?.isSidechain || !isUserPrompt(entry)) continue;
+    const content = entry.message?.content;
+    const text = (typeof content === 'string' ? content : textBlocks(content).join('\n')).trim();
+    if (!text || text.includes('<command-name>')) continue;
+    return text.slice(0, FIRST_PROMPT_MAX_CHARS);
+  }
+  return null;
+}
+
+export async function readFirstPrompt(transcriptPath) {
+  try {
+    const handle = await open(transcriptPath, 'r');
+    try {
+      const buffer = Buffer.alloc(FIRST_PROMPT_READ_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      return parseFirstPrompt(buffer.toString('utf8', 0, bytesRead));
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
