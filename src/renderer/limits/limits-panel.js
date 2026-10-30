@@ -25,7 +25,7 @@ export const minutesAgo = (seenAt, now) => Math.max(0, Math.floor((now - seenAt)
 
 // The windows worth showing: watched and not past their reset.
 export function liveWindows(snapshot, now) {
-  return WINDOWS.filter(({ key }) => snapshot?.settings?.[key] !== false && snapshot?.windows?.[key] && !(snapshot.windows[key].resetsAt <= now)).map((meta) => ({
+  return WINDOWS.filter(({ key }) => snapshot?.settings?.[key] !== false && Number.isFinite(snapshot?.windows?.[key]?.pct) && !(snapshot.windows[key].resetsAt <= now)).map((meta) => ({
     ...meta,
     ...snapshot.windows[meta.key],
   }));
@@ -34,6 +34,7 @@ export function liveWindows(snapshot, now) {
 // text like "5h 62% · sem 40%"; level ok / near (>= 80) / out (>= 100) / stale.
 export function limitsLabel(snapshot, now = Date.now()) {
   if (!snapshot || snapshot.settings?.showInStatusBar === false) return null;
+  if (snapshot.settings?.fiveHour === false && snapshot.settings?.sevenDay === false) return null;
   const live = liveWindows(snapshot, now);
   const worst = live.reduce((max, win) => Math.max(max, win.pct), 0);
   let level = worst >= 100 ? 'out' : worst >= NEAR_PCT ? 'near' : 'ok';
@@ -63,7 +64,8 @@ function row(win, now) {
 export function limitsChart(windows) {
   const W = 300;
   const H = 70;
-  const withHistory = windows.filter((win) => Array.isArray(win.history) && win.history.length >= 2);
+  const clean = windows.map((win) => ({ ...win, history: (Array.isArray(win.history) ? win.history : []).filter(([t, pct]) => Number.isFinite(t) && Number.isFinite(pct)) }));
+  const withHistory = clean.filter((win) => win.history.length >= 2);
   if (!withHistory.length) return '';
   const times = withHistory.flatMap((win) => win.history.map(([t]) => t));
   const min = Math.min(...times);
@@ -101,3 +103,6 @@ export function fiveHourShares(snapshot, now = Date.now()) {
   if (!liveWindows(snapshot, now).some((win) => win.key === 'fiveHour')) return {};
   return Object.fromEntries((snapshot.shares?.chats ?? []).filter((chat) => chat.pct > 0).map((chat) => [chat.sessionId, chat.pct]));
 }
+
+// Which windows are live at `now`: changes when one passes its reset.
+export const liveKey = (snapshot, now) => liveWindows(snapshot, now).map((win) => win.key).join(',');

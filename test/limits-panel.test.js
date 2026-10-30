@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderLimitsPanel } from '../src/renderer/limits/limits-panel.js';
+import { renderLimitsPanel, fiveHourShares, liveKey } from '../src/renderer/limits/limits-panel.js';
 import { limitsLabel, renderStatusBar } from '../src/renderer/shell/status-bar.js';
 
 const NOW = new Date(2026, 9, 29, 12, 0).getTime();
@@ -64,5 +64,25 @@ describe('renderLimitsPanel', () => {
   it('has an empty state', () => {
     const html = renderLimitsPanel(snap({ windows: { fiveHour: null, sevenDay: null } }), NOW);
     expect(html).toContain('Ainda não vi nenhum chat do Claude desde que ativou');
+  });
+});
+
+describe('fix round 1', () => {
+  it('label is null when both windows are off', () => {
+    expect(limitsLabel(snap({ settings: { ...snap().settings, fiveHour: false, sevenDay: false } }), NOW)).toBeNull();
+  });
+  it('ignores non-finite numbers', () => {
+    const bad = snap({ windows: { fiveHour: win(NaN, NOW + 1000), sevenDay: win(40, NOW + 1000, [[undefined, 10], [NOW - 1000, 20], [NOW, 40]]) } });
+    const html = renderLimitsPanel(bad, NOW);
+    expect(html).not.toContain('NaN');
+    expect(html).not.toContain('undefined');
+    expect(limitsLabel(bad, NOW).text).not.toContain('NaN');
+  });
+  it('an expired window drops its shares and its live key', () => {
+    const s = snap();
+    expect(fiveHourShares(s, NOW)).toEqual({ s1: 20 });
+    const later = s.windows.fiveHour.resetsAt + 1;
+    expect(fiveHourShares(s, later)).toEqual({});
+    expect(liveKey(s, NOW)).not.toBe(liveKey(s, later));
   });
 });

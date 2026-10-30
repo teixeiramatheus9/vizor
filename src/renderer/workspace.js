@@ -33,7 +33,7 @@ import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from 
 import { createReviewController } from './review/review-controller.js';
 import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
 import { renderStatusBar, limitsLabel } from './shell/status-bar.js';
-import { renderLimitsPanel, fiveHourShares } from './limits/limits-panel.js';
+import { renderLimitsPanel, fiveHourShares, liveKey } from './limits/limits-panel.js';
 import { keyAction, renderShortcuts } from './shell/shortcuts.js';
 import { createAgentsController } from './agents/agents-controller.js';
 import { createGithubController } from './github/github-controller.js';
@@ -390,6 +390,7 @@ const statusBarEl = document.getElementById('status-bar');
 let statusTokens = { used: 0, cap: 0 };
 let nextAutomationAt = null; // from the state push; the status line's "próxima automação"
 function drawStatusBar() {
+  refreshLimitsExpiry();
   const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), limits: limitsLabel(limitsSnapshot, Date.now()), nextAutomation: nextAutomationAt != null ? { at: nextLabel(nextAutomationAt, Date.now()) } : null });
   if (statusBarEl.innerHTML !== html) statusBarEl.innerHTML = html;
   scheduleStatusClock();
@@ -424,8 +425,18 @@ function setLimitsPanel(open) {
   limitsPopover.hidden = !open;
   if (open) drawLimitsPanel();
 }
+// A window that passed its reset drops out (and its card shares) on the next redraw, no push needed.
+let limitsLive = '';
+function refreshLimitsExpiry() {
+  const key = liveKey(limitsSnapshot, Date.now());
+  if (key === limitsLive) return;
+  limitsLive = key;
+  agents.setShares(fiveHourShares(limitsSnapshot, Date.now()));
+  if (!limitsPopover.hidden) drawLimitsPanel();
+}
 function applyLimits(snapshot) {
   limitsSnapshot = snapshot;
+  limitsLive = liveKey(snapshot, Date.now());
   agents.setShares(fiveHourShares(snapshot, Date.now()));
   drawStatusBar();
   if (!limitsPopover.hidden) drawLimitsPanel();
