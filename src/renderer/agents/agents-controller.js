@@ -31,6 +31,7 @@ export function createAgentsController({
   let sessions = [];
   let plans = {};
   let guardAsks = [];
+  let shares = {}; // session id -> ≈% of the 5h window
   let automationRuns = []; // running automações, cards of their own
   let visible = false;
   let timer = null;
@@ -55,6 +56,7 @@ export function createAgentsController({
       const guardAsk = guardOf(session.id);
       const card = sessionCard(session, { project: session.project, plan, guardAsk, now: at });
       if (guardAsk) card.guardAsk = guardAsk;
+      if (shares[session.id] > 0) card.share = shares[session.id];
       // A plan waiting for the ok has its own button: "Aprovar" alone is a
       // permission ask, answered in the chat's terminal.
       if (plan && !plan.approved && card.column !== 'failed') card.actions.push('approve-plan');
@@ -251,6 +253,11 @@ export function createAgentsController({
   });
 
   return {
+    // sessionId -> ≈% of the 5h window; a new map redraws the cards.
+    setShares(next) {
+      shares = next ?? {};
+      render();
+    },
     setState(next) {
       hasState = true;
       sessions = next.sessions ?? [];

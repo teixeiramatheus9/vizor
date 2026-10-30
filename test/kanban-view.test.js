@@ -94,4 +94,8 @@ describe('kanban inline states', () => {
     expect(html).toContain('Solta');
     expect(html).not.toContain('>Tarefa<');
   });
+  it('shows the 5h share only when the card has one', () => {
+    expect(renderKanban([card({ share: 12.4 })], { projects, now: NOW })).toContain('≈12% das 5h');
+    expect(renderKanban([card()], { projects, now: NOW })).not.toContain('das 5h');
+  });
 });
