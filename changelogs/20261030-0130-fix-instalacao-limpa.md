@@ -1,0 +1,1 @@
+- O build da versão volta a instalar as dependências do zero (a voz no Windows ARM travava a instalação limpa).
