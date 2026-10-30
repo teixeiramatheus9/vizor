@@ -270,6 +270,15 @@ describe('syncStatusLineTap', () => {
     expect(env.sidecar).toEqual(dev);
   });
 
+  it('reconnect (force) taps over the changed line and records it as the new original', () => {
+    const changed = { type: 'command', command: 'other.sh' };
+    const env = tapEnv({ statusLine: changed }, dev);
+    const r = syncStatusLineTap({ ...env.args, enabled: true, force: true });
+    expect(r).toMatchObject({ installed: true, replaced: false });
+    expect(env.settings.statusLine.command).toBe(TAP);
+    expect(env.sidecar).toEqual(changed);
+  });
+
   it('re-taps when the current line is the recorded original', () => {
     const env = tapEnv({ statusLine: dev }, dev);
     const r = syncStatusLineTap({ ...env.args, enabled: true });

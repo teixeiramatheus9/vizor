@@ -230,7 +230,7 @@ const sameLine = (current, original) => {
 // dev's original statusLine) is written BEFORE the tap goes in and deleted
 // only AFTER the original is back. A statusLine that is neither the tap nor
 // the recorded original is the dev's new choice: reported, never overwritten.
-export function syncStatusLineTap({ enabled, tapCommand, readSettings, writeSettings, readOriginal, writeOriginal, removeOriginal }) {
+export function syncStatusLineTap({ enabled, tapCommand, readSettings, writeSettings, readOriginal, writeOriginal, removeOriginal, force = false }) {
   const settings = readSettings();
   if (!isObject(settings)) return { installed: false, replaced: false, changed: false };
   const tapped = isStatusLineTap(settings.statusLine?.command);
@@ -246,7 +246,7 @@ export function syncStatusLineTap({ enabled, tapCommand, readSettings, writeSett
     return { installed: false, replaced: false, changed };
   }
 
-  if (!tapped) {
+  if (!tapped && !force) {
     const recorded = readOriginal();
     if (recorded !== undefined && !sameLine(settings.statusLine, recorded)) {
       return { installed: false, replaced: true, changed: false };
@@ -254,7 +254,7 @@ export function syncStatusLineTap({ enabled, tapCommand, readSettings, writeSett
   }
   const result = ensureStatusLine(settings, tapCommand);
   // undefined = already tapped: the sidecar keeps what it has.
-  if (result.original !== undefined && readOriginal() === undefined) writeOriginal(result.original);
+  if (result.original !== undefined && (force || readOriginal() === undefined)) writeOriginal(result.original);
   const changed = JSON.stringify(result.settings) !== JSON.stringify(settings);
   if (changed) writeSettings(result.settings);
   return { installed: true, replaced: false, changed };

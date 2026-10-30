@@ -835,6 +835,65 @@ guardCheckbox.addEventListener('change', () => {
 });
 document.getElementById('open-rules').addEventListener('click', () => window.manager.openRules());
 
+// Settings › limites do claude: toggles persist through config:set; the status
+// row and the per-project warnings are read when the section opens.
+const limControls = {
+  fiveHour: document.getElementById('lim-five'),
+  sevenDay: document.getElementById('lim-seven'),
+  resetNotice: document.getElementById('lim-reset'),
+  showInStatusBar: document.getElementById('lim-bar'),
+};
+const limWarn = document.getElementById('lim-warn');
+
+function renderLimitsConfig(limits) {
+  if (!limits) return;
+  for (const [key, box] of Object.entries(limControls)) {
+    box.checked = Boolean(limits[key]);
+    document.getElementById(`${box.id}-state`).textContent = box.checked ? '[on]' : '[off]';
+  }
+  limWarn.value = String(limits.warnAt);
+  document.getElementById('lim-warn-label').textContent = `${limits.warnAt}%`;
+  renderSlider(limWarn);
+}
+
+function renderLimitsInfo(info) {
+  if (!info) return;
+  document.getElementById('lim-status').textContent = `# status line: ${info.status.text}`;
+  document.getElementById('lim-reconnect-row').classList.toggle('hidden', info.status.kind !== 'replaced');
+  document.getElementById('lim-overrides').replaceChildren(
+    ...info.overrides.map((project) => {
+      const hint = document.createElement('div');
+      hint.className = 'setting-hint';
+      hint.textContent = `# o projeto ${project.name} usa outra status line; os números dos chats dele não chegam`;
+      return hint;
+    }),
+  );
+}
+
+const refreshLimitsInfo = () => window.manager.limitsSettings().then(renderLimitsInfo).catch(() => {});
+window.manager.getConfig().then((config) => renderLimitsConfig(config.limits));
+document.querySelector('[data-section="limites"].nav-item')?.addEventListener('click', refreshLimitsInfo);
+refreshLimitsInfo();
+
+for (const [key, box] of Object.entries(limControls)) {
+  box.addEventListener('change', () => {
+    document.getElementById(`${box.id}-state`).textContent = box.checked ? '[on]' : '[off]';
+    window.manager.setConfig({ limits: { [key]: box.checked } }).then((config) => {
+      renderLimitsConfig(config?.limits);
+      refreshLimitsInfo();
+    });
+  });
+}
+limWarn.addEventListener('input', () => {
+  document.getElementById('lim-warn-label').textContent = `${limWarn.value}%`;
+  renderSlider(limWarn);
+});
+limWarn.addEventListener('change', () => window.manager.setConfig({ limits: { warnAt: Number(limWarn.value) } }));
+document.getElementById('lim-reconnect').addEventListener('click', () => {
+  if (!window.confirm('Reconectar troca a sua status line atual pela do Vizor (a sua é guardada e volta ao desligar). Continuar?')) return;
+  window.manager.limitsReconnect().then(renderLimitsInfo);
+});
+
 // Settings › voz (#161). Linux only: elsewhere the section and its
 // shortcuts are hidden.
 const VOICE_STATE_TEXT = {

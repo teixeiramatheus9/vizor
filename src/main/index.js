@@ -22,6 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildHookCommand, buildStatusLineCommand, ensureGuard, ensureHooks, isGuardCommand, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand, installGuardScript } from './guard-runtime.js';
+import { projectStatusLineOverrides, tapStatusText } from './limits/limits-settings.js';
 import { createLimitsService, installTapScript, syncStatusLineTap, LIMITS_FILE_NAME } from './limits/limits-service.js';
 import { createGuardAsks, isGuardChoice } from './guard-asks.js';
 import { createRulesStore, pruneSeenSessions } from './rules-store.js';
@@ -3770,6 +3771,21 @@ function applyConfig(partial) {
 }
 
 ipcMain.handle('config:set', (_event, partial) => applyConfig(partial));
+// The settings section: the tap's state and the projects with their own statusLine.
+function limitsSettingsInfo() {
+  const snap = limits.snapshot();
+  return {
+    status: tapStatusText({ tap: limitsTapStatus, seenAt: snap.seenAt }),
+    overrides: projectStatusLineOverrides(workspaceProjects()),
+  };
+}
+ipcMain.handle('limits:settings', () => limitsSettingsInfo());
+// "reconectar": the user confirmed, so the CURRENT statusLine becomes the original.
+ipcMain.handle('limits:reconnect', () => {
+  syncLimitsTap({ force: true });
+  limits.reconfigure();
+  return limitsSettingsInfo();
+});
 ipcMain.handle('limits:state', (event) => (fromWorkspace(event) ? limitsSnapshot() : null));
 
 // Remembers the exact window title each session was last found under, so the
@@ -4405,7 +4421,7 @@ function readTapOriginal() {
   }
 }
 
-function syncLimitsTap() {
+function syncLimitsTap({ force = false } = {}) {
   try {
     const wanted = Boolean(managerConfig.limits.fiveHour || managerConfig.limits.sevenDay);
     let tapCommand = null;
@@ -4440,6 +4456,7 @@ function syncLimitsTap() {
         fs.writeFileSync(statusLineSidecar, `${JSON.stringify(value)}\n`);
       },
       removeOriginal: () => fs.rmSync(statusLineSidecar, { force: true }),
+      force,
     });
     if (limitsTapStatus.replaced) log('statusLine was changed by the user: the limits tap stays out');
   } catch (error) {
