@@ -297,6 +297,27 @@ rodam, com os seus privilégios. O Vizor desliga o push no ambiente da execuçã
 uma caixa-forte. Use **Ler e relatar** pra qualquer pedido em que você não
 confie totalmente, e revise a branch da worktree antes de aproveitar o que ela fez.
 
+## Limites do Claude
+
+O Vizor mostra quanto você já gastou das duas janelas do Claude: a de 5 horas e
+a semanal. O número aparece na barra de status do workspace (clique pra abrir o
+painel com a barra de cada janela, o gráfico da subida e quando volta), e cada
+card da aba Agentes ganha um "≈ x%" com a fatia da janela de 5 h que aquele chat
+comeu (uma estimativa, dividida pelo custo de cada chat).
+
+**Como ele sabe.** Sem login e sem chamar API nenhuma: o Claude Code já entrega
+o uso pra sua status line, e o Vizor se encaixa na frente dela. Em
+**Configurações > limites** o Vizor se conecta sozinho junto com os hooks; a sua
+status line continua igual, ele só escuta o que passa. Se outra ferramenta
+trocar a status line, a seção mostra o estado e oferece "reconectar". Projeto
+com status line própria não é lido, e a seção avisa quais são.
+
+**Avisos.** O gerente avisa quando uma janela chega perto do limite (você escolhe
+a partir de quantos %), quando estoura e quando volta, e toca um alarme na hora
+do reset. Dá pra pedir aviso também de reset sem ter estourado, ou desligar uma
+das janelas. Cada aviso sai uma vez só, e se o Vizor estava fechado na hora do
+alarme, ele toca uma vez ao abrir.
+
 ## Empacotamento
 
 ```bash
