@@ -198,4 +198,39 @@ describe('limits-model', () => {
     early = read(early, rl(5, R2), R1 + 1000, { costUsd: 12 }).state;
     expect(early.sessions.a.firstCost).toBe(11);
   });
+  it('a live weekly window fires near once, however many 5 h windows pass', () => {
+    const W = T0 + 6 * 24 * H;
+    const both = (pct5, R5) => ({ ...rl(pct5, R5), ...rl(85, W, 'seven_day') });
+    let st = emptyState();
+    let weeklyNear = 0;
+    for (let i = 0; i < 30; i++) {
+      const R5 = T0 + (i + 1) * 5 * H;
+      const r = read(st, both(90, R5), T0 + i * 5 * H + 1000);
+      weeklyNear += r.events.filter((e) => e.window === 'sevenDay' && e.kind === 'limit-near').length;
+      st = r.state;
+    }
+    expect(weeklyNear).toBe(1);
+  });
+
+  it('forgets fired notices of windows that ended more than 8 days ago', () => {
+    let st = read(emptyState(), rl(90, T0 + H), T0).state;
+    expect(Object.keys(st.fired)).toEqual([`fiveHour:${T0 + H}`]);
+    const later = T0 + H + 9 * 24 * H;
+    st = read(st, rl(90, later + H), later).state;
+    expect(Object.keys(st.fired)).toEqual([`fiveHour:${later + H}`]);
+  });
+
+  it('drops chats outside the current 5 h window last seen more than 5 h ago', () => {
+    const R1 = T0 + H;
+    let st = read(emptyState(), rl(10, R1), T0, { sessionId: 'gone', costUsd: 1 }).state;
+    st = read(st, rl(10, R1), T0 + 1, { sessionId: 'here', costUsd: 1 }).state;
+    // a new window, 6 h later: 'gone' is out of it and long idle
+    const now = T0 + 6 * H;
+    st = read(st, rl(5, now + 4 * H), now, { sessionId: 'fresh', costUsd: 2 }).state;
+    expect(Object.keys(st.sessions).sort()).toEqual(['fresh']);
+    // a chat outside the window but seen less than 5 h ago stays
+    let keep = read(emptyState(), rl(10, R1), T0, { sessionId: 'recent', costUsd: 1 }).state;
+    keep = read(keep, rl(5, R1 + 5 * H), R1 + 1000, { sessionId: 'other', costUsd: 1 }).state;
+    expect(Object.keys(keep.sessions).sort()).toEqual(['other', 'recent']);
+  });
 });

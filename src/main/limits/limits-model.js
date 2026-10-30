@@ -6,7 +6,9 @@ const API_KEY = { fiveHour: 'five_hour', sevenDay: 'seven_day' };
 const FIVE_H = 5 * 3600_000;
 const SAME_WINDOW_MS = 120_000;
 const HISTORY_CAP = 300;
-const FIRED_CAP = 24;
+// A fired notice is remembered until its window is long over (the weekly one
+// lasts 7 days): a live window's key is never dropped, so it never re-fires.
+const FIRED_KEEP_MS = 8 * 24 * 3600_000;
 
 export function emptyState() {
   return { windows: { fiveHour: null, sevenDay: null }, sessions: {}, fired: {} };
@@ -17,13 +19,13 @@ const warnAtOf = (s) => (Number.isFinite(s?.warnAt) ? s.warnAt : 80);
 const enabled = (settings, w) => settings?.[w] !== false;
 const isFired = (st, w, resetsAt, kind) => !!st.fired[keyOf(w, resetsAt)]?.[kind];
 
-function markFired(fired, w, resetsAt, kind) {
+function markFired(fired, w, resetsAt, kind, now) {
   const k = keyOf(w, resetsAt);
-  const next = { ...fired };
-  delete next[k]; // re-insert so the newest keys sit last
-  next[k] = { ...fired[k], [kind]: true };
-  const keys = Object.keys(next);
-  for (const old of keys.slice(0, Math.max(0, keys.length - FIRED_CAP))) delete next[old];
+  const next = { ...fired, [k]: { ...fired[k], [kind]: true } };
+  for (const key of Object.keys(next)) {
+    const at = Number(key.slice(key.indexOf(':') + 1));
+    if (Number.isFinite(at) && at < now - FIRED_KEEP_MS) delete next[key];
+  }
   return next;
 }
 
@@ -64,6 +66,18 @@ function foldSession(sessions, r, win5, now) {
   return { ...sessions, [r.sessionId]: s };
 }
 
+// A chat outside the current 5 h window, idle for longer than one, is history.
+function pruneSessions(sessions, win5, now) {
+  const wkey = win5 ? String(win5.resetsAt) : null;
+  let next = sessions;
+  for (const [id, s] of Object.entries(sessions)) {
+    if (s.windowKey === wkey || !(s.lastAt < now - FIVE_H)) continue;
+    if (next === sessions) next = { ...sessions };
+    delete next[id];
+  }
+  return next;
+}
+
 export function reduce(state, reading, now, settings) {
   const events = [];
   const windows = { ...state.windows };
@@ -79,7 +93,7 @@ export function reduce(state, reading, now, settings) {
       const kind = pendingKind({ fired }, w, prev, settings);
       if (kind) {
         events.push(event(kind, w, prev));
-        fired = markFired(fired, w, prev.resetsAt, kind === 'limit-back' ? 'back' : 'reset');
+        fired = markFired(fired, w, prev.resetsAt, kind === 'limit-back' ? 'back' : 'reset', now);
       }
     }
     windows[w] = win;
@@ -88,14 +102,14 @@ export function reduce(state, reading, now, settings) {
     if (win.pct >= 100) {
       if (!isFired(st, w, win.resetsAt, 'out')) {
         events.push(event('limit-out', w, win));
-        fired = markFired(fired, w, win.resetsAt, 'out');
+        fired = markFired(fired, w, win.resetsAt, 'out', now);
       }
     } else if (win.pct >= warnAtOf(settings) && !isFired(st, w, win.resetsAt, 'near')) {
       events.push(event('limit-near', w, win));
-      fired = markFired(fired, w, win.resetsAt, 'near');
+      fired = markFired(fired, w, win.resetsAt, 'near', now);
     }
   }
-  const sessions = foldSession(state.sessions, reading ?? {}, windows.fiveHour, now);
+  const sessions = pruneSessions(foldSession(state.sessions, reading ?? {}, windows.fiveHour, now), windows.fiveHour, now);
   return { state: { windows, sessions, fired }, events };
 }
 
@@ -117,7 +131,7 @@ export function due(state, now, settings) {
     const kind = pendingKind({ fired }, w, win, settings);
     if (kind) {
       events.push(event(kind, w, win));
-      fired = markFired(fired, w, win.resetsAt, kind === 'limit-back' ? 'back' : 'reset');
+      fired = markFired(fired, w, win.resetsAt, kind === 'limit-back' ? 'back' : 'reset', now);
     }
     windows[w] = null;
   }
