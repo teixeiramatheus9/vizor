@@ -86,3 +86,24 @@ describe('fix round 1', () => {
     expect(liveKey(s, NOW)).not.toBe(liveKey(s, later));
   });
 });
+
+describe('final review', () => {
+  it('the panel hides "quem gastou" when the 5 h window is off or past its reset', () => {
+    const off = snap({ settings: { ...snap().settings, fiveHour: false } });
+    const html = renderLimitsPanel(off, NOW);
+    expect(html).toContain('Janela semanal');
+    expect(html).not.toContain('Quem gastou');
+    expect(html).not.toContain('fora do Vizor');
+    const expired = snap({ windows: { fiveHour: win(62, NOW - 1), sevenDay: win(40, NOW + 1000) } });
+    expect(renderLimitsPanel(expired, NOW)).not.toContain('Quem gastou');
+  });
+  it('near follows the warnAt setting, in the label and the panel rows', () => {
+    const at = (pct, warnAt) =>
+      snap({ windows: { fiveHour: win(pct, NOW + 1000), sevenDay: null }, settings: { ...snap().settings, warnAt } });
+    expect(limitsLabel(at(65, 60), NOW).level).toBe('near');
+    expect(limitsLabel(at(85, 90), NOW).level).toBe('ok');
+    expect(renderLimitsPanel(at(65, 60), NOW)).toContain('data-level="near"');
+    expect(renderLimitsPanel(at(85, 90), NOW)).toContain('data-level="ok"');
+    expect(limitsLabel(at(80, undefined), NOW).level).toBe('near');
+  });
+});

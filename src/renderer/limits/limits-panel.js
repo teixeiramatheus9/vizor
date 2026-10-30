@@ -7,7 +7,8 @@ const WINDOWS = [
   { key: 'fiveHour', short: '5h', name: 'Janela de 5 horas' },
   { key: 'sevenDay', short: 'sem', name: 'Janela semanal' },
 ];
-const NEAR_PCT = 80;
+// The dev's warnAt setting, as the notices use it.
+const nearPct = (snapshot) => (Number.isFinite(snapshot?.settings?.warnAt) ? snapshot.settings.warnAt : 80);
 const pad = (n) => String(n).padStart(2, '0');
 
 const clock = (ms) => {
@@ -31,13 +32,13 @@ export function liveWindows(snapshot, now) {
   }));
 }
 
-// text like "5h 62% · sem 40%"; level ok / near (>= 80) / out (>= 100) / stale.
+// text like "5h 62% · sem 40%"; level ok / near (>= warnAt) / out (>= 100) / stale.
 export function limitsLabel(snapshot, now = Date.now()) {
   if (!snapshot || snapshot.settings?.showInStatusBar === false) return null;
   if (snapshot.settings?.fiveHour === false && snapshot.settings?.sevenDay === false) return null;
   const live = liveWindows(snapshot, now);
   const worst = live.reduce((max, win) => Math.max(max, win.pct), 0);
-  let level = worst >= 100 ? 'out' : worst >= NEAR_PCT ? 'near' : 'ok';
+  let level = worst >= 100 ? 'out' : worst >= nearPct(snapshot) ? 'near' : 'ok';
   let title = live.map((win) => `${win.name}: ${Math.round(win.pct)}% · ${backLabel(win.resetsAt, now)}`).join('\n') || 'Limites do Claude: sem leitura ainda';
   if (snapshot.stale && snapshot.seenAt) {
     level = 'stale';
@@ -47,9 +48,9 @@ export function limitsLabel(snapshot, now = Date.now()) {
   return { text, level, title };
 }
 
-function row(win, now) {
+function row(win, now, near) {
   const pct = Math.max(0, Math.min(100, Math.round(win.pct)));
-  const level = pct >= 100 ? 'out' : pct >= NEAR_PCT ? 'near' : 'ok';
+  const level = pct >= 100 ? 'out' : pct >= near ? 'near' : 'ok';
   return [
     `<div class="lim-row" data-window="${win.key}" data-level="${level}">`,
     `<span class="lim-name">${escapeHtml(win.name)}</span>`,
@@ -80,7 +81,9 @@ export function limitsChart(windows) {
 }
 
 // nameOf(sessionId, cwd) -> display name; the caller resolves from the registry.
-function shareList(snapshot, nameOf) {
+function shareList(snapshot, nameOf, live) {
+  // The shares split the 5 h window: none to show while it is off or over.
+  if (!live.some((win) => win.key === 'fiveHour')) return '';
   const chats = snapshot?.shares?.chats ?? [];
   const items = chats.map((chat) => `<li><span class="lim-who">${escapeHtml(nameOf(chat.sessionId, chat.cwd))}</span><span class="lim-share">≈${Math.round(chat.pct)}%</span></li>`);
   const outside = snapshot?.shares?.outside;
@@ -95,7 +98,7 @@ export function renderLimitsPanel(snapshot, now = Date.now(), { nameOf = (_id, c
   const live = liveWindows(snapshot, now);
   if (!live.length) return `<div class="lim-panel" role="dialog" aria-label="Limites do Claude"><p class="lim-empty">${escapeHtml(EMPTY)}</p></div>`;
   const stale = snapshot.stale && snapshot.seenAt ? `<p class="lim-stale">visto há ${minutesAgo(snapshot.seenAt, now)} min</p>` : '';
-  return `<div class="lim-panel" role="dialog" aria-label="Limites do Claude">${live.map((win) => row(win, now)).join('')}${limitsChart(live)}${stale}${shareList(snapshot, nameOf)}</div>`;
+  return `<div class="lim-panel" role="dialog" aria-label="Limites do Claude">${live.map((win) => row(win, now, nearPct(snapshot))).join('')}${limitsChart(live)}${stale}${shareList(snapshot, nameOf, live)}</div>`;
 }
 
 // sessionId -> ≈% of the 5h window, only while that window is watched and live.
