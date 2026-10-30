@@ -13,7 +13,8 @@ export function parseCliJson(stdout) {
   }
 }
 
-// Runs one headless prompt on Haiku with the anti-recursion guard set.
+// Runs one headless prompt (Haiku unless told otherwise) with the
+// anti-recursion guard set.
 // Resolves {text, tokens} or null (spawn failure, timeout, non-zero exit,
 // unparseable output) — never rejects.
 // Quitting used to orphan a claude -p mid-flight: it is only killed on the
@@ -38,8 +39,15 @@ function defaultCommands() {
   return process.platform === 'win32' ? ['claude', 'claude.cmd'] : ['claude'];
 }
 
+// The gerente only writes text: no MCP servers, no user settings (their
+// hooks and plugins), no tools, no skills. Measured live: 6.7-8 s and ~32k
+// context tokens per call became ~4 s and ~3k (#161, the voice felt slow).
+// --bare would be faster still, but it never reads the OAuth login.
+const LEAN = ['--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '', '--tools', '', '--disable-slash-commands'];
+
 export function runClaude({
   prompt,
+  model = 'haiku',
   timeoutMs = 15000,
   spawnFn = spawn,
   commands = defaultCommands(),
@@ -58,7 +66,7 @@ export function runClaude({
       try {
         child = spawnFn(
           commands[index],
-          ['-p', prompt, '--model', 'haiku', '--output-format', 'json'],
+          ['-p', prompt, '--model', model, '--output-format', 'json', ...LEAN],
           {
             env: { ...process.env, VIZOR_INTERNAL: '1', CLAUDE_MANAGER_INTERNAL: '1' },
             stdio: ['ignore', 'pipe', 'ignore'],

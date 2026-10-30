@@ -1,0 +1,1 @@
+- Ajustes no workspace: a janela não abre mais fora da tela depois de trocar de monitor, a worktree selecionada fica destacada, os títulos das abas sobrevivem a um recarregamento e um repo de dotfiles no seu home não vira projeto

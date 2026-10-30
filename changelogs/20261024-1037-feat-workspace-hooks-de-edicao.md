@@ -1,0 +1,1 @@
+- Base do novo workspace: o Vizor passa a acompanhar cada arquivo que o Claude edita, sem atrasar a sessão

@@ -6,6 +6,11 @@ import {
   ensureHooks,
   removeAppHooks,
   removeHooks,
+  GUARD_MARKER,
+  GUARD_TIMEOUT_S,
+  GUARD_TOOL_MATCHER,
+  ensureGuard,
+  removeGuard,
 } from '../scripts/install-hooks.js';
 
 const COMMAND = 'node "/home/user/Claude Manager/src/hook/hook-emit.js"';
@@ -79,6 +84,48 @@ describe('install-hooks', () => {
       .map((hook) => hook.command);
     expect(commands).toEqual(['ferramenta-de-terceiro']);
   });
+
+  // Edits for the workspace, plus Bash/Task/Agent for the voice narration (#161).
+  const TOOL_GROUP = {
+    matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent',
+    hooks: [{ type: 'command', command: COMMAND, async: true }],
+  };
+
+  it('adds the edit-tool events with the matcher and async', () => {
+    const result = addHooks({}, COMMAND);
+    expect(result.hooks.PreToolUse).toEqual([TOOL_GROUP]);
+    expect(result.hooks.PostToolUse).toEqual([TOOL_GROUP]);
+    // A command that fails (npm test exiting 1) comes as PostToolUseFailure (#162 review).
+    expect(result.hooks.PostToolUseFailure).toEqual([TOOL_GROUP]);
+  });
+
+  it('an install with the old edit-only matcher is swapped for the new one', () => {
+    const old = { hooks: { PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: COMMAND, async: true }] }] } };
+    expect(ensureHooks(old, COMMAND).hooks.PreToolUse).toEqual([TOOL_GROUP]);
+  });
+
+  it('tool events are idempotent too', () => {
+    expect(addHooks(addHooks({}, COMMAND), COMMAND).hooks.PostToolUse).toHaveLength(1);
+  });
+
+  it('ensureHooks rewrites our tool hook when its matcher or async drifted', () => {
+    const settings = {
+      hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: COMMAND }] }] },
+    };
+    expect(ensureHooks(settings, COMMAND).hooks.PostToolUse).toEqual([TOOL_GROUP]);
+  });
+
+  it("keeps other tools' PreToolUse hooks", () => {
+    const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'lint.sh' }] };
+    const result = ensureHooks({ hooks: { PreToolUse: [other] } }, COMMAND);
+    expect(result.hooks.PreToolUse).toEqual([other, TOOL_GROUP]);
+  });
+
+  it('removeAppHooks strips the tool events as well', () => {
+    const result = removeAppHooks(addHooks({}, COMMAND));
+    expect(result.hooks.PreToolUse).toBeUndefined();
+    expect(result.hooks.PostToolUse).toBeUndefined();
+  });
 });
 
 describe('buildHookCommand', () => {
@@ -122,5 +169,173 @@ describe('buildHookCommand', () => {
     const next = ensureHooks(settings, '"C:\\Users\\u\\.config\\claude-manager\\hook-emit.cmd"');
     const commands = next.hooks.Stop.flatMap((group) => group.hooks.map((hook) => hook.command));
     expect(commands).toEqual(['"C:\\Users\\u\\.config\\claude-manager\\hook-emit.cmd"']);
+  });
+});
+
+describe('foreign tool groups (#103)', () => {
+  it('leaves a PreToolUse group without a hooks array alone', () => {
+    const odd = { matcher: 'Bash' };
+    const settings = { hooks: { PreToolUse: [odd] } };
+    expect(ensureHooks(settings, COMMAND).hooks.PreToolUse[0]).toEqual(odd);
+    expect(removeAppHooks(settings).hooks.PreToolUse).toEqual([odd]);
+  });
+});
+
+describe('duplicated tool hooks (#103)', () => {
+  it('collapses hand-made copies of our tool hook into one', () => {
+    const ours = { matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent', hooks: [{ type: 'command', command: COMMAND, async: true }] };
+    const mixed = { matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|Agent', hooks: [{ type: 'command', command: 'lint.sh' }, { type: 'command', command: COMMAND, async: true }] };
+    const result = ensureHooks({ hooks: { PostToolUse: [ours, { ...ours }, mixed] } }, COMMAND);
+    expect(result.hooks.PostToolUse).toEqual([ours, { ...mixed, hooks: [{ type: 'command', command: 'lint.sh' }] }]);
+  });
+});
+
+describe('rule guard hooks', () => {
+  const GUARD = 'ELECTRON_RUN_AS_NODE=1 "/opt/Vizor/vizor" "/home/u/.config/vizor/guard/rule-guard.js"';
+
+  it('ensureGuard registers PreToolUse (blocking, long timeout), SessionStart and UserPromptSubmit', () => {
+    const result = ensureGuard({}, GUARD);
+    expect(result.hooks.PreToolUse).toEqual([
+      { matcher: GUARD_TOOL_MATCHER, hooks: [{ type: 'command', command: GUARD, timeout: GUARD_TIMEOUT_S }] },
+    ]);
+    expect(result.hooks.SessionStart).toEqual([{ hooks: [{ type: 'command', command: GUARD }] }]);
+    expect(result.hooks.UserPromptSubmit).toEqual([{ hooks: [{ type: 'command', command: GUARD, timeout: 25 }] }]);
+    expect(GUARD_TOOL_MATCHER).toBe('Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*');
+    expect(GUARD_TIMEOUT_S).toBe(600);
+  });
+
+  it('ensureGuard is idempotent and replaces an old guard command', () => {
+    const once = ensureGuard({}, GUARD);
+    expect(ensureGuard(once, GUARD)).toEqual(once);
+    const moved = ensureGuard(ensureGuard({}, 'node "/old/vizor/guard/rule-guard.js"'), GUARD);
+    expect(moved).toEqual(once);
+  });
+
+  it('quitting removes hook-emit but leaves the guard', () => {
+    const both = ensureGuard(ensureHooks({}, COMMAND), GUARD);
+    const result = removeAppHooks(both);
+    const all = JSON.stringify(result);
+    expect(all).toContain(GUARD_MARKER);
+    expect(all).not.toContain(HOOK_MARKER);
+  });
+
+  it('removeGuard leaves hook-emit and other tools alone', () => {
+    const settings = ensureGuard(
+      ensureHooks({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other-tool' }] }] } }, COMMAND),
+      GUARD,
+    );
+    const result = removeGuard(settings);
+    const all = JSON.stringify(result);
+    expect(all).not.toContain(GUARD_MARKER);
+    expect(all).toContain(HOOK_MARKER);
+    expect(all).toContain('other-tool');
+    expect(result.hooks.SessionStart).toBeUndefined();
+  });
+
+  it('removeGuard only takes the guard script, not any command naming rule-guard (#165)', () => {
+    const foreign = [
+      { type: 'command', command: '/usr/local/bin/my-rule-guard.sh' },
+      { type: 'command', command: 'node "/home/u/tools/rule-guard/index.js"' },
+    ];
+    const settings = ensureGuard({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: foreign }] } }, GUARD);
+    expect(removeGuard(settings).hooks.PreToolUse).toEqual([{ matcher: 'Bash', hooks: foreign }]);
+    const shim = '"C:\\Users\\u\\.config\\vizor\\rule-guard.cmd"';
+    const mjs = 'ELECTRON_RUN_AS_NODE=1 "/opt/Vizor/vizor" "/home/u/.config/vizor/guard/rule-guard.mjs"';
+    for (const command of [shim, mjs]) expect(removeGuard(ensureGuard({}, command)).hooks).toEqual({});
+  });
+
+  it('ensureGuard leaves a canonical guard where it is, so the boot writes settings.json once (#165)', () => {
+    // Quit drops hook-emit and keeps the guard; the next boot re-adds hook-emit
+    // after it. Moving the guard back to the end would be a second write.
+    const booted = ensureHooks(removeAppHooks(ensureGuard(ensureHooks({}, COMMAND), GUARD)), COMMAND);
+    expect(ensureGuard(booted, GUARD)).toBe(booted);
+  });
+
+  it('ensureHooks never touches the guard', () => {
+    const settings = ensureGuard({}, GUARD);
+    const result = ensureHooks(settings, COMMAND);
+    const commands = Object.values(result.hooks).flat().flatMap((group) => group.hooks.map((hook) => hook.command));
+    expect(commands.filter((command) => command === GUARD)).toHaveLength(3);
+  });
+
+  it('the sub-agent events are installed (#142)', () => {
+    const result = addHooks({}, COMMAND);
+    expect(result.hooks.SubagentStart).toBeDefined();
+    expect(result.hooks.SubagentStop).toBeDefined();
+  });
+});
+
+import {
+  STATUSLINE_MARKER,
+  buildStatusLineCommand,
+  ensureStatusLine,
+  isStatusLineTap,
+  removeStatusLine,
+} from '../scripts/install-hooks.js';
+
+describe('status-line tap installer', () => {
+  const TAP = 'ELECTRON_RUN_AS_NODE=1 "/app/electron" "/app/src/hook/statusline-tap.js"';
+
+  it('builds the command like the hook one, with a shim on Windows', () => {
+    const linux = buildStatusLineCommand({ platform: 'linux', execPath: '/e', tapScript: '/t/statusline-tap.js', shimDir: '/t', originalScript: '/c/statusline-original.sh' });
+    // A POSIX shim the app does not have to be around for (see statusline-shim.test.js).
+    expect(linux.command).toBe("'/t/statusline-tap.sh'");
+    expect(linux.shim).toMatchObject({ path: '/t/statusline-tap.sh', mode: 0o755 });
+    expect(linux.shim.content).toContain("runtime='/e'");
+    expect(linux.shim.content).toContain("tap='/t/statusline-tap.js'");
+    expect(linux.shim.content).toContain("original='/c/statusline-original.sh'");
+    expect(isStatusLineTap(linux.command)).toBe(true);
+    const win = buildStatusLineCommand({ platform: 'win32', execPath: 'C:\\e.exe', tapScript: 'C:\\t\\statusline-tap.js', shimDir: 'C:\\cfg' });
+    expect(win.command).toBe('"C:\\cfg\\statusline-tap.cmd"');
+    expect(win.shim.content).toContain('ELECTRON_RUN_AS_NODE=1');
+    expect(isStatusLineTap(win.command)).toBe(true);
+  });
+
+  it('recognises its own command only', () => {
+    expect(STATUSLINE_MARKER).toBe('statusline-tap');
+    expect(isStatusLineTap(TAP)).toBe(true);
+    expect(isStatusLineTap("'/home/u/.config/vizor/statusline/statusline-tap.sh'")).toBe(true);
+    expect(isStatusLineTap('~/bin/my-line.sh')).toBe(false);
+    expect(isStatusLineTap(undefined)).toBe(false);
+  });
+
+  it('ensure then remove restores the exact original', () => {
+    const settings = { model: 'opus', statusLine: { type: 'command', command: 'my-line "$X"', padding: 2 } };
+    const { settings: tapped, original } = ensureStatusLine(settings, TAP);
+    expect(original).toEqual(settings.statusLine);
+    expect(tapped.statusLine).toEqual({ type: 'command', command: TAP, padding: 2 });
+    expect(tapped.model).toBe('opus');
+    expect(removeStatusLine(tapped, original)).toEqual(settings);
+  });
+
+  it('keeps every key of the dev statusLine through a round trip', () => {
+    const settings = { statusLine: { type: 'command', command: 'mine', padding: 1, refreshInterval: 5 } };
+    const { settings: tapped, original } = ensureStatusLine(settings, TAP);
+    expect(tapped.statusLine.refreshInterval).toBe(5);
+    expect(removeStatusLine(tapped, original)).toEqual(settings);
+  });
+
+  it('does not take a user script with the tap name inside for the tap', () => {
+    expect(isStatusLineTap('~/bin/statusline-tap-foo.sh')).toBe(false);
+    expect(isStatusLineTap('node /x/statusline-tap.js')).toBe(true);
+  });
+
+  it('is a no-op on an already tapped settings', () => {
+    const { settings: tapped } = ensureStatusLine({ statusLine: { type: 'command', command: 'x' } }, TAP);
+    const again = ensureStatusLine(tapped, TAP);
+    expect(again.settings).toEqual(tapped);
+    expect(again.original).toBeUndefined();
+  });
+
+  it('creates a statusLine when there was none and removes it after', () => {
+    const { settings: tapped, original } = ensureStatusLine({ model: 'opus' }, TAP);
+    expect(original).toBeNull();
+    expect(tapped.statusLine).toEqual({ type: 'command', command: TAP });
+    expect(removeStatusLine(tapped, original)).toEqual({ model: 'opus' });
+  });
+
+  it('remove leaves a statusLine the dev changed meanwhile alone', () => {
+    const settings = { statusLine: { type: 'command', command: 'mine' } };
+    expect(removeStatusLine(settings, null)).toEqual(settings);
   });
 });

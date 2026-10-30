@@ -168,7 +168,10 @@ describe('reconciling against the live Claude Code sessions', () => {
   const S2 = '7d6b682c-5c11-4e0a-b3d2-9f0e1a7c4d55';
   const withSessions = (...ids) => {
     const registry = new SessionRegistry();
-    for (const id of ids) registry.applyEvent(promptEvent({ session_id: id }));
+    // finished chats: one that dies mid-turn leaves a tombstone instead
+    for (const id of ids) {
+      registry.applyEvent(promptEvent({ session_id: id, hook_event_name: 'Stop' }));
+    }
     return registry;
   };
 
@@ -315,7 +318,7 @@ describe('adopting sessions found in the live registry', () => {
   // allowed to reap it when it disappears.
   it('marks an adopted session as seen alive', () => {
     const registry = new SessionRegistry();
-    registry.adopt([found()]);
+    registry.adopt([found({ status: 'idle' })]);
     registry.reconcileLiveSessions(new Set([S2]));
     expect(registry.sessions.has(S1)).toBe(false);
   });
@@ -469,8 +472,19 @@ describe('haloState', () => {
     expect(haloState([{ ...base, status: STATUS.DONE }])).toBe('done');
   });
 
-  it('yellow for a pending question or a waiting chat', () => {
-    expect(haloState([{ ...base, status: STATUS.WAITING }])).toBe('question');
+  it('an idle notice after a Stop stays green, not yellow', () => {
+    const registry = new SessionRegistry();
+    registry.applyEvent(promptEvent());
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    expect(haloState(registry.list())).toBe('done');
+    registry.applyEvent(promptEvent({ hook_event_name: 'Notification', message: 'Claude is waiting for your input' }));
+    expect(registry.list()[0].status).toBe(STATUS.WAITING);
+    expect(haloState(registry.list())).toBe('done');
+    expect(haloState([{ ...base, status: STATUS.WAITING }])).toBe('done');
+  });
+
+  it('yellow for a pending question', () => {
+    expect(haloState([{ ...base, status: STATUS.WAITING, question: { questions: [] } }])).toBe('question');
     expect(haloState([{ ...base, status: STATUS.DONE, question: { questions: [] } }])).toBe('question');
   });
 
@@ -481,7 +495,7 @@ describe('haloState', () => {
   it('the most urgent chat wins the bubble', () => {
     const sessions = [
       { ...base, status: STATUS.DONE },
-      { ...base, status: STATUS.WAITING },
+      { ...base, status: STATUS.WAITING, question: { questions: [] } },
       { ...base, status: STATUS.WAITING, needsPermission: true },
     ];
     expect(haloState(sessions)).toBe('permission');
@@ -492,5 +506,195 @@ describe('haloState', () => {
     expect(
       haloState([{ ...base, unread: false, status: STATUS.WAITING, needsPermission: true }]),
     ).toBeNull();
+  });
+
+  it('drops only a VIZOR_PTY_ID main found not to hold (#140)', () => {
+    const registry = new SessionRegistry();
+    registry.applyEvent({ hook_event_name: 'UserPromptSubmit', session_id: 'x1', cwd: '/r', term: { VIZOR_PTY_ID: 'p1', TMUX: 't' } });
+    registry.applyEvent({ hook_event_name: 'Stop', session_id: 'x1', cwd: '/r', dropPtyId: true });
+    expect(registry.sessions.get('x1').term).toEqual({ TMUX: 't' });
+  });
+});
+
+describe('tombstones and seen marks', () => {
+  const S1 = '4b706711-9840-4931-8b0f-d6d51518d6ba';
+  const DAY = 24 * 60 * 60 * 1000;
+  const live = (now) => {
+    const registry = new SessionRegistry({ now, maxAgeMs: 7 * DAY });
+    registry.applyEvent(promptEvent({ session_id: S1 }));
+    registry.reconcileLiveSessions(new Set([S1]));
+    return registry;
+  };
+
+  it('keeps a tombstone for a chat that died mid-turn', () => {
+    let t = 1000;
+    const registry = live(() => t);
+    t = 5000;
+
+    registry.reconcileLiveSessions(new Set());
+
+    const [tomb] = registry.list();
+    expect(tomb).toMatchObject({
+      id: S1,
+      status: STATUS.FAILED,
+      failedAt: 5000,
+      failReason: 'a sessão fechou no meio do turno',
+    });
+    expect(registry.unreadCount()).toBe(0);
+  });
+
+  it('keeps the tombstone through later reconciles', () => {
+    let t = 1000;
+    const registry = live(() => t);
+    registry.reconcileLiveSessions(new Set());
+    t = 9000;
+    registry.reconcileLiveSessions(new Set());
+    expect(registry.list()[0].failedAt).toBe(1000);
+  });
+
+  it('drops a chat that died after its Stop', () => {
+    const registry = live(() => 1000);
+    registry.applyEvent(promptEvent({ session_id: S1, hook_event_name: 'Stop' }));
+    registry.reconcileLiveSessions(new Set());
+    expect(registry.list()).toEqual([]);
+  });
+
+  it('still never reaps a session it cannot judge', () => {
+    const registry = new SessionRegistry();
+    registry.applyEvent(promptEvent({ session_id: S1 }));
+    registry.reconcileLiveSessions(new Set());
+    expect(registry.list()[0].status).toBe(STATUS.WORKING);
+  });
+
+  it('a tombstoned chat that comes back is a live session again', () => {
+    const registry = live(() => 1000);
+    registry.reconcileLiveSessions(new Set());
+    registry.applyEvent(promptEvent({ session_id: S1 }));
+    const session = registry.list()[0];
+    expect(session.status).toBe(STATUS.WORKING);
+    expect(session.failedAt).toBeUndefined();
+    expect(session.failReason).toBeUndefined();
+  });
+
+  it('prune drops a tombstone only after 24 h', () => {
+    let t = 1000;
+    const registry = live(() => t);
+    registry.reconcileLiveSessions(new Set());
+    t = 1000 + DAY;
+    registry.prune();
+    expect(registry.list()).toHaveLength(1);
+    t = 1000 + DAY + 1;
+    registry.prune();
+    expect(registry.list()).toEqual([]);
+  });
+
+  it('a chat that closed after an Esc (turn ended without a Stop) is dropped, not tombstoned', () => {
+    const registry = live(() => 1000);
+    registry.reconcileLiveSessions(new Set(), { closedTurns: new Set([S1]) });
+    expect(registry.list()).toEqual([]);
+  });
+
+  it('a chat the caller could not prove closed still dies mid-turn', () => {
+    const registry = live(() => 1000);
+    registry.reconcileLiveSessions(new Set(), { closedTurns: new Set(['other']) });
+    expect(registry.list()[0].status).toBe(STATUS.FAILED);
+  });
+
+  it('dismiss removes the tombstone', () => {
+    const registry = live(() => 1000);
+    registry.reconcileLiveSessions(new Set());
+    const onChange = vi.fn();
+    registry.on('change', onChange);
+    registry.dismiss(S1);
+    expect(registry.list()).toEqual([]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('dismiss leaves a live session alone', () => {
+    const registry = live(() => 1000);
+    registry.dismiss(S1);
+    expect(registry.list()).toHaveLength(1);
+  });
+
+  it('flags an adopted session until a hook speaks for it', () => {
+    const registry = new SessionRegistry();
+    registry.adopt([{ sessionId: S1, cwd: '/tmp/a', status: 'idle' }]);
+    expect(registry.list()[0].adopted).toBe(true);
+    registry.applyEvent(promptEvent({ session_id: S1 }));
+    expect(registry.list()[0].adopted).toBeUndefined();
+  });
+
+  it('markSeen stamps the time', () => {
+    let t = 1000;
+    const registry = live(() => t);
+    t = 4000;
+    registry.markSeen(S1);
+    expect(registry.list()[0].seenAt).toBe(4000);
+  });
+
+  it('markSeen on an unknown id is a no-op', () => {
+    const registry = new SessionRegistry();
+    const onChange = vi.fn();
+    registry.on('change', onChange);
+    registry.markSeen('nope');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('serialize/hydrate carries seenAt, failedAt and failReason', () => {
+    const registry = live(() => 1000);
+    registry.markSeen(S1);
+    registry.reconcileLiveSessions(new Set());
+    const restored = new SessionRegistry();
+    restored.hydrate(registry.serialize());
+    expect(restored.list()[0]).toMatchObject({
+      seenAt: 1000,
+      failedAt: 1000,
+      failReason: 'a sessão fechou no meio do turno',
+    });
+  });
+});
+
+describe('the Stop time and the interrupt', () => {
+  it('records the Stop time and keeps it through the idle Notification', () => {
+    let t = 1000;
+    const registry = new SessionRegistry({ now: () => t });
+    registry.applyEvent(promptEvent());
+    expect(registry.list()[0].stoppedAt ?? null).toBeNull();
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    t = 61_000;
+    registry.applyEvent(promptEvent({ hook_event_name: 'Notification', message: 'Claude is waiting for your input' }));
+    const session = registry.list()[0];
+    expect(session.status).toBe(STATUS.WAITING);
+    expect(session.stoppedAt).toBe(1000);
+    expect(session.updatedAt).toBe(61_000);
+  });
+
+  it('a new prompt clears the Stop time', () => {
+    const registry = new SessionRegistry({ now: () => 1000 });
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    registry.applyEvent(promptEvent());
+    expect(registry.list()[0].stoppedAt).toBeNull();
+  });
+
+  it('markInterrupted ends a running turn as done, with its Stop time', () => {
+    let t = 1000;
+    const registry = new SessionRegistry({ now: () => t });
+    registry.applyEvent(promptEvent());
+    t = 5000;
+    const onChange = vi.fn();
+    registry.on('change', onChange);
+    registry.markInterrupted('s1');
+    expect(registry.list()[0]).toMatchObject({ status: STATUS.DONE, stoppedAt: 5000, updatedAt: 5000, needsPermission: false });
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('markInterrupted leaves a chat that is not working alone', () => {
+    const registry = new SessionRegistry({ now: () => 1000 });
+    registry.applyEvent(promptEvent({ hook_event_name: 'Stop' }));
+    const onChange = vi.fn();
+    registry.on('change', onChange);
+    registry.markInterrupted('s1');
+    registry.markInterrupted('nope');
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

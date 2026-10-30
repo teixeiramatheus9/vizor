@@ -2,9 +2,32 @@ import { describe, it, expect } from 'vitest';
 import {
   INBOUND_POLICIES,
   INBOUND_DEFAULT,
+  readClaudeSettingsFile,
   readInboundPolicy,
   setInboundPolicy,
 } from '../src/main/claude-settings.js';
+
+describe('readClaudeSettingsFile (#165)', () => {
+  const failing = (code) => () => {
+    throw Object.assign(new Error(code), { code });
+  };
+
+  it('a missing file is an empty start', () => {
+    expect(readClaudeSettingsFile(failing('ENOENT'))).toEqual({});
+  });
+
+  it('a file that does not parse, is not an object or cannot be read is unreadable (null): never rewritten', () => {
+    expect(readClaudeSettingsFile(() => '{ "hooks": ')).toBeNull();
+    expect(readClaudeSettingsFile(() => '[]')).toBeNull();
+    expect(readClaudeSettingsFile(() => '"x"')).toBeNull();
+    expect(readClaudeSettingsFile(() => 'null')).toBeNull();
+    expect(readClaudeSettingsFile(failing('EACCES'))).toBeNull();
+  });
+
+  it('a good file comes back as is', () => {
+    expect(readClaudeSettingsFile(() => '{"model":"opus"}')).toEqual({ model: 'opus' });
+  });
+});
 
 describe('inbound policy', () => {
   it('offers exactly the values Claude Code accepts', () => {

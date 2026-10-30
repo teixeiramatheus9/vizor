@@ -1,0 +1,10 @@
+- O workspace ganhou as abas Workspace, Agentes e GitHub no topo, com Ctrl+1 a 3 pra trocar (funciona até com o terminal focado) e ? pra ver todos os atalhos.
+- Agentes mostra cada chat como um card num kanban (Esperando você, Trabalhando, Terminou, Ociosa e Falhou), com Abrir, Responder, Aprovar, Interromper e Dispensar conforme o estado, e filtros por projeto e por "só o que precisa de mim".
+- GitHub lista as issues e as PRs abertas de cada projeto: Puxar abre um chat pra issue, Revisar abre a revisão da PR, e o texto aparece ao lado. A lista atualiza a cada 5 minutos com a aba aberta e mantém a última leitura boa se uma atualização falhar.
+- Nova barra de status no rodapé com os tokens de hoje e os agentes rodando e esperando; a revisão lembra onde você parou.
+- Avisos em rajada viram um só (um balão, um som e uma fala); o que precisa de você continua passando direto.
+- O workspace ganhou movimento curto e suave (abas, gaveta, avisos e abrir arquivo), que fica parado se o sistema pedir menos movimento.
+- Mudanças, Agentes e GitHub mostram um esqueleto enquanto os dados chegam, e as listas vazias dizem o próximo passo.
+- Nova densidade compacta do workspace, em Configurações > aparência > workspace: fonte menor e linhas mais justas.
+- A lista de Mudanças abre mais rápido na primeira vez: o Vizor pede ao git, ao mesmo tempo, a base da revisão e os hunks já commitados, e responde o resumo antes da análise de contratos.
+- A bolha não fica mais amarela com o aviso de "esperando" que o Claude Code manda um minuto depois de um chat terminar: amarelo agora é só pergunta, pedido de permissão ou a trava.

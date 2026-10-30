@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+// gh for the end-to-end run: two open issues, one PR, nothing else.
+// A file named `gh-fail` in $HOME makes the PR list query fail (its content is
+// the stderr), so the scenarios can see one query break while the rest answer.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const args = process.argv.slice(2).join(' ');
+const ISSUES = [
+  { number: 169, title: 'Menu de ação ao clicar no ícone do Vizor', labels: [], assignees: [] },
+  { number: 149, title: 'tmux numa aba conta como no Vizor?', labels: [], assignees: [] },
+];
+if (args.startsWith('issue list')) process.stdout.write(JSON.stringify(args.includes('@me') ? [] : ISSUES));
+else if (args.startsWith('pr list') && args.includes('headRefName')) {
+  // The GitHub tab's own query (the voice digest does not ask for the branch).
+  const failure = path.join(os.homedir(), 'gh-fail');
+  if (fs.existsSync(failure)) {
+    process.stderr.write(fs.readFileSync(failure, 'utf8'));
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify([{ number: 31, title: 'Corrige o foco da bolha', author: { login: 'alex' }, isDraft: false, headRefName: 'fix/31-foco', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: [{ conclusion: 'SUCCESS' }], url: 'https://github.com/o/r/pull/31', labels: [{ name: 'bug', color: 'd73a4a' }] }]));
+}
+else if (args.startsWith('pr list') || args.startsWith('run list')) process.stdout.write('[]');
+else if (args.includes('view') && args.includes('--json body')) process.stdout.write(JSON.stringify({ body: '## Contexto\n\nTexto da **descrição** com `codigo`.' }));
+else if (args.startsWith('issue view')) process.stdout.write('Menu de ação ao clicar no ícone do Vizor\n');
+else process.exit(1);

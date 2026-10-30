@@ -2,34 +2,137 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   globalShortcut,
   ipcMain,
   Menu,
   Notification,
   screen,
+  session,
+  powerMonitor,
   shell,
   systemPreferences,
   Tray,
 } from 'electron';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildHookCommand, ensureHooks, removeAppHooks } from '../../scripts/install-hooks.js';
+import { buildHookCommand, buildStatusLineCommand, ensureGuard, ensureHooks, isGuardCommand, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
+import { guardCommand, installGuardScript } from './guard-runtime.js';
+import { projectStatusLineOverrides, tapStatusText } from './limits/limits-settings.js';
+import { createLimitsService, installTapScript, syncStatusLineTap, writeOriginalScript, LIMITS_FILE_NAME } from './limits/limits-service.js';
+import { createGuardAsks, isGuardChoice } from './guard-asks.js';
+import { createRulesStore, pruneSeenSessions } from './rules-store.js';
+import { guardSpeech } from '../renderer/guard-card.js';
+import { normalizeMic, normalizeMicList } from '../renderer/mic-choice.js';
+import { chromiumSinkId, listSinks, normalizeOutput } from './audio-devices.js';
+import { Worker } from 'node:worker_threads';
+import { createListener } from './voice/listener.js';
+import { createSpeechArbiter } from './voice/arbiter.js';
+import { createVoiceSession } from './voice/session.js';
+import { createRoutines } from './voice/routines.js';
+import { createNarrator } from './voice/narration.js';
+import { buildOrchestra, nextFocus } from './maestro/orchestra.js';
+import { createPendingOrder } from './maestro/pending-order.js';
+import { createGraphIndexer, createWorkerParser } from './graph/indexer.js';
+import { impactOf, parsePlan, touchedFunctions } from './graph/impact.js';
+import { createConductor } from './maestro/conductor.js';
+import { createBackstage, descendantsOf, parseListeners, portsFor } from './maestro/backstage.js';
+import { excludeWithPlan, isPlanEdit, planFileName, planFileOf, planIssueOf } from './work/plan.js';
+import { createTaskService } from './work/task-service.js';
+import { createTaskStore } from './work/task-state.js';
+import { createCheckpoints, execGit } from './work/checkpoints.js';
+import { createPlanActions, createPlanTracker } from './work/plans.js';
+import { catalogFrom, catalogStale } from './work/catalog.js';
+import { columnOf } from './agents/columns.js';
+import { createGithubFetcher, reduceChecks } from './github/fetch.js';
+import { reviewPrPrompt, startIssuePrompt, taskTabTitle } from './work/prompts.js';
+import { readTail } from './maestro/log-tail.js';
+import { shouldSuggest } from './maestro/reviewer.js';
+import { criticalOf } from '../renderer/graph-view.js';
+import { testOutcomeOf } from './voice/narration.js';
+import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
+import { avatarCheckDue, avatarOwnerOf, createAvatarService, nextAvatarCheck, openGraphArgs, OG_MAX_BYTES, parseOpenGraph, resolveLogo } from './project-avatar.js';
+import { findLocalLogo } from './local-logo.js';
+import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
+import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
+import { createTaskLinks, resolveTask } from './voice/task-links.js';
+import { safeToTypeIdle } from './bubble-routing.js';
+import { blocksTyping } from './session-status.js';
+import { readSnapshotWithQuestionRetry } from './question-retry.js';
+import { runClaude } from './claude-cli.js';
+import { ASR_MODELS, KWS_MODEL, VAD_MODEL, installVoiceModels, missingVoiceModels, voiceModelPaths } from './voice/models.js';
+import { otherRecorders, parsePwDump } from './voice/meeting.js';
+import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
+import { compileRules, editProblem, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
+import { buildAgentSessions } from './agents/sessions-list.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
-import { readAiTitle, readConversationTail, readTranscriptSnapshot } from './transcript.js';
+import {
+  readAiTitle,
+  readConversationTail,
+  readEditReason,
+  readLastBashCommand,
+  readFirstPrompt,
+  readInterrupted,
+  readTranscriptSnapshot,
+  readTurnClosed,
+} from './transcript.js';
+import { createHash } from 'node:crypto';
+import { createReviewService } from './review/service.js';
+import { createReviewStore, storeKey } from './review/review-store.js';
+import { createVerifier } from './review/verify.js';
+import { composeMessage, rejectNotice } from './review/compose.js';
+import { safeRelPath, sanitizePrefs } from './review/ipc-guard.js';
+import { EditTracker } from './edit-tracker.js';
+import { createEditPipeline } from './edit-pipeline.js';
+import { readIndexVersion } from './git-files.js';
+import { MAX_DIFF_BYTES, diffability } from './edit-hunks.js';
+import { createCommandWatcher } from './command-watcher.js';
+import { listWorktrees, repoRootOf, worktreeRootOf } from './worktrees.js';
+import {
+  addProject,
+  buildWorkspaceTree,
+  quitPrompt,
+  removeProject,
+  removedIds,
+  clampTerminalSize,
+  matchWorktree,
+  shouldAutoAdd,
+  staleRoots,
+  workspaceAvailable,
+} from './workspace-model.js';
+import { boundsVisible, createWorkspaceWindowManager } from './workspace-window.js';
+import { loadPty } from './pty-loader.js';
+import { createPtyHost, withoutClaudeSession } from './pty-host.js';
+import { createQuitFreeze, linkTerminals, restorePlan, tabsToSave, terminalCommand, trackChatEnds, isSessionId } from './workspace-tabs.js';
+import { listConversations, resolveClaudeProjectDir } from './conversations.js';
+import { commandReason, fileViewFor, serializeTask, taskSummaries } from './edit-view.js';
+import { bracketedPaste, buildCommentMessage, validateComment } from './comment-message.js';
+import { createCommentStore } from './comment-store.js';
+import { createCommentDelivery } from './comment-delivery.js';
+import { createPtyIdentityCheck, inForeground } from './pty-foreground.js';
+import {
+  answerKeys,
+  answerRoute,
+  bubbleClickTarget,
+  pickWorkspaceSession,
+  replyRoute,
+  workspaceFocusOverride,
+} from './bubble-routing.js';
 import { generateManagerMessage, humanizeNotification, isPermissionAsk } from './manager-voice.js';
 import { digestMessage } from './message-digest.js';
 import { askManager, findMentionedSession } from './manager-chat.js';
 import { fallbackMessage } from './manager-voice.js';
-import { loadConfig, saveConfig } from './config-store.js';
+import { clampLimits, loadConfig, saveConfig } from './config-store.js';
 import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
-import { VOICES } from './sherpa-installer.js';
-import { THEMES, PALETTES } from './themes.js';
+import { VOICES, speechLang } from './sherpa-installer.js';
+import { THEMES, PALETTES, backgroundFor } from './themes.js';
+import { bootQuery } from './workspace-boot.js';
 import { PANEL_SCALE, clampScale, panelSizeForScale } from './panel-size.js';
 import {
   anchorVisible,
@@ -41,7 +144,7 @@ import { sanitizeShortcuts } from './shortcuts.js';
 import { applyLinuxAutostart, autostartFilePath, desktopEntry, execLine } from './autostart.js';
 import { legacyAutostartFile, legacyConfigDir, migrateLegacyInstall } from './migration.js';
 import { setupUpdater } from './updater.js';
-import { detectTrayHost, trayMenuTemplate } from './tray.js';
+import { actionMenuAnchor, detectTrayHost, deviceChoice, trayMenuTemplate } from './tray.js';
 import { installTraySupport, shouldInstallTraySupport } from './tray-support.js';
 import { killPendingClaude } from './claude-cli.js';
 import {
@@ -52,9 +155,13 @@ import {
   usageFile,
   updateNoticeFile,
   configDir,
+  rulesDir,
+  guardDir,
+  globalRulesFile,
+  PROJECT_RULES_FILE,
 } from './paths.js';
 import {
-  UPDATE_DONE_PHRASE,
+  updateDonePhrase,
   shouldAnnounce,
   shouldAutoApply,
   updateAnnouncement,
@@ -68,7 +175,7 @@ import {
   readAdoptableSessions,
   claudeTranscriptPath,
 } from './cc-sessions.js';
-import { readInboundPolicy, setInboundPolicy } from './claude-settings.js';
+import { readClaudeSettingsFile, readInboundPolicy, setInboundPolicy } from './claude-settings.js';
 import {
   probeSystemEventsAutomation,
   accessibilityLostAfterUpdate,
@@ -81,8 +188,25 @@ import {
 import { linuxFocusHint, win32FocusHint, hintAnnouncement } from './focus-hints.js';
 import { resolveWindowDriver } from './window-driver.js';
 import { shouldAnnounce as notifyPolicy } from './notify-policy.js';
+import { createNotifyBatch, summarizeBatch } from './notify-batch.js';
+import * as automationSchedule from './automations/schedule.js';
+import * as automationPermissions from './automations/permissions.js';
+import { createAutomationStore } from './automations/store.js';
+import { writeSkill, removeSkill } from './automations/skill.js';
+import { createRunner as createAutomationRunner } from './automations/runner.js';
+import { createDailyBudget } from './automations/budget.js';
+import { createHistory as createAutomationHistory } from './automations/history.js';
+import { prepareWorktree, worktreePathOf } from './automations/worktree.js';
+import { createAutomationService, automationRunCards } from './automations/service.js';
+import { parseProjectConfig } from './review/project-config.js';
+import { testCommand, lintCommand } from './review/verify.js';
 import { installBridge, uninstallBridge, bridgeStatus, autoSetupBridge } from './bridge-manager.js';
 import { sendUserMessage } from './cc-peer.js';
+
+// Launched from inside a Claude Code chat (npm start there): drop that
+// session's identity before anything is spawned — tabs and the internal
+// `claude -p` runs would otherwise pass for its children (#151).
+withoutClaudeSession(process.env);
 
 // Two window-management modes:
 // - X11/XWayland ("managed"): the app moves/positions its own window —
@@ -130,10 +254,15 @@ function autoSetupBridgeOnWayland() {
     .then((result) => {
       cachedDriver = null; // pick the bridge up on the next focus click
       if (!result.ran) return;
+      const english = spokenLang() === 'en';
       speakAsManager(
         result.active
-          ? 'Instalei a ponte do GNOME! Agora eu te levo direto pra aba do teu chat.'
-          : 'Instalei a ponte do GNOME! Sai e entra da sessão que aí eu alcanço teu terminal.',
+          ? english
+            ? 'I installed the GNOME bridge! Now I take you straight to your chat tab.'
+            : 'Instalei a ponte do GNOME! Agora eu te levo direto pra aba do teu chat.'
+          : english
+            ? 'I installed the GNOME bridge! Log out and back in so I can reach your terminal.'
+            : 'Instalei a ponte do GNOME! Sai e entra da sessão que aí eu alcanço teu terminal.',
       );
       sendToRenderer('tooltip', {
         projectName: 'Vizor',
@@ -175,17 +304,84 @@ async function allowAnnouncement(session, kind, text) {
   const decision = notifyPolicy({
     kind,
     text,
-    focused: await sessionFocused(session),
+    // Already looking at it in the workspace? Then no bark (#96).
+    focused:
+      workspaceFocusOverride({
+        windowFocused: Boolean(workspaceWindow?.isFocused()),
+        selectedSessionId: workspaceSelectedSession,
+        sessionId: session.id,
+      }) ?? (await sessionFocused(session)),
     lastAnnouncement: lastAnnouncements.get(session.id) ?? null,
     announceWhenUnknown: managerConfig.announceWhenFocusUnknown,
     now: Date.now(),
   });
   if (decision.announce) {
     lastAnnouncements.set(session.id, { text, at: Date.now() });
+    lastNoticeSessionId = session.id;
   } else {
     log(`announcement suppressed (${decision.reason}) for ${session.id?.slice(0, 8)}`);
   }
   return decision.announce;
+}
+
+// Bursts of non-urgent notices leave as ONE balloon (one chime, one spoken
+// line); a lone one goes out exactly as it came. What needs the user passes at once.
+const noticeBatch = createNotifyBatch({
+  flush(events) {
+    const last = events[events.length - 1];
+    if (events.length === 1) {
+      sendToRenderer('tooltip', last.tooltip);
+    } else {
+      const { kind, text, speech } = summarizeBatch(events);
+      sendToRenderer('tooltip', { projectName: `${events.length} chats`, text, kind, sessionId: last.sessionId, speech });
+    }
+    lastNoticeSessionId = last.sessionId ?? lastNoticeSessionId;
+    showTooltip();
+  },
+});
+
+// The usage limits (5 h and weekly): readings arrive from the status-line tap.
+// Every limit notice is urgent: it skips the chat batch, which would word it
+// as chats waiting.
+// A notice that fires at boot (a window that reset while the app was closed)
+// would reach a renderer that is not listening yet: it waits for both windows.
+let windowsLoadedCount = 0;
+let markWindowsLoaded;
+const windowsLoaded = new Promise((resolve) => {
+  markWindowsLoaded = resolve;
+});
+const windowLoaded = () => {
+  if (++windowsLoadedCount === 2) markWindowsLoaded();
+};
+// A window that never loads must not swallow the limit notices: 10 s after the
+// windows are created they go out anyway.
+const WINDOWS_LOAD_CAP_MS = 10_000;
+const capWindowsLoad = () => setTimeout(() => markWindowsLoaded(), WINDOWS_LOAD_CAP_MS).unref?.();
+const limits = createLimitsService({
+  whenReady: windowsLoaded,
+  file: path.join(configDir, LIMITS_FILE_NAME),
+  readFile: (file) => fs.promises.readFile(file, 'utf8'),
+  writeFile: async (file, text) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(`${file}.tmp`, text);
+    await fs.promises.rename(`${file}.tmp`, file);
+  },
+  settings: () => managerConfig.limits,
+  notify: ({ text, speech, urgent }) =>
+    noticeBatch.push({ kind: 'limit', urgent, sessionId: null, tooltip: { projectName: 'Limites', text, kind: 'hint', sessionId: null, speech } }),
+  onChange: () => workspaceWindow?.send('limits:changed', limitsSnapshot()),
+  log,
+});
+
+const limitsSnapshot = () => ({ ...limits.snapshot(), tap: limitsTapStatus });
+
+// Runs the per-event policy, then hands the balloon to the batch.
+async function bark(session, kind, text, tooltip) {
+  const reminder = kind === 'waiting' && lastAnnouncements.get(session.id)?.text === text;
+  if (!(await allowAnnouncement(session, kind, text))) return;
+  // A permission ask rides the 'waiting' notice but cannot wait in the batch.
+  const batchKind = kind === 'waiting' && session.needsPermission ? 'permission' : kind;
+  noticeBatch.push({ kind: batchKind, sessionId: session.id, tooltip, reminder });
 }
 
 // 'none' | 'asleep' | 'active' — the hint pipeline says different things for
@@ -272,11 +468,385 @@ migrateLegacyInstall({
   log,
 });
 
+// Every edit the AI makes, per session and task — the workspace's live diff
+// reads from here. Fed by the edit-tool hooks, never by the registry.
+const editTracker = new EditTracker();
+// Workspace state, declared up here because sendState (and with it
+// pushWorkspaceState) can run before the workspace block below is evaluated.
+let workspaceWindow = null;
+let appQuitting = false;
+const worktreeCache = new Map(); // project root → Worktree[]
+const repoRootCache = new Map(); // session cwd → repo root | null
+let workspacePushTimer = null;
+let lastNoticeSessionId = null; // the session the bubble opens the workspace on
+let workspaceSelectedSession = null; // what the workspace window shows (for notices)
+const answering = new Set(); // sessions with a pty answer in flight
+let workspaceRechecked = new Set(); // unplaced cwds whose repo was already re-listed
+let ptyHost = null; // created on the first terminal open
+const editPipeline = createEditPipeline({
+  tracker: editTracker,
+  readFile: (file) => fs.promises.readFile(file, 'utf8').catch(() => null),
+  readIndexVersion,
+  readReason: readEditReason,
+});
+
 const registry = new SessionRegistry({
   folderAliasFor: (cwd) => managerConfig.folderAliases[cwd] ?? null,
 });
 let managerConfig = loadConfig(configFile);
+tts.setAudioOutput(managerConfig.audioOutput);
+
+// Voice mode state (#161), declared up here: speakAsManager and sendState
+// read it, and they run long before the voice section below.
+const voiceSherpaDir = path.join(configDir, 'sherpa');
+let voiceListener = null;
+let voiceArbiter = null;
+let voiceSession = null;
+let micWindow = null;
+let micDevices = []; // what the mic window found, for the settings picker
+let chromiumOutputs = []; // the outputs as Chromium names them, for the bubble chimes
+let voiceState = 'off';
+let voiceDownload = null; // { percent } | { error } while the models come down
+let voiceRestarts = 0;
+let meetingTimer = null;
+
+const rulesStore = createRulesStore({
+  dir: rulesDir,
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+// sendState and the halo are hoisted functions: safe to call from here on.
+const guardAsks = createGuardAsks({
+  onChange: () => {
+    sendState();
+    updateNotificationHalo();
+    if (guardAsks.pending().length === 0) voiceSession?.onGuardAnswered();
+  },
+  // An equal ask answered along with the one the user saw.
+  onReleased: (request, choice) => recordGuardOutcome({ ...request, summary: guardSummary(request) }, GUARD_OUTCOMES[choice]),
+  // The announced ask left without settling its twin: announce the twin.
+  onPromote: (ask) => announceGuardAsk(ask),
+  automationNameOf: (id) => automations.nameOf(id),
+});
+
+// Guard state read by guardStatus(), which sendState() calls: declared here,
+// before anything can send state, instead of next to the guard code at the
+// end of the file (a let read before its line throws).
+let guardOffline = false;
+let guardInstalled = false;
+let rulesUnreadable = false;
+
+// --- Automações ---------------------------------------------------------------
+// The scheduler lives in automations/service.js; this is only its IO. It runs
+// while the Vizor is open, workspace window shown or not.
+const automationsDir = path.join(configDir, 'automacoes');
+const automationRulesFile = path.join(automationsDir, 'regras.json');
+const automationInflightFile = path.join(automationsDir, 'em-andamento.json');
+
+let atomicWrites = 0;
+async function writeFileAtomic(file, text) {
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${++atomicWrites}`;
+  await fs.promises.writeFile(tmp, text);
+  await fs.promises.rename(tmp, file);
+}
+
+async function readTextOrNull(file) {
+  try {
+    return await fs.promises.readFile(file, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// git for the worktree level: { code, stdout }, never throws.
+function automationGit(args, { cwd }) {
+  return execFileAsync('git', args, { cwd, timeout: 60000, maxBuffer: 4 * 1024 * 1024 })
+    .then(({ stdout }) => ({ code: 0, stdout }))
+    .catch((error) => ({ code: typeof error.code === 'number' ? error.code : 1, stdout: error.stdout ?? '' }));
+}
+
+async function automationProjectConfig(root) {
+  return parseProjectConfig((await readTextOrNull(path.join(root, '.vizor', 'projeto.json'))) ?? '');
+}
+
+const automationBudget = createDailyBudget({
+  file: path.join(automationsDir, 'gasto-do-dia.json'),
+  capUsd: managerConfig.automationDayCapUsd,
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, text) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  },
+});
+const automationHistory = createAutomationHistory({ dir: automationsDir, fs: fs.promises });
+const automationRunner = createAutomationRunner({ spawn });
+
+function automationNotify({ status, text }) {
+  // Never urgent: ten automações finishing together make one balloon.
+  noticeBatch.push({
+    kind: 'done',
+    urgent: false,
+    sessionId: null,
+    tooltip: { projectName: 'Automações', text, kind: status === 'ok' ? 'done' : 'hint', sessionId: null, speech: `${text}.` },
+  });
+}
+
+const automations = createAutomationService({
+  store: createAutomationStore({
+    file: path.join(configDir, 'automacoes.json'),
+    readFile: fs.promises.readFile,
+    writeFile: fs.promises.writeFile,
+    rename: fs.promises.rename,
+    mkdir: fs.promises.mkdir,
+    log,
+  }),
+  runner: automationRunner,
+  budget: automationBudget,
+  history: automationHistory,
+  schedule: automationSchedule,
+  permissions: automationPermissions,
+  worktree: {
+    prepare: async (a) =>
+      prepareWorktree(a, {
+        git: automationGit,
+        exists: (dir) => fs.promises.access(dir).then(() => true, () => false),
+        repoRoot: a.projectRoot,
+        base: (await automationProjectConfig(a.projectRoot)).base,
+        home: os.homedir(),
+      }),
+  },
+  skills: {
+    write: (a) => writeSkill(a, { home: os.homedir(), mkdir: fs.promises.mkdir, writeFile: fs.promises.writeFile, rename: fs.promises.rename }),
+    remove: (a) =>
+      removeSkill(a, {
+        home: os.homedir(),
+        rm: fs.promises.rm,
+        gitLsFiles: (file, cwd) => execFileAsync('git', ['ls-files', '--', file], { cwd, timeout: 10000 }).then(({ stdout }) => stdout),
+      }),
+  },
+  // The guard fails closed without this file, so it is written before every spawn.
+  writeGuardRules: (doc) => writeFileAtomic(automationRulesFile, JSON.stringify(doc, null, 2)),
+  inflight: {
+    read: async () => {
+      const text = await readTextOrNull(automationInflightFile);
+      if (text === null) return [];
+      try {
+        const list = JSON.parse(text);
+        return Array.isArray(list) ? list : [];
+      } catch {
+        return [];
+      }
+    },
+    write: (list) => writeFileAtomic(automationInflightFile, JSON.stringify(list)),
+  },
+  mkdir: fs.promises.mkdir,
+  notify: automationNotify,
+  commandsOf: async (root) => {
+    const config = await automationProjectConfig(root);
+    const packageText = await readTextOrNull(path.join(root, 'package.json'));
+    return { testCmd: testCommand({ packageText, config }), lintCmd: lintCommand({ packageText, config }) };
+  },
+  removeWorktree: async (a) => {
+    const dir = worktreePathOf(a, a.projectRoot);
+    if (!fs.existsSync(dir)) return;
+    // No --force: a worktree with uncommitted work stays, and the user is told.
+    const result = await automationGit(['worktree', 'remove', dir], { cwd: a.projectRoot });
+    if (result.code !== 0) throw new Error(`git worktree remove exited ${result.code}`);
+  },
+  saveDayCap: async (usd) => {
+    const next = { ...managerConfig, automationDayCapUsd: usd };
+    saveConfig(configFile, next);
+    managerConfig = next;
+  },
+  guardEnabled: () => managerConfig.guardEnabled !== false,
+  guardReady: guardHookInSettings,
+  baseEnv: () => process.env,
+  // A crash's leftover run: killed by its group, once /proc proves it is that run's (start time + env markers).
+  kill: (pid, signal) => process.kill(pid, signal),
+  readEnviron: (pid) => fs.readFileSync(`/proc/${pid}/environ`, 'utf8'),
+  // Field 22 of /proc/<pid>/stat; the comm field (2) may hold spaces, so count after its closing paren.
+  readStartTime: (pid) => fs.readFileSync(`/proc/${pid}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[19] ?? null,
+  log,
+});
+// Read from settings.json, not from guardInstalled: a failed write leaves that flag set.
+function guardHookInSettings() {
+  if (!guardInstalled) return false;
+  const groups = readClaudeSettings()?.hooks?.PreToolUse;
+  return Array.isArray(groups) && groups.some((group) => Array.isArray(group?.hooks) && group.hooks.some((hook) => isGuardCommand(hook?.command)));
+}
+let markAutomationsReady;
+const automationsReady = new Promise((resolve) => {
+  markAutomationsReady = resolve;
+});
+let automationCountSynced = 0;
+automations.on('changed', () => {
+  // One automação is enough to need the guard hook installed.
+  if (automations.count() !== automationCountSynced) {
+    automationCountSynced = automations.count();
+    syncGuardHook();
+  }
+  pushWorkspaceState();
+  workspaceWindow?.send('automations:changed', automations.state());
+});
+// A hard exit skips before-quit: the runs' process groups must not outlive the app.
+process.on('exit', () => automations.killAllNow());
+
+const automationId = (id) => (typeof id === 'string' && /^[\w-]{1,64}$/.test(id) ? id : null);
+const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const IMPROVE_MAX_CHARS = 8000;
+
+ipcMain.handle('automations:state', async (event) => {
+  if (!fromWorkspace(event)) return null;
+  await automationsReady;
+  return automations.state();
+});
+ipcMain.handle('automations:save', async (event, automation) => {
+  if (!fromWorkspace(event) || !plainObject(automation)) return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.save(automation);
+});
+ipcMain.handle('automations:remove', async (event, payload) => {
+  if (!fromWorkspace(event) || !plainObject(payload) || !automationId(payload.id)) return { ok: false, error: 'Automação inválida.' };
+  const { id, removeSkill: dropSkill, removeWorktree: dropWorktree } = payload;
+  await automationsReady;
+  return automations.remove(id, { removeSkill: dropSkill === true, removeWorktree: dropWorktree === true });
+});
+ipcMain.handle('automations:run', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.runNow(id);
+});
+ipcMain.handle('automations:pause', async (event, payload) => {
+  if (!fromWorkspace(event) || !plainObject(payload) || !automationId(payload.id) || typeof payload.on !== 'boolean') return { ok: false, error: 'Automação inválida.' };
+  const { id, on } = payload;
+  await automationsReady;
+  return automations.pause(id, on);
+});
+ipcMain.handle('automations:set-day-cap', async (event, usd) => {
+  if (!fromWorkspace(event)) return { ok: false, error: 'Pedido inválido.' };
+  await automationsReady;
+  return automations.setDayCap(usd);
+});
+ipcMain.handle('automations:confirm', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return { ok: false, error: 'Automação inválida.' };
+  await automationsReady;
+  return automations.confirm(id);
+});
+ipcMain.handle('automations:cancel', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return false;
+  await automationsReady;
+  return automations.cancel(id);
+});
+ipcMain.handle('automations:history', async (event, id) => {
+  if (!fromWorkspace(event) || !automationId(id)) return [];
+  return automationHistory.list(id, { limit: 50 });
+});
+// Report text only: the renderer shows it through renderSafeMarkdown.
+ipcMain.handle('automations:report', async (event, payload) => {
+  if (!fromWorkspace(event) || !plainObject(payload) || !automationId(payload.id) || typeof payload.file !== 'string') return null;
+  const { id, file } = payload;
+  return automationHistory.read(id, file);
+});
+// The gerente rewrites the request as a skill body, once: lean runClaude
+// (it executes nothing), Haiku, under the gerente's own token budget.
+ipcMain.handle('automations:improve', async (event, text) => {
+  if (!fromWorkspace(event) || typeof text !== 'string' || !text.trim()) return { ok: false, error: 'Escreva o pedido primeiro.' };
+  if (text.length > IMPROVE_MAX_CHARS) return { ok: false, error: 'O pedido está longo demais pra melhorar de uma vez.' };
+  if (isEconomyMode()) return { ok: false, error: 'O teto de tokens do gerente acabou hoje: suba o limite nas configurações pra melhorar o pedido.' };
+  const result = await runClaude({
+    prompt: [
+      'Você escreve skills do Claude Code. Reescreva o pedido abaixo como o corpo de uma skill, em markdown e em pt-BR, com três seções:',
+      '"## Objetivo" (uma frase), "## Passos" (lista numerada, curta e concreta) e "## Relatório" (o formato do relatório final, curto).',
+      'Não invente passos, ferramentas ou ações que o pedido não pede. Sem frontmatter. Responda só com o markdown.',
+      '',
+      'Pedido:',
+      text.trim(),
+    ].join('\n'),
+    timeoutMs: 30000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  const body = result?.text?.trim();
+  return body ? { ok: true, text: body } : { ok: false, error: 'O gerente não respondeu agora. Tente de novo.' };
+});
+
+function recordGuardOutcome(request, outcome) {
+  try {
+    rulesStore.addHistory({
+      at: Date.now(),
+      sessionId: request.sessionId ?? null,
+      cwd: request.cwd ?? null,
+      ruleSource: request.ruleSource ?? '',
+      summary: request.summary ?? '',
+      outcome,
+    });
+  } catch (error) {
+    log(`guard history failed: ${error}`);
+  }
+}
+
+// An action with no way back, in the Maestro: the voice offers a review first (#162).
+function reviewerHint(ask) {
+  if (!maestroOn() || !ask.irreversible) return '';
+  const musician = maestroOrchestra.find((item) => item.sessionId === ask.sessionId);
+  if (!musician) return '';
+  const name = musician.number ?? musician.name;
+  return spokenLang() === 'en'
+    ? ` No way back: say "chama um avaliador pra ${name}" for a review first.`
+    : ` Isso não tem volta: se quiser uma revisão antes, diga "chama um avaliador pra ${name}".`;
+}
+
+function onGuardMessage(message, reply) {
+  if (message.type === 'guard-event') {
+    if (message.automationId) automations.noteGuardDenial(String(message.automationId));
+    recordGuardOutcome(message, message.outcome ?? 'barrado');
+    return;
+  }
+  const result = guardAsks.add(message, reply);
+  if (result.answered) {
+    recordGuardOutcome({ ...message, summary: guardSummary(message) }, 'liberado (sessão)');
+    return;
+  }
+  // The same question already waiting (parallel calls): its answer settles
+  // this one too, and saying it twice is noise.
+  if (result.duplicate) return;
+  const ask = guardAsks.pending().find((candidate) => candidate.id === result.id);
+  if (ask) announceGuardAsk(ask);
+}
+
+function announceGuardAsk(ask) {
+  // The balloon announces; the choices live in the panel and the workspace.
+  // In voice mode the session speaks it (priority 2) and takes the answer.
+  if (voiceSession) voiceSession.onGuardAsk({ speech: `${guardSpeech(ask, spokenLang())}${reviewerHint(ask)}` });
+  sendToRenderer('tooltip', {
+    projectName: path.basename(ask.cwd ?? '') || 'Claude',
+    text: ask.summary,
+    kind: 'guard',
+    sessionId: null,
+    speech: voiceSession ? null : guardSpeech(ask, spokenLang()),
+  });
+  showTooltip();
+}
+
+function guardSummary(message) {
+  return message.tool === 'Bash' ? String(message.input?.command ?? '').slice(0, 200) : message.tool;
+}
+
+const GUARD_OUTCOMES = { liberar: 'liberado', 'liberar-sessao': 'liberado nesta sessão', barrar: 'barrado' };
+ipcMain.handle('guard:answer', (_event, { id, choice } = {}) => {
+  if (!isGuardChoice(choice) || !Object.hasOwn(GUARD_OUTCOMES, choice)) return false;
+  const ask = guardAsks.pending().find((candidate) => candidate.id === id);
+  const request = guardAsks.answer(id, choice);
+  if (request) recordGuardOutcome({ ...request, summary: ask?.summary ?? guardSummary(request) }, GUARD_OUTCOMES[choice]);
+  return Boolean(request);
+});
 const tokenBudget = new TokenBudget({ file: usageFile });
+// The workspace status line follows the meter: a push per spend, no timer.
+tokenBudget.on('spent', () => pushWorkspaceState());
 const isEconomyMode = () => tokenBudget.isExceeded(managerConfig.tokenBudgetDaily);
 let mainWindow = null;
 let overlayWindow = null;
@@ -326,10 +896,18 @@ let announcedUpdateVersion = null;
 function sendState() {
   sendToRenderer('state', {
     sessions: listWithDisplayNames(),
+    guardAsks: guardAsks.pending(),
+    guard: guardStatus(),
+    voice: voiceStatus(),
     unread: registry.unreadCount(),
     update: updateStatus,
     hint: lastHint,
     voiceDownloading: tts.downloadingVoice(),
+    maestroEnabled: maestroOn(),
+    // The bubble speaks the alert lines: it must hear about a voice change.
+    voiceLang: speechLang(managerConfig.voice),
+    // ...and plays the chimes: on the output pinned in the tray menu.
+    audioSinkId: chromiumSinkId(chromiumOutputs, managerConfig.audioOutput),
     theme: managerConfig.theme,
     palette: managerConfig.palette,
     trayAvailable: Boolean(tray),
@@ -353,10 +931,451 @@ function sendState() {
       economy: isEconomyMode(),
     },
   });
+  pushWorkspaceState();
+}
+
+// --- Maestro (#159): the stage in the workspace ------------------------------
+// The orchestra is rebuilt on every workspace push; the focus is not saved.
+let maestroOrchestra = [];
+let maestroFocusId = null;
+const maestroNarrators = new Map(); // sessionId → narrator, for the consequences strip
+const maestroOrder = createPendingOrder();
+maestroOrder.on('show', (order) => {
+  workspaceWindow?.send('maestro:order', order);
+  // Listening already: "cancela" needs no "Vizor" in front (review C1).
+  if (voiceState === 'sleeping') voiceListener?.wake();
+});
+maestroOrder.on('clear', () => workspaceWindow?.send('maestro:order', null));
+
+const maestroOn = () => Boolean(managerConfig.maestroEnabled);
+
+// The balloon shows what is said, spoken or not (the voice may be off).
+function maestroSay(source, text) {
+  if (!maestroOn() || !text) return;
+  workspaceWindow?.send('maestro:say', { source: source ?? 'manager', text: String(text) });
+}
+
+// The consequences strip has its own narrator: it runs with the voice off too.
+function maestroNarrate(event) {
+  if (!maestroOn() || !event?.session_id) return;
+  if (!maestroOrchestra.some((musician) => musician.sessionId === event.session_id)) return;
+  let narrator = maestroNarrators.get(event.session_id);
+  if (!narrator) maestroNarrators.set(event.session_id, (narrator = createNarrator()));
+  const line = narrator.narrate(event);
+  if (line) workspaceWindow?.send('maestro:narration', { sessionId: event.session_id, text: line.text });
+}
+
+// The graph of each músico's checkout (#159, part 2): built off the main
+// thread when the Maestro turns on, refreshed after a músico's edit.
+let graphParser = null;
+const graphIndexers = new Map(); // checkout root → indexer
+const graphRefreshTimers = new Map();
+const maestroPlans = new Map(); // sessionId → the plan its "Vizor-plano:" line declared
+const taskTitles = new Map(); // ptyId → '#169 Menu de ação…', the tab of a chat opened for a task
+const workspaceKnowsCwd = (cwd) => workspaceProjects().includes(cwd) || [...worktreeCache.values()].some((trees) => (trees ?? []).some((tree) => tree.path === cwd));
+// The checklist each chat keeps in .vizor/plano.md, shown live (the core flow).
+const workPlans = createPlanTracker({
+  readFile: (file) => fs.promises.readFile(file, 'utf8'),
+  knownCwd: workspaceKnowsCwd,
+});
+const touchCache = new Map(); // memo of touchedFunctions, cleared when a graph changes
+
+function graphFor(root) {
+  if (!root) return null;
+  let indexer = graphIndexers.get(root);
+  if (!indexer) {
+    graphParser ??= createWorkerParser();
+    const parser = graphParser; // this indexer's own: a later Maestro gets a new one
+    indexer = createGraphIndexer({
+      root,
+      listFiles: async () => (await runText('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root })).split('\n').filter(Boolean),
+      statFile: (relPath) => fs.promises.stat(path.join(root, relPath)),
+      readFile: (relPath) => fs.promises.readFile(path.join(root, relPath), 'utf8'),
+      parse: (source, relPath) => parser.parse(source, relPath),
+    });
+    indexer.on('graph', (graph) => {
+      if (graphIndexers.get(root) !== indexer) return; // dropped while it was parsing
+      touchCache.clear();
+      notifyReview(root); // the Impacto tab polls again: the indexer reports no progress
+      pushWorkspaceState();
+    });
+    graphIndexers.set(root, indexer);
+    indexer.refresh().catch((error) => log(`graph failed for ${root}: ${error}`));
+  }
+  return indexer;
+}
+
+// The graphs outlive the Maestro (the review screen reads them too): they are
+// dropped only after the workspace window stayed hidden or minimized this long,
+// and never while the Maestro is on (it reads them with the window hidden).
+const GRAPH_DISCARD_MS = 10 * 60 * 1000;
+let graphDiscardTimer = null;
+function armGraphDiscard() {
+  clearTimeout(graphDiscardTimer);
+  graphDiscardTimer = setTimeout(() => {
+    graphDiscardTimer = null;
+    if (maestroOn()) return;
+    for (const timer of graphRefreshTimers.values()) clearTimeout(timer);
+    graphRefreshTimers.clear();
+    graphIndexers.clear();
+    graphParser?.close();
+    graphParser = null;
+  }, GRAPH_DISCARD_MS);
+}
+function disarmGraphDiscard() {
+  clearTimeout(graphDiscardTimer);
+  graphDiscardTimer = null;
+}
+
+// An edit by any session whose worktree has a graph: that file is parsed
+// again, at most every 0.5 s per checkout.
+function graphTouched(event) {
+  const root = sessionWorktree(event?.session_id);
+  const filePath = event?.tool_input?.file_path ?? event?.tool_input?.notebook_path;
+  const indexer = root && graphIndexers.get(root);
+  if (!indexer || !filePath) return;
+  indexer.touch(path.relative(root, filePath).split(path.sep).join('/'));
+  clearTimeout(graphRefreshTimers.get(root));
+  graphRefreshTimers.set(
+    root,
+    setTimeout(() => indexer.refreshTouched().catch((error) => log(`graph refresh failed: ${error}`)), 500),
+  );
+}
+
+// What each músico touched (its task's files against the graph) and plans.
+function maestroImpacts() {
+  const impacts = [];
+  for (const musician of maestroOrchestra) {
+    const graph = musician.root ? graphIndexers.get(musician.root)?.graph() : null;
+    if (!graph || graph.unavailable) continue;
+    const touched = [];
+    const touchedModules = [];
+    for (const [filePath, file] of editTracker.currentTask(musician.sessionId)?.files ?? []) {
+      const relPath = path.relative(musician.root, filePath).split(path.sep).join('/');
+      touchedModules.push(relPath);
+      const key = `${musician.sessionId}|${relPath}|${file.start?.length ?? 'new'}|${file.current?.length ?? 0}`;
+      if (!touchCache.has(key)) touchCache.set(key, touchedFunctions(graph, relPath, file.start, file.current));
+      touched.push(...touchCache.get(key));
+    }
+    const impact = impactOf(graph, { touched, touchedModules, planned: maestroPlans.get(musician.sessionId) ?? [] });
+    impacts.push({ sessionId: musician.sessionId, root: musician.root, color: musician.color, ...impact });
+  }
+  return impacts;
+}
+
+// --- the conducting gerente (#162): your orders, kept until a músico's turn ends
+const maestroConductor = createConductor({ lang: () => spokenLang() });
+const turnTests = new Map(); // sessionId → the last test verdict of its current turn
+const reviewerOffered = new Set(); // músicos already offered a reviewer
+
+function runConductor(actions) {
+  for (const action of actions) {
+    if (action.type === 'prompt') {
+      turnTests.delete(action.sessionId); // a new turn starts with this prompt
+      // Not safe to type yet (a question on screen, just settling, the user
+      // typing in that tab): tried again; never arrived, the order waits and
+      // you hear it (review C1, I1).
+      const userTyping = () => Date.now() - (userTypedAt.get(ptyOfSession(action.sessionId)) ?? 0) < USER_TYPING_MS;
+      const deliver = (tries) =>
+        (userTyping() ? Promise.resolve('hold') : voiceDeliverPrompt(action.sessionId, action.text))
+          .then((outcome) => {
+            if (outcome === 'hold' && tries < 5) return setTimeout(() => deliver(tries + 1), 2000);
+            if (outcome !== 'sent') log(`conductor prompt to ${action.sessionId.slice(0, 8)}: ${outcome}`);
+            return runConductor(maestroConductor.delivered(action.sessionId, outcome === 'sent'));
+          })
+          .catch((error) => {
+            log(`conductor prompt failed: ${error}`);
+            runConductor(maestroConductor.delivered(action.sessionId, false));
+          });
+      deliver(0);
+    } else if (voiceSession) voiceSession.onConductorAction(action);
+    else speakAsManager(action.text);
+  }
+  pushWorkspaceState();
+}
+
+// A músico's turn ended: the gerente's order moves on, and a big or risky
+// change offers a reviewer (once per músico).
+function maestroTurnEnded(musician) {
+  runConductor(maestroConductor.turnEnded(musician.sessionId, { tests: turnTests.get(musician.sessionId) ?? null }));
+  turnTests.delete(musician.sessionId);
+  // Once per task (or per chat without one), and only if the voice could ask.
+  const offerKey = musician.number !== null ? `task:${musician.root}:${musician.number}` : musician.sessionId;
+  if (!voiceSession || reviewerOffered.has(offerKey)) return;
+  const graph = musician.root ? graphIndexers.get(musician.root)?.graph() : null;
+  const impact = maestroImpacts().find((item) => item.sessionId === musician.sessionId);
+  if (!graph || graph.unavailable || !impact) return;
+  const offer = shouldSuggest(impact, criticalOf(graph), new Set());
+  if (offer && voiceSession.onSuggestReviewer({ musician, ...offer })) reviewerOffered.add(offerKey);
+}
+
+// --- the backstage (#142): sub-agents, background logs, ports, per músico ---
+// Claude Code keeps background logs under <tmp>/claude-<uid> (TMPDIR honoured).
+const backstage = createBackstage({ tmpRoot: path.join(os.tmpdir(), `claude-${process.getuid?.() ?? ''}`) });
+const backstageLogs = new Map(); // output file → { lines, gone, idleSeconds }
+const backstagePorts = new Map(); // sessionId → [{ port, process }]
+let backstageTimers = null;
+
+async function refreshBackstageLogs() {
+  let changed = false;
+  for (const musician of maestroOrchestra)
+    for (const item of backstage.backgroundOf(musician.sessionId)) {
+      const tail = await readTail(item.outputFile);
+      const before = JSON.stringify(backstageLogs.get(item.outputFile));
+      // Quiet time in whole minutes: the stage redraws when it moves a minute, not every 2 s.
+      const idleSeconds = tail.mtimeMs ? Math.floor((Date.now() - tail.mtimeMs) / 60000) * 60 : 0;
+      backstageLogs.set(item.outputFile, { lines: tail.lines, gone: tail.gone, idleSeconds });
+      changed ||= before !== JSON.stringify(backstageLogs.get(item.outputFile));
+    }
+  if (changed) pushWorkspaceState();
+}
+
+// Who is whose parent, from /proc/<pid>/stat ("pid (comm) state ppid …").
+async function readParents() {
+  const parents = new Map();
+  for (const name of await fs.promises.readdir('/proc').catch(() => [])) {
+    if (!/^\d+$/.test(name)) continue;
+    const stat = await fs.promises.readFile(`/proc/${name}/stat`, 'utf8').catch(() => null);
+    if (stat) parents.set(Number(name), Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]));
+  }
+  return parents;
+}
+
+async function refreshBackstagePorts() {
+  if (!maestroOrchestra.length) return;
+  const listeners = parseListeners(await runText('ss', ['-ltnpH']).catch(() => ''));
+  const parents = listeners.length ? await readParents() : new Map();
+  let changed = false;
+  for (const musician of maestroOrchestra) {
+    // No listener anywhere: no músico has a port, nothing to look up.
+    const pid = listeners.length ? readSessionPid(musician.sessionId) : null;
+    const ports = pid && listeners.length ? portsFor(listeners, descendantsOf(pid, parents)) : [];
+    changed ||= JSON.stringify(ports) !== JSON.stringify(backstagePorts.get(musician.sessionId) ?? []);
+    backstagePorts.set(musician.sessionId, ports);
+  }
+  if (changed) pushWorkspaceState();
+}
+
+// Logs every 2 s and ports every 5 s, only while the Maestro is on.
+function syncBackstageTimers() {
+  if (maestroOn() && !backstageTimers) {
+    backstageTimers = [
+      setInterval(() => refreshBackstageLogs().catch((error) => log(`backstage logs failed: ${error}`)), 2000),
+      setInterval(() => refreshBackstagePorts().catch((error) => log(`backstage ports failed: ${error}`)), 5000),
+    ];
+  } else if (!maestroOn() && backstageTimers) {
+    backstageTimers.forEach(clearInterval);
+    backstageTimers = null;
+  }
+}
+
+function backstageOf(sessionId) {
+  return {
+    subagents: backstage.subagentsOf(sessionId),
+    background: backstage.backgroundOf(sessionId).map((item) => ({
+      id: item.id,
+      command: item.command,
+      ...(backstageLogs.get(item.outputFile) ?? { lines: [], gone: false, idleSeconds: 0 }),
+    })),
+    ports: backstagePorts.get(sessionId) ?? [],
+  };
+}
+
+function maestroFocus(sessionId) {
+  maestroFocusId = sessionId;
+  workspaceWindow?.focusSession(sessionId);
+  pushWorkspaceState();
+}
+
+function maestroInterrupt(ptyId) {
+  if (!ptyHost?.list().some((terminal) => terminal.id === ptyId && terminal.alive)) return false;
+  ptyHost.write(ptyId, '\x1b'); // Esc: Claude Code stops the turn, the session lives on
+  // Esc fires no Stop hook: without this the card stays "Trabalhando", and
+  // closing the terminal later would leave a false "Falhou".
+  for (const session of registry.list())
+    if (session.term?.VIZOR_PTY_ID === ptyId || resumedChats.get(ptyId) === session.id) registry.markInterrupted(session.id);
+  return true;
+}
+
+ipcMain.on('maestro:set', (_event, on) => applyConfig({ maestroEnabled: Boolean(on) }));
+
+// A prompt for a chat waits for its turn to end, like the voice's, up to a minute.
+async function deliverWhenFree(sessionId, text, { tries = 30, everyMs = 2000 } = {}) {
+  for (let attempt = 0; attempt < tries; attempt++) {
+    const result = await voiceDeliverPrompt(sessionId, text);
+    if (result !== 'hold') return result;
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+  return 'timeout';
+}
+
+// Picking an issue by keyboard: its chat if it has one (the newest of several),
+// otherwise a new one asked for the plan first.
+// root: the GitHub tab names its own project; voice and Ctrl+K leave it out.
+async function startIssue(number, { root: given = null, title = null } = {}) {
+  const root = given ?? voiceRoot();
+  if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+  const found = await voiceResolveTask(number, { byTitle: false, root });
+  log(`issue ${number}: ${found.sessionId ? `its chat ${found.sessionId}` : `new chat in ${found.cwd ?? root}`}`);
+  const existing = found.sessionId ? found : null;
+  if (existing?.sessionId) {
+    await voiceOpenOrFocus({ sessionId: existing.sessionId, cwd: existing.cwd });
+    taskLinks.link(root, number, existing.sessionId);
+    startTask(existing.sessionId, existing.cwd ?? root, number);
+    return { sessionId: existing.sessionId };
+  }
+  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number, root, title });
+  if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
+  taskLinks.link(root, number, opened.sessionId);
+  startTask(opened.sessionId, found.cwd ?? root, number);
+  workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
+  return { sessionId: opened.sessionId };
+}
+
+// A fresh chat for the PR's review. root: see startIssue.
+async function reviewPr(number, { root: given = null } = {}) {
+  const root = given ?? voiceRoot();
+  if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+  const opened = await voiceOpenNew({ cwd: root, prompt: reviewPrPrompt(number), root });
+  if (!opened.sessionId) return { error: 'Não consegui abrir o chat do avaliador.' };
+  taskLinks.link(root, number, opened.sessionId);
+  return { sessionId: opened.sessionId };
+}
+
+// What the Ctrl+K bar lists from GitHub: open issues and PRs, read by gh.
+ipcMain.handle('workspace:catalog', async (event) => {
+  if (!fromWorkspace(event)) return { issues: [], prs: [], error: true };
+  const root = voiceRoot();
+  if (catalogStale({ resultsRoot: lastGhResultsRoot, root, at: lastGhDigestAt, now: Date.now(), maxAge: GH_DIGEST_MAX_AGE_MS })) await voiceGhDigest();
+  return catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root });
+});
+
+// The action the bar picked; focus is the renderer's own.
+ipcMain.handle('workspace:command', async (event, action = {}) => {
+  if (!fromWorkspace(event)) return { error: 'Ação desconhecida.' };
+  try {
+    if (action.type === 'pick-issue' && Number.isInteger(action.number)) {
+      log(`command: pick issue ${action.number}`);
+      const started = await startIssue(action.number);
+      log(`command: issue ${action.number} → ${started.error ?? `chat ${started.sessionId}`}`);
+      return started;
+    }
+    if (action.type === 'review-pr' && Number.isInteger(action.number)) return await reviewPr(action.number);
+    if (action.type === 'interrupt' && typeof action.sessionId === 'string') {
+      const ptyId = ptyOfSession(action.sessionId);
+      return ptyId && maestroInterrupt(ptyId) ? {} : { error: 'Esse chat não está numa aba do Vizor.' };
+    }
+    if (action.type === 'maestro') {
+      applyConfig({ maestroEnabled: Boolean(action.on) });
+      return {};
+    }
+    return { error: 'Ação desconhecida.' };
+  } catch (error) {
+    log(`command failed: ${error?.stack ?? error}`);
+    return { error: 'Deu erro, veja o log.' };
+  }
+});
+
+// The plan card's buttons: the ok, and the PR once every step is done.
+const planActions = createPlanActions({
+  planOf: (sessionId) => workPlans.planOf(sessionId),
+  approve: (sessionId) => {
+    workPlans.approve(sessionId);
+    // A quick task's baseline checkpoint: step 1 then has a diff and a way back.
+    taskService.approvePlan(sessionId).catch((error) => log(`task baseline failed: ${error?.stack ?? error}`));
+    pushWorkspaceState();
+  },
+  deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
+  // The card, Ctrl+K and the voice alike: a task opens its PR only from its pr phase.
+  refusePr: (sessionId) => taskService.prRefusal(sessionId),
+  // A task with a contract is approved on its card, never by the old ok.
+  refuseApprove: (sessionId) => taskService.approveRefusal(sessionId),
+});
+const planAction = (sessionId, action) => planActions.run(sessionId, action);
+ipcMain.handle('workspace:plan', (event, { sessionId, action } = {}) => (fromWorkspace(event) ? planAction(sessionId, action) : 'failed'));
+
+// The task flow of an issue's chat (contract → tests → steps → PR): the logic
+// lives in work/task-service.js; this is its IO.
+const tasksDir = path.join(configDir, 'tarefas');
+let taskGuardSynced = false;
+const taskService = createTaskService({
+  store: createTaskStore({
+    dir: tasksDir,
+    readFile: fs.promises.readFile,
+    writeFile: fs.promises.writeFile,
+    rename: fs.promises.rename,
+    mkdir: fs.promises.mkdir,
+    readdir: fs.promises.readdir,
+    unlink: fs.promises.unlink,
+    log,
+    onError: (error) => log(`task state save failed: ${error}`),
+  }),
+  checkpoints: createCheckpoints({ git: execGit }),
+  verifier: createVerifier({ spawn }),
+  writeGuardRules: (doc) => writeFileAtomic(path.join(tasksDir, 'regras.json'), JSON.stringify(doc, null, 2)),
+  sha256File: async (file) => createHash('sha256').update(await fs.promises.readFile(file)).digest('hex'),
+  deliver: (sessionId, text) => deliverWhenFree(sessionId, text),
+  git: (args, options) => runText('git', args, options),
+  readPlan: (worktree, issue) => fs.promises.readFile(path.join(worktree, planFileName(issue)), 'utf8'),
+  isWorking: (sessionId) => registry.sessions.get(sessionId)?.status === 'working',
+  issueClosed: async (worktree, issue) =>
+    (await runText('gh', ['issue', 'view', String(issue), '--json', 'state', '-q', '.state'], { cwd: worktree })).trim() === 'CLOSED',
+  notify: (text) =>
+    noticeBatch.push({ kind: 'waiting', urgent: true, sessionId: null, tooltip: { projectName: 'Tarefa', text, kind: 'hint', sessionId: null, speech: text } }),
+  changed: () => {
+    // A task with a gate or a locked test is enough to need the guard hook installed.
+    if (taskService.hasActive() !== taskGuardSynced) {
+      taskGuardSynced = !taskGuardSynced;
+      syncGuardHook();
+    }
+    pushWorkspaceState();
+    workspaceWindow?.send('task:changed');
+  },
+  log,
+});
+function bindTask(sessionId, cwd, number) {
+  if (sessionId && cwd) taskService.bind(sessionId, cwd, number).catch((error) => log(`task bind failed: ${error?.stack ?? error}`));
+}
+// The dev started the issue (Ctrl+K, voice, "Puxar"): a task ended on its card begins again.
+function startTask(sessionId, cwd, number) {
+  if (!sessionId || !cwd) return;
+  taskService
+    .reopen(cwd, number)
+    .then(() => taskService.bind(sessionId, cwd, number))
+    .catch((error) => log(`task start failed: ${error?.stack ?? error}`));
+}
+// The plan card's task actions, and what it shows.
+ipcMain.handle('workspace:task', async (event, { sessionId, action, arg } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof action !== 'string') return { error: 'Ação desconhecida.' };
+  try {
+    const result = await taskService.run(sessionId, action, arg);
+    // A quick task gets the old plan's ok: the card stops asking for it.
+    if (action === 'quick' && result.delivery === 'sent') workPlans.approve(sessionId);
+    return result;
+  } catch (error) {
+    log(`task ${action} failed: ${error?.stack ?? error}`);
+    return { error: 'Deu erro, veja o log.' };
+  }
+});
+ipcMain.handle('workspace:task-state', (event, sessionId) =>
+  (fromWorkspace(event) && typeof sessionId === 'string' ? taskService.state(sessionId).catch((error) => { log(`task state failed: ${error}`); return null; }) : null));
+ipcMain.on('maestro:focus', (_event, sessionId) => {
+  if (typeof sessionId === 'string' && maestroOrchestra.some((musician) => musician.sessionId === sessionId)) maestroFocus(sessionId);
+});
+
+// What the Vizor says follows the chosen voice's language (#161).
+function spokenLang() {
+  return speechLang(managerConfig.voice);
 }
 
 function speakAsManager(text) {
+  if (!voiceArbiter) maestroSay('manager', text);
   if (!managerConfig.ttsEnabled) return;
+  // In voice mode one arbiter decides who speaks when (#161).
+  if (voiceArbiter) {
+    voiceArbiter.say({ text, priority: 4, source: 'manager' });
+    return;
+  }
   const volume = Math.round((managerConfig.voiceVolume * managerConfig.soundVolume) / 100);
   tts.speak(text, { voice: managerConfig.voice, volume });
 }
@@ -385,7 +1404,7 @@ function onUpdateStatus(status) {
     setFloatAboveEverything(!status.installing);
     if (status.installing) hideOverlay();
   }
-  const phrase = updateAnnouncement(previous, status, managerConfig.autoUpdate);
+  const phrase = updateAnnouncement(previous, status, managerConfig.autoUpdate, spokenLang());
   if (phrase) speakAsManager(phrase);
   const version = status.ready ?? status.available;
   if (version && announcedUpdateVersion !== version) {
@@ -409,6 +1428,7 @@ function onUpdateStatus(status) {
       installing: status.installing,
       failed: status.failed,
       attemptedVersion: autoApplyAttempted,
+      liveTerminals: ptyHost?.aliveCount() ?? 0,
     })
   ) {
     autoApplyAttempted = status.mode === 'auto' ? status.ready : status.available;
@@ -428,7 +1448,8 @@ function loadPersistedState() {
 function persistAnchor() {
   try {
     fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ bubble: bubbleAnchor }));
+    // Merge: the workspace window keeps its bounds in this same file.
+    fs.writeFileSync(stateFile, JSON.stringify({ ...loadPersistedState(), bubble: bubbleAnchor }));
   } catch (error) {
     log(`persistAnchor failed: ${error}`);
   }
@@ -592,6 +1613,41 @@ ipcMain.on('overlay:toggle-panel', () => {
   openPanel();
 });
 ipcMain.on('overlay:open-panel', () => openPanel());
+
+// A plain bubble click (#96): on Linux the workspace, on the session of the
+// last notice; elsewhere the panel, as always. Right-click keeps the panel.
+function activateBubble() {
+  if (bubbleClickTarget({ workspaceAvailable: Boolean(workspaceWindow) }) === 'panel') {
+    sendToRenderer('ui:click'); // the bubble renderer toggles the panel, as before
+    return;
+  }
+  if (overlayMode === 'panel') hideOverlay();
+  const sessionId = pickWorkspaceSession({ lastNoticeSessionId, sessions: registry.list() });
+  if (sessionId) workspaceWindow.focusSession(sessionId);
+  else workspaceWindow.show();
+}
+ipcMain.on('bubble:activate', () => activateBubble());
+
+// The workspace's "vzr" label opens the tray's menu (#169), for whoever has no
+// tray to reach it from.
+ipcMain.on('workspace:action-menu', (event, rect) => {
+  if (!fromWorkspace(event)) return;
+  const window = workspaceWindow.window();
+  if (!window || window.isDestroyed()) return;
+  buildActionMenu({ canHide: Boolean(tray) }).popup({ window, ...actionMenuAnchor(rect) });
+});
+
+// The balloon of a session born in the Vizor opens its workspace tab, like
+// its panel card (spec §9.1, #144); any other balloon opens the panel.
+ipcMain.on('tooltip:click', (_event, sessionId) => {
+  const session = linkedSession(sessionId);
+  if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
+    hideOverlay();
+    workspaceWindow.focusSession(session.id);
+    return;
+  }
+  openPanel();
+});
 ipcMain.on('overlay:close', () => {
   log('overlay close requested');
   hideOverlay();
@@ -756,7 +1812,7 @@ async function showGentleHalo(state, generation) {
 // and whenever the bubble settles somewhere new. The find-the-bubble flash
 // borrows the window and hands it back through here.
 function updateNotificationHalo() {
-  const state = haloState(registry.list());
+  const state = guardAsks.pending().length ? 'permission' : haloState(registry.list());
   const positionable = canPositionWindows && Boolean(bubbleAnchor);
   sendToRenderer('halo', { state: positionable ? null : state });
   if (spotlightTimer) return; // a find-the-bubble flash is running — after it
@@ -847,6 +1903,17 @@ function applyShortcuts() {
       openPanel();
       sendToRenderer('ui:open-chat');
     },
+    // Electron sees a press, never a release: press to talk, silence closes.
+    voiceTalk: () => voiceListener?.wake(),
+    voiceMute: () => {
+      if (!voiceListener) return;
+      const muting = voiceState !== 'muted';
+      voiceListener.mute(muting);
+      // Muted means the microphone is off, OS indicator included.
+      micWindow?.webContents.send('mic:control', muting ? 'stop' : 'start');
+      const lines = spokenLang() === 'en' ? ['Mic muted.', 'Mic back on.'] : ['Microfone mudo.', 'Microfone de volta.'];
+      voiceArbiter?.say({ text: muting ? lines[0] : lines[1], priority: 1 });
+    },
   };
   shortcutFailures = [];
   for (const [id, accelerator] of Object.entries(managerConfig.shortcuts ?? {})) {
@@ -862,8 +1929,9 @@ function applyShortcuts() {
   if (shortcutFailures.length) log(`shortcuts not registered: ${shortcutFailures.join(', ')}`);
 }
 
-function refreshTrayMenu() {
-  if (!tray) return;
+// The tray menu and the workspace's "vzr" menu (#169) are this one menu: same items,
+// same actions, built fresh so the checked devices are current.
+function buildActionMenu({ canHide = true } = {}) {
   const actions = {
     panel: () => {
       showBubble();
@@ -872,12 +1940,48 @@ function refreshTrayMenu() {
     settings: () => openSettingsWindow(),
     toggle: () => (bubbleVisible() ? hideToTray() : showBubble()),
     find: findBubble,
-    quit: () => app.quit(),
+    quit: () => requestQuit().catch((error) => log(`quit failed: ${error}`)),
+    workspace: () => workspaceWindow?.show(),
+    rules: () => openRulesWindow(),
   };
-  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible() }).map((item) =>
-    item.id ? { ...item, click: actions[item.id] } : item,
-  );
-  tray.setContextMenu(Menu.buildFromTemplate(template));
+  const pick = (id) => {
+    const choice = deviceChoice(id);
+    if (!choice) return;
+    const devices = choice.kind === 'mic' ? micDevices : audioOutputs;
+    const device = choice.index === 'default' ? null : devices[choice.index] ?? null;
+    applyConfig(choice.kind === 'mic' ? { voiceMic: device } : { audioOutput: device });
+  };
+  const wire = (item) => {
+    if (item.submenu) return { ...item, submenu: item.submenu.map(wire) };
+    if (!item.id) return item;
+    return { ...item, click: actions[item.id] ?? (() => pick(item.id)) };
+  };
+  const audio =
+    process.platform === 'linux'
+      ? { mics: micDevices, mic: managerConfig.voiceMic ?? null, outputs: audioOutputs, output: managerConfig.audioOutput ?? null }
+      : null;
+  const template = trayMenuTemplate({ bubbleVisible: bubbleVisible(), workspace: Boolean(workspaceWindow), audio, canHide });
+  return Menu.buildFromTemplate(template.map(wire));
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(buildActionMenu());
+}
+
+// The outputs for the tray menu, from PipeWire; re-read every few seconds so
+// a headset plugged in shows up (Linux only, where the voice runs).
+let audioOutputs = [];
+async function refreshAudioOutputs() {
+  try {
+    const next = listSinks(parsePwDump(await runText('pw-dump', [])));
+    if (JSON.stringify(next) === JSON.stringify(audioOutputs)) return;
+    audioOutputs = next;
+    log(`audio outputs: ${next.map((sink) => sink.label).join(' | ') || 'none'}`);
+    refreshTrayMenu();
+  } catch {
+    // no pw-dump: the menu keeps the system default only
+  }
 }
 
 // Hiding into the tray is only offered where an icon can actually appear.
@@ -917,7 +2021,9 @@ async function setupTray() {
   sendState();
 }
 
-ipcMain.on('app:quit', () => (tray ? hideToTray() : app.quit()));
+ipcMain.on('app:quit', () =>
+  tray ? hideToTray() : requestQuit().catch((error) => log(`quit failed: ${error}`)),
+);
 
 
 const windowOptions = {
@@ -984,6 +2090,7 @@ function createWindows() {
     sendToRenderer('ui:env', { managed: canPositionWindows });
     sendState();
   });
+  mainWindow.webContents.once('did-finish-load', windowLoaded);
 
   spotlightWindow = new BrowserWindow({
     ...windowOptions,
@@ -1012,6 +2119,8 @@ function createWindows() {
     sendToRenderer('ui:env', { managed: canPositionWindows });
     sendState();
   });
+  overlayWindow.webContents.once('did-finish-load', windowLoaded);
+  capWindowsLoad();
   bornParked(overlayWindow);
 
   settingsWindow = new BrowserWindow({
@@ -1095,68 +2204,1348 @@ async function generateVoiceForStop(session) {
   // pending ask found here is shown too instead of being discarded.
   registry.setQuestion(session.id, snapshot.pendingQuestion);
   registry.setLastMessage(session.id, digestMessage(snapshot.lastAssistantMessage));
+  const playing = maestroOrchestra.find((musician) => musician.sessionId === session.id);
+  if (playing) {
+    maestroSay(session.id, snapshot.lastAssistantMessage);
+    // The plan it declared lights up on the graph, dashed (#159).
+    const plan = playing.root ? parsePlan(snapshot.lastAssistantMessage, playing.root) : [];
+    if (plan.length) maestroPlans.set(session.id, plan);
+    if (maestroOn()) maestroTurnEnded(playing);
+  }
+  // The chat bound to the voice answers in its own words, not the gerente's
+  // alert — and no tokens go to the alert (#161).
+  const bound = voiceSession?.target();
+  if (bound?.kind === 'chat' && bound.sessionId === session.id) {
+    await voiceSession.onSessionStop({ id: session.id, lastMessage: snapshot.lastAssistantMessage });
+    return;
+  }
+  // A turn that ends on a plain question is urgent like an AskUserQuestion: the
+  // question itself is the notice, no Haiku tokens for a paraphrase.
+  const textQuestion = snapshot.pendingQuestion?.kind === 'text' ? snapshot.pendingQuestion.text : null;
+  if (textQuestion) {
+    registry.setManagerMessage(session.id, { message: textQuestion });
+    await bark(session, 'question', textQuestion, {
+      projectName: displayNameOf(session),
+      text: textQuestion,
+      kind: 'question',
+      optionsCount: 0,
+      sessionId: session.id,
+    });
+    return;
+  }
   let voice;
-  if (isEconomyMode()) {
-    voice = fallbackMessage(displayNameOf(session));
+  // Mid-conversation, another chat finishing is a short fixed line: no
+  // Haiku tokens for an alert that only interrupts (#161).
+  if (isEconomyMode() || voiceArbiter?.inConversation()) {
+    voice = fallbackMessage(displayNameOf(session), Math.random, spokenLang());
   } else {
     voice = await generateManagerMessage({
       projectName: displayNameOf(session),
       lastAssistantMessage: snapshot.lastAssistantMessage,
+      lang: spokenLang(),
     });
     tokenBudget.add(voice.tokensUsed);
   }
   registry.setManagerMessage(session.id, voice);
-  if (await allowAnnouncement(session, 'done', voice.message)) {
-    sendToRenderer('tooltip', { projectName: displayNameOf(session), text: voice.message, kind: 'done' });
-    showTooltip();
-  }
-}
-
-// The Notification hook often fires BEFORE Claude Code flushes the ask entry
-// to the transcript — reading immediately misses the question and the card
-// shows no options. Retry a few times before giving up.
-const QUESTION_RETRY_DELAYS_MS = [0, 600, 1500];
-
-async function readSnapshotWithQuestionRetry(transcriptPath) {
-  let snapshot = { lastAssistantMessage: null, pendingQuestion: null };
-  for (const delayMs of QUESTION_RETRY_DELAYS_MS) {
-    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-    snapshot = await readTranscriptSnapshot(transcriptPath);
-    if (snapshot.pendingQuestion) return snapshot;
-  }
-  return snapshot;
+  await bark(session, 'done', voice.message, {
+    projectName: displayNameOf(session),
+    text: voice.message,
+    kind: 'done',
+    sessionId: session.id,
+  });
 }
 
 async function enrichNotification(session) {
   const snapshot = session.transcriptPath
-    ? await readSnapshotWithQuestionRetry(session.transcriptPath)
+    ? await readSnapshotWithQuestionRetry(() => readTranscriptSnapshot(session.transcriptPath))
     : { pendingQuestion: null };
-  registry.setQuestion(session.id, snapshot.pendingQuestion);
-  const firstQuestion = snapshot.pendingQuestion?.questions?.[0];
+  // The Stop already announced a text question: the idle Notification that
+  // follows must not repeat it, nor drop it.
+  if (snapshot.pendingQuestion?.kind === 'text' && session.question?.kind === 'text' && !session.question.unconfirmed) {
+    registry.setManagerMessage(session.id, { message: session.question.text }); // the Notification overwrote it
+    return;
+  }
+  // Only a Stop confirms a text question (the turn ended): from here it shows
+  // as "needs you" but keeps typing blocked.
+  const pending = snapshot.pendingQuestion;
+  registry.setQuestion(session.id, pending?.kind === 'text' ? { ...pending, unconfirmed: true } : pending);
+  const firstQuestion = pending?.questions?.[0];
   // The card shows exactly what the tooltip showed — one message per chat.
-  const text = firstQuestion?.question ?? session.managerMessage;
+  const asked = firstQuestion?.question ?? (pending?.kind === 'text' ? pending.text : null);
+  const text = asked ?? session.managerMessage;
   if (!text) return;
-  if (firstQuestion) registry.setManagerMessage(session.id, { message: text });
-  const kind = firstQuestion ? 'question' : 'waiting';
-  if (await allowAnnouncement(session, kind, text)) {
-    sendToRenderer('tooltip', {
-      projectName: displayNameOf(session),
-      text,
-      kind,
-      optionsCount: firstQuestion?.options?.length ?? 0,
-    });
-    showTooltip();
+  if (asked) registry.setManagerMessage(session.id, { message: text });
+  const kind = asked ? 'question' : 'waiting';
+  await bark(session, kind, text, {
+    projectName: displayNameOf(session),
+    text,
+    kind,
+    optionsCount: firstQuestion?.options?.length ?? 0,
+    sessionId: session.id,
+  });
+}
+
+// --- workspace window (Linux only in v1) -----------------------------------
+// Nothing here runs for someone who never opens it: the window, the git
+// worktree lookups and the project auto-add all start at the first open.
+workspaceWindow = workspaceAvailable(process.platform)
+  ? createWorkspaceWindowManager({
+      BrowserWindow,
+      preloadPath: path.join(rendererDir, 'workspace-preload.cjs'),
+      htmlPath: path.join(rendererDir, 'workspace.html'),
+      bootQuery: () => bootQuery(managerConfig),
+      loadBounds: () => {
+        const saved = loadPersistedState().workspace ?? null;
+        return boundsVisible(saved, screen.getAllDisplays()) ? saved : null;
+      },
+      saveBounds: (bounds) => {
+        try {
+          fs.mkdirSync(configDir, { recursive: true });
+          fs.writeFileSync(stateFile, JSON.stringify({ ...loadPersistedState(), workspace: bounds }));
+        } catch (error) {
+          log(`workspace bounds save failed: ${error}`);
+        }
+      },
+      onFocus: () => onWorkspaceFocus(),
+      onShow: () => {
+        refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
+      },
+      // A (re)loaded page starts from the replay, and a dead one acks
+      // nothing: either way, what was in flight will never be acked (#113).
+      onLoad: () => {
+        avatarsSent = null;
+        ptyHost?.resetFlow();
+      },
+      onGone: () => {
+        log('workspace renderer gone — terminals resumed, reloading on next open');
+        ptyHost?.resetFlow();
+      },
+      isQuitting: () => appQuitting,
+      // First frame in the palette's own colour (#108).
+      background: () => {
+        try {
+          return backgroundFor(managerConfig, fs.readFileSync(path.join(rendererDir, 'tokens.css'), 'utf8'));
+        } catch {
+          return '#0d1117';
+        }
+      },
+    })
+  : null;
+
+function workspaceProjects() {
+  return managerConfig.workspaceProjects ?? [];
+}
+
+function workspaceDismissed() {
+  return managerConfig.workspaceDismissed ?? [];
+}
+
+function saveWorkspaceProjects(projects, dismissed = workspaceDismissed()) {
+  managerConfig = { ...managerConfig, workspaceProjects: projects, workspaceDismissed: dismissed };
+  try {
+    saveConfig(configFile, managerConfig);
+  } catch (error) {
+    log(`workspace projects save failed: ${error}`);
   }
 }
 
-function onHookEvent(event) {
+// Outside sessions bring their repo in by themselves (spec §9.1): a session
+// in a repo not listed yet adds it. Non-git folders only come in by hand.
+async function autoAddProjects() {
+  let added = false;
+  for (const session of registry.list()) {
+    if (!session.cwd || repoRootCache.has(session.cwd)) continue;
+    const root = await repoRootOf(session.cwd);
+    repoRootCache.set(session.cwd, root);
+    if (shouldAutoAdd(root, workspaceProjects(), workspaceDismissed(), app.getPath('home'))) {
+      saveWorkspaceProjects(addProject(workspaceProjects(), root));
+      added = true;
+    }
+  }
+  return added;
+}
+
+async function refreshWorkspace() {
+  if (!workspaceWindow) return;
+  await autoAddProjects();
+  await Promise.all(
+    workspaceProjects().map(async (root) => worktreeCache.set(root, await listWorktrees(root))),
+  );
+  pushWorkspaceStateNow();
+}
+
+// Project logos (root -> data: URI | null): the project's own file, else the repo's custom social preview. Resolved off the push path: the
+// state goes out at once (monogram), the avatar joins when it is read/downloaded.
+const avatarService = createAvatarService({
+  dir: path.join(configDir, 'avatars'),
+  fetchImage: (url) => fetchAvatarImage(url, { maxBytes: OG_MAX_BYTES }),
+  queryOpenGraph: async (ref) => parseOpenGraph(await runText('gh', openGraphArgs(ref), { timeout: 10000 })),
+  fsp: fs.promises,
+});
+const projectAvatars = new Map(); // root -> { uri, busy, nextCheck }
+let avatarsSent = null; // JSON of what the page last got; null = send again
+// Looked at again every AVATAR_CHECK_EVERY_MS (never per push): the remote may
+// have changed, a failed download is retried, a week-old file is refreshed.
+function resolveProjectAvatar(root) {
+  const entry = projectAvatars.get(root) ?? { uri: null, busy: false, nextCheck: 0 };
+  projectAvatars.set(root, entry);
+  if (!avatarCheckDue(entry, { now: Date.now(), hidden: reviewWindowHidden })) return;
+  entry.busy = true;
+  const show = (uri) => {
+    if (uri === entry.uri) return;
+    entry.uri = uri;
+    pushWorkspaceState();
+  };
+  resolveLogo({
+    findLocal: () =>
+      findLocalLogo({
+        root,
+        listTracked: async (paths) => new Set((await runText('git', ['--literal-pathspecs', 'ls-files', '-z', '--', ...paths], { cwd: root })).split('\0').filter(Boolean)),
+      }),
+    getRemote: () => runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => ''),
+    service: avatarService,
+    show,
+  })
+    .catch((error) => log(`avatar: ${root}: ${error}`))
+    .finally(() => {
+      entry.busy = false;
+      entry.nextCheck = nextAvatarCheck(Date.now());
+    });
+}
+
+// The data: URIs go to the page only when they change (or after a reload).
+function avatarsPayload(projects) {
+  const avatars = Object.fromEntries(projects.map(({ root }) => [root, projectAvatars.get(root)?.uri ?? null]));
+  const signature = JSON.stringify(avatars);
+  if (signature === avatarsSent) return {};
+  avatarsSent = signature;
+  return { avatars };
+}
+
+function pushWorkspaceStateNow() {
+  if (!workspaceWindow?.isReady()) return;
+  const projects = workspaceProjects().map((root) => ({
+    root,
+    worktrees: worktreeCache.get(root) ?? [],
+  }));
+  for (const { root } of projects) resolveProjectAvatar(root);
+  const linked = linkedSessions(listWithDisplayNames());
+  const tree = buildWorkspaceTree({
+    projects,
+    sessions: linked,
+    taskOf: (sessionId) => editTracker.currentTask(sessionId),
+  });
+  maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
+  maestroFocusId = nextFocus(maestroOrchestra, maestroFocusId);
+  for (const sessionId of workPlans.sessions()) if (!registry.sessions.has(sessionId)) workPlans.forget(sessionId);
+  if (maestroOn()) for (const musician of maestroOrchestra) graphFor(musician.root);
+  syncBackstageTimers();
+  // Sessions that are no músico (any more) leave the backstage.
+  if (maestroOn())
+    for (const sessionId of backstage.sessions())
+      if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) {
+        for (const item of backstage.backgroundOf(sessionId)) backstageLogs.delete(item.outputFile);
+        backstage.forget(sessionId);
+        backstagePorts.delete(sessionId);
+      }
+  // A músico gone with an order pending: the gerente says it could not do it.
+  for (const { sessionId } of maestroConductor.list())
+    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) queueMicrotask(() => runConductor(maestroConductor.sessionGone(sessionId)));
+  for (const sessionId of [...maestroNarrators.keys(), ...maestroPlans.keys()])
+    if (!maestroOrchestra.some((musician) => musician.sessionId === sessionId)) {
+      maestroNarrators.delete(sessionId);
+      maestroPlans.delete(sessionId);
+    }
+  const automationState = automations.state();
+  workspaceWindow.send('workspace:state', {
+    tree,
+    terminals: (ptyHost?.list() ?? []).map((terminal) => ({ ...terminal, taskTitle: taskTitles.get(terminal.id) ?? null })),
+    activeTerminal: activeTerminalId,
+    guardAsks: guardAsks.pending(),
+    // The Agentes tab's flat list: every chat the registry knows, tombstones included.
+    sessions: buildAgentSessions({ sessions: linked, tree, issueOf: (sessionId, root) => taskLinks.numberOf(root, sessionId) }),
+    voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
+    maestro: {
+      on: maestroOn(),
+      orchestra: maestroOrchestra,
+      focusedId: maestroFocusId,
+      impacts: maestroOn() ? maestroImpacts() : [],
+      orders: Object.fromEntries(maestroConductor.list().map((order) => [order.sessionId, order.label])),
+      backstage: maestroOn() ? Object.fromEntries(maestroOrchestra.map((musician) => [musician.sessionId, backstageOf(musician.sessionId)])) : {},
+    },
+    plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
+    tokens: { used: tokenBudget.usedToday(), cap: managerConfig.tokenBudgetDaily },
+    // Running automações as kanban cards of their own, and the status line's next run.
+    automationRuns: automationRunCards(automationState.list, guardAsks.pending()),
+    nextAutomationAt: automationState.nextAt,
+    theme: managerConfig.theme,
+    palette: managerConfig.palette,
+    density: managerConfig.density,
+    ...avatarsPayload(projects),
+  });
+  // A session in a known repo that matches no worktree: one was probably
+  // just created. Re-list that repo once per cwd (staleRoots), and re-resolve
+  // the cwd itself — a removed worktree then simply stops resolving.
+  const { roots, rechecked } = staleRoots({
+    unplaced: tree.unplaced,
+    rootOf: (cwd) => (worktreeCache.has(repoRootCache.get(cwd)) ? repoRootCache.get(cwd) : null),
+    rechecked: workspaceRechecked,
+  });
+  const newlyChecked = [...rechecked].filter((cwd) => !workspaceRechecked.has(cwd));
+  workspaceRechecked = rechecked;
+  if (roots.length) {
+    for (const cwd of newlyChecked) repoRootCache.delete(cwd);
+    for (const root of roots) worktreeCache.delete(root);
+    refreshWorkspace().catch((error) => log(`workspace refresh failed: ${error}`));
+  }
+}
+
+function pushWorkspaceState() {
+  if (!workspaceWindow?.isOpen() || workspacePushTimer) return;
+  workspacePushTimer = setTimeout(() => {
+    workspacePushTimer = null;
+    autoAddProjects()
+      .then((added) => (added ? refreshWorkspace() : pushWorkspaceStateNow()))
+      .catch((error) => log(`workspace push failed: ${error}`));
+  }, 150);
+}
+
+editTracker.on('change', () => pushWorkspaceState());
+
+ipcMain.handle('workspace:add-project', async () => {
+  const options = { title: 'Abrir projeto', properties: ['openDirectory'] };
+  // Parented to the workspace so it never opens behind it (#107).
+  const parent = workspaceWindow?.window();
+  const result = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options));
+  if (result.canceled || !result.filePaths[0]) return;
+  const dir = result.filePaths[0];
+  const root = (await repoRootOf(dir)) ?? dir;
+  // Adding by hand undoes an earlier "Tirar da lista".
+  saveWorkspaceProjects(
+    addProject(workspaceProjects(), root),
+    workspaceDismissed().filter((candidate) => candidate !== root),
+  );
+  await refreshWorkspace();
+});
+
+ipcMain.on('workspace:remove-project', (_event, root) => {
+  if (typeof root !== 'string') return;
+  // Remembered, so auto-add does not bring it straight back.
+  saveWorkspaceProjects(removeProject(workspaceProjects(), root), addProject(workspaceDismissed(), root));
+  worktreeCache.delete(root);
+  pushWorkspaceStateNow();
+});
+
+// --- workspace terminals (#92) -------------------------------------------
+function ensurePtyHost() {
+  if (ptyHost) return { host: ptyHost, error: null };
+  const { pty, error } = loadPty();
+  if (!pty) return { host: null, error };
+  ptyHost = createPtyHost({ spawn: pty.spawn, shell: process.env.SHELL || '/bin/bash' });
+  ptyHost.on('data', (payload) => {
+    if (workspaceWindow?.isReady()) workspaceWindow.send('pty:data', payload);
+    // Nobody to draw it: count it as drawn, or the terminal would pause (#113).
+    else ptyHost.ack(payload.id, payload.data.length);
+  });
+  ptyHost.on('exit', (payload) => {
+    if (workspaceWindow?.isReady()) workspaceWindow.send('pty:exit', payload);
+  });
+  ptyHost.on('change', () => {
+    pushWorkspaceStateNow();
+    scheduleTabsSave();
+    // An auto-update held back by live terminals goes through once the last ends.
+    if (ptyHost.aliveCount() === 0) onUpdateStatus(updateStatus);
+  });
+  return { host: ptyHost, error: null };
+}
+
+const fromWorkspace = (event) => Boolean(workspaceWindow?.ownsSender(event.sender));
+
+function isDirectory(dir) {
+  try {
+    return typeof dir === 'string' && fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// New pty id → the chat it resumed, until that chat's first hook event names
+// the tab itself (#155).
+const resumedChats = new Map();
+
+function linkedSessions(sessions) {
+  const ids = ptyHost?.list().map((terminal) => terminal.id) ?? [];
+  for (const ptyId of [...resumedChats.keys()]) if (!ids.includes(ptyId)) resumedChats.delete(ptyId);
+  return linkTerminals(sessions, ids, resumedChats);
+}
+
+// One session with the tab it runs in NOW (#157): a pty id left over from an
+// earlier run doesn't count as "in the Vizor", and a chat resumed in a tab is
+// reachable there before its first hook event. Every path that types into a
+// tab or focuses one goes through this, never the raw registry term.
+function linkedSession(sessionId) {
+  const session = typeof sessionId === 'string' ? registry.sessions.get(sessionId) : null;
+  return session ? linkedSessions([session])[0] : null;
+}
+
+// kind: 'shell' | 'claude' | 'resume' (with sessionId) — #154.
+function openTerminal({ cwd, kind, sessionId, prompt = null }) {
+  const { command, error: invalid } = terminalCommand({ kind, sessionId, prompt });
+  if (invalid) return { error: invalid };
+  if (!isDirectory(cwd)) return { error: 'pasta não existe' };
+  const { host, error } = ensurePtyHost();
+  if (!host) {
+    log(`pty unavailable: ${error} (${loadPty().detail ?? '-'})`);
+    return { error };
+  }
+  const { id } = host.open({ cwd, command });
+  if (kind === 'resume') {
+    resumedChats.set(id, sessionId);
+    // open() already pushed the state, before this link existed.
+    pushWorkspaceStateNow();
+    // claude registers itself a moment after it starts.
+    for (const delay of [2500, 6000]) setTimeout(adoptResumedChats, delay);
+  }
+  return { id };
+}
+
+ipcMain.handle('pty:open', (event, { cwd, kind = 'claude', sessionId = null } = {}) => {
+  if (!fromWorkspace(event)) return { error: 'origem inválida' };
+  return openTerminal({ cwd, kind, sessionId });
+});
+
+// The chats Claude Code saved for a folder, for "retomar conversa" (#154).
+// One already running somewhere (another terminal, a tab here) is marked:
+// resuming it twice would put two processes on one history.
+ipcMain.handle('workspace:conversations', async (event, cwd) => {
+  if (!fromWorkspace(event) || typeof cwd !== 'string') return [];
+  const live = readLiveSessionIds();
+  // linkedSessions first: it also forgets resumes whose tab is gone.
+  const linked = linkedSessions(registry.list()).filter((session) => session.term?.VIZOR_PTY_ID);
+  const tabs = new Map([
+    ...[...resumedChats].map(([ptyId, sessionId]) => [sessionId, ptyId]),
+    ...linked.map((session) => [session.id, session.term.VIZOR_PTY_ID]),
+  ]);
+  const list = await listConversations(await resolveClaudeProjectDir(cwd));
+  return list.map((conversation) => ({
+    ...conversation,
+    open: Boolean(live?.has(conversation.sessionId)),
+    tab: tabs.get(conversation.sessionId) ?? null,
+  }));
+});
+
+// "Trazer pro Vizor" (#156): an outside chat whose process is gone comes back
+// in a tab. Still running somewhere: refused, same reason as above. A closed
+// chat is reaped from the list within LIVENESS_INTERVAL_MS, so the usual way
+// back is the + menu's "retomar conversa"; this covers the chat still listed.
+function outsideStatus(sessionId) {
+  const session = linkedSessions(registry.list()).find((candidate) => candidate.id === sessionId);
+  if (!session || session.term?.VIZOR_PTY_ID) return { canBring: false, why: null };
+  if (!isSessionId(sessionId)) return { canBring: false, why: 'conversa sem id do Claude Code' };
+  if (!isDirectory(session.cwd)) return { canBring: false, why: 'a pasta dela não existe mais' };
+  const live = readLiveSessionIds();
+  if (live === null) return { canBring: false, why: 'não dá pra saber se ela ainda está aberta em outro terminal' };
+  if (live.has(sessionId))
+    return { canBring: false, why: 'ainda aberta no outro terminal. Feche lá e retome pelo + desta worktree.' };
+  return { canBring: true, why: null };
+}
+
+ipcMain.handle('workspace:outside-status', (event, sessionId) =>
+  fromWorkspace(event) ? outsideStatus(sessionId) : { canBring: false, why: null },
+);
+
+ipcMain.handle('workspace:bring', (event, sessionId) => {
+  if (!fromWorkspace(event)) return { error: 'origem inválida' };
+  const status = outsideStatus(sessionId);
+  if (!status.canBring) return { error: status.why ?? 'não dá pra trazer essa conversa' };
+  const session = registry.list().find((candidate) => candidate.id === sessionId);
+  return openTerminal({ cwd: session.cwd, kind: 'resume', sessionId });
+});
+
+// --- tabs across restarts (#155) ------------------------------------------
+let activeTerminalId = null;
+let tabsSaveTimer = null;
+// Once the quit snapshot is taken, the ptys being killed must not overwrite it.
+let tabsFrozen = false;
+
+// Chats in tabs seen alive, and the ones seen ending since (trackChatEnds):
+// only an end observed during the run drops a tab's chat from the save.
+const chatsSeenAlive = new Set();
+const chatsEnded = new Set();
+let lastTabsJson = null;
+
+function chatsInTabs() {
+  return [
+    ...resumedChats.values(),
+    ...linkedSessions(registry.list())
+      .filter((session) => session.term?.VIZOR_PTY_ID)
+      .map((session) => session.id),
+  ];
+}
+
+function saveWorkspaceTabs() {
+  if (tabsFrozen || !ptyHost) return;
+  const snapshot = tabsToSave({
+    terminals: ptyHost.list(),
+    sessions: linkedSessions(registry.list()),
+    ended: chatsEnded,
+    activeId: activeTerminalId,
+    resumed: resumedChats,
+  });
+  const workspaceTabs = { ...snapshot, windowOpen: Boolean(workspaceWindow?.isOpen()) };
+  // Saves follow every hook event: write only what changed.
+  const json = JSON.stringify(workspaceTabs);
+  if (json === lastTabsJson) return;
+  try {
+    fs.mkdirSync(configDir, { recursive: true });
+    // Atomic: a crash mid-write must not leave a state.json that parses to
+    // nothing — it also holds the bubble's place and the window bounds.
+    const temp = `${stateFile}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify({ ...loadPersistedState(), workspaceTabs }));
+    fs.renameSync(temp, stateFile);
+    lastTabsJson = json;
+  } catch (error) {
+    log(`workspace tabs save failed: ${error}`);
+  }
+}
+
+function scheduleTabsSave() {
+  if (tabsFrozen || !ptyHost || tabsSaveTimer) return;
+  tabsSaveTimer = setTimeout(() => {
+    tabsSaveTimer = null;
+    saveWorkspaceTabs();
+  }, 500);
+}
+
+function freezeWorkspaceTabs() {
+  if (tabsFrozen) return;
+  clearTimeout(tabsSaveTimer);
+  tabsSaveTimer = null;
+  saveWorkspaceTabs();
+  tabsFrozen = true;
+}
+
+// The thaw only brings tab saving back. appQuitting stays set on purpose:
+// cleared, the workspace and rules windows would go back to hiding on close,
+// and a quit that was merely slow (not cancelled) would then be cancelled by
+// them. The rest of before-quit (socket, hooks, tray) isn't undone either.
+const quitFreeze = createQuitFreeze({
+  freeze: freezeWorkspaceTabs,
+  thaw: () => {
+    if (!tabsFrozen) return;
+    log('quit did not go through: workspace tab saves resume');
+    tabsFrozen = false;
+    scheduleTabsSave();
+    // The automações were stopped for the quit: schedule them again.
+    automations.resume();
+  },
+  hold: () => {
+    clearTimeout(tabsSaveTimer);
+    tabsSaveTimer = null;
+    tabsFrozen = true;
+  },
+});
+
+function restoreWorkspaceTabs() {
+  if (!workspaceWindow) return;
+  const saved = loadPersistedState().workspaceTabs;
+  const plan = restorePlan({ saved, liveIds: readLiveSessionIds(), dirExists: isDirectory });
+  for (const { cwd, why } of plan.skipped) log(`workspace tab not restored (${cwd}): ${why}`);
+  for (const tab of plan.open) {
+    const result = openTerminal({ cwd: tab.cwd, kind: tab.sessionId ? 'resume' : 'shell', sessionId: tab.sessionId });
+    if (result.error) log(`workspace tab not restored (${tab.cwd}): ${result.error}`);
+    else if (tab.active) activeTerminalId = result.id;
+  }
+  if (plan.open.length) log(`workspace: ${plan.open.length} tab(s) restored`);
+  if (saved?.windowOpen && plan.open.length) workspaceWindow.show();
+}
+
+ipcMain.on('workspace:active-tab', (event, id) => {
+  if (!fromWorkspace(event) || (id !== null && typeof id !== 'string')) return;
+  activeTerminalId = id;
+  scheduleTabsSave();
+});
+// When the user last typed in each tab: the gerente never types over them (#162 review).
+const userTypedAt = new Map(); // pty id → time
+const USER_TYPING_MS = 5000;
+ipcMain.on('pty:write', (event, { id, data } = {}) => {
+  if (!fromWorkspace(event) || typeof data !== 'string') return;
+  userTypedAt.set(id, Date.now());
+  ptyHost?.write(id, data);
+});
+ipcMain.on('pty:resize', (event, { id, cols, rows } = {}) => {
+  const size = fromWorkspace(event) ? clampTerminalSize(cols, rows) : null;
+  if (size) ptyHost?.resize(id, size.cols, size.rows);
+});
+ipcMain.on('pty:ack', (event, { id, chars } = {}) => {
+  if (fromWorkspace(event)) ptyHost?.ack(id, Number(chars));
+});
+ipcMain.on('pty:close', (event, id) => {
+  if (fromWorkspace(event)) ptyHost?.close(id);
+});
+ipcMain.on('pty:title', (event, { id, title } = {}) => {
+  if (fromWorkspace(event)) ptyHost?.setTitle(id, title);
+});
+ipcMain.handle('pty:buffer', (event, id) => (fromWorkspace(event) ? (ptyHost?.buffer(id) ?? '') : ''));
+
+// --- inspector (#93): the window pulls edits and files on demand --------
+const editPings = new Map(); // sessionId → throttle timer
+
+editTracker.on('change', ({ sessionId }) => {
+  if (!workspaceWindow?.isReady() || editPings.has(sessionId)) return;
+  editPings.set(
+    sessionId,
+    setTimeout(() => {
+      editPings.delete(sessionId);
+      workspaceWindow?.send('edits:changed', { sessionId });
+    }, 150),
+  );
+});
+
+function sessionWorktree(sessionId) {
+  const cwd = registry.list().find((session) => session.id === sessionId)?.cwd;
+  if (!cwd) return null;
+  const paths = [...worktreeCache.values()].flat().map((worktree) => worktree.path);
+  return matchWorktree(cwd, paths) ?? cwd;
+}
+
+function pickTask(sessionId, taskId) {
+  if (!taskId) return editTracker.currentTask(sessionId);
+  return editTracker.tasks(sessionId).find((task) => task.id === taskId) ?? null;
+}
+
+ipcMain.handle('edits:task', (event, { sessionId, taskId = null } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return { task: null, summaries: [] };
+  return {
+    task: serializeTask(pickTask(sessionId, taskId), sessionWorktree(sessionId)),
+    summaries: taskSummaries(editTracker.tasks(sessionId)),
+    comments: commentStore.list(sessionId),
+  };
+});
+
+// Only files the task touched: the window must not be able to read anything
+// else. The rows are cached per task and file until its contents change —
+// every edit ping would otherwise re-diff the whole file on main.
+const fileViewCache = new Map(); // `${taskId}\0${filePath}` → { start, current, dropped, edits, view }
+// Contents dropped by the memory ceiling must not live on in this cache (#130).
+editTracker.on('evicted', () => fileViewCache.clear());
+
+ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof filePath !== 'string')
+    return { error: 'pedido inválido' };
+  const task = pickTask(sessionId, taskId);
+  if (!task) return { error: 'arquivo fora da tarefa' };
+  const file = task.files.get(filePath);
+  const edits = task.edits.filter((edit) => edit.filePath === filePath);
+  const signature = edits.map((edit) => `${edit.id}:${edit.status}:${edit.endedAt}`).join('|');
+  const key = `${task.id}\0${filePath}`;
+  const cached = fileViewCache.get(key);
+  if (
+    cached &&
+    cached.start === file?.start &&
+    cached.current === file?.current &&
+    cached.dropped === task.snapshotsDropped &&
+    cached.edits === signature
+  )
+    return cached.view;
+  const view = fileViewFor(task, filePath, sessionWorktree(sessionId));
+  if (fileViewCache.size > 50) fileViewCache.clear();
+  fileViewCache.set(key, { start: file?.start, current: file?.current, dropped: task.snapshotsDropped, edits: signature, view });
+  return view;
+});
+
+const INSPECTOR_MODES = ['arquivo', 'cards'];
+const INSPECTOR_WIDTHS = ['compact', 'wide', 'collapsed'];
+const TOP_TABS = ['workspace', 'agents', 'github', 'automations'];
+
+ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
+  const saved = loadPersistedState().workspaceInspector ?? {};
+  const current = {
+    mode: INSPECTOR_MODES.includes(saved.mode) ? saved.mode : 'arquivo',
+    width: INSPECTOR_WIDTHS.includes(saved.width) ? saved.width : 'compact',
+    topTab: TOP_TABS.includes(saved.topTab) ? saved.topTab : 'workspace',
+  };
+  if (!fromWorkspace(event) || !set) return current;
+  const next = {
+    mode: INSPECTOR_MODES.includes(set.mode) ? set.mode : current.mode,
+    width: INSPECTOR_WIDTHS.includes(set.width) ? set.width : current.width,
+    topTab: TOP_TABS.includes(set.topTab) ? set.topTab : current.topTab,
+  };
+  try {
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ ...loadPersistedState(), workspaceInspector: next }));
+  } catch (error) {
+    log(`inspector prefs save failed: ${error}`);
+  }
+  return next;
+});
+
+// --- changes made by commands (#94) --------------------------------------
+// Recorded for every session, workspace open or not — like the edits — but
+// git is only polled while some session has a task running there.
+const BASELINE_FILE_BYTES = MAX_DIFF_BYTES;
+const BASELINE_TOTAL_BYTES = 20 * 1024 * 1024;
+const baselineSnapshots = new Map(); // root → Map<abs, content> of files dirty at task start
+
+const commandWatcher = createCommandWatcher({
+  // --no-optional-locks: a background poller must never take index.lock and
+  // break the AI's own `git add`/`commit` (#94 review).
+  gitStatus: (root) =>
+    execFileAsync('git', ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+      cwd: root,
+      timeout: 3000,
+      maxBuffer: 16 * 1024 * 1024,
+    })
+      .then(({ stdout }) => stdout)
+      .catch(() => null),
+  gitHead: (root) =>
+    execFileAsync('git', ['--no-optional-locks', 'rev-parse', 'HEAD'], { cwd: root, timeout: 3000 })
+      .then(({ stdout }) => stdout.trim() || null)
+      .catch(() => null),
+  gitChangedBetween: (root, from, to) =>
+    execFileAsync('git', ['--no-optional-locks', 'diff', '--name-only', '-z', from, to], {
+      cwd: root,
+      timeout: 3000,
+      maxBuffer: 16 * 1024 * 1024,
+    })
+      // Full list: the watcher skips a cycle past its cap — a truncated list
+      // would never trip it and become 200 arbitrary cards (review I-3).
+      .then(({ stdout }) => stdout.split('\0').filter(Boolean))
+      .catch(() => null),
+  statFile: (abs) =>
+    fs.promises.stat(abs).then(
+      (stats) => `${stats.size}:${stats.mtimeMs}`,
+      () => 'gone',
+    ),
+  // A change is explained by an edit still in flight in ANY session; landed
+  // edits are matched by content in recordCommandChange.
+  explained: (_owners, abs) => editTracker.explains(abs, realPathOf),
+  onChange: (change) => {
+    reviewService.invalidate(change.root);
+    recordCommandChange(change).catch((error) => log(`command change failed: ${error}`));
+  },
+  // The user's uncommitted work at task start: a later command change is
+  // diffed against THIS, never against the index (#94 review).
+  onBaseline: ({ root, files }) => {
+    const snapshot = new Map();
+    let total = 0;
+    for (const file of files) {
+      try {
+        const { size } = fs.statSync(file);
+        if (size > BASELINE_FILE_BYTES || total + size > BASELINE_TOTAL_BYTES) continue;
+        snapshot.set(file, fs.readFileSync(file, 'utf8'));
+        total += size;
+      } catch {
+        // gone or unreadable: nothing to remember
+      }
+    }
+    baselineSnapshots.set(root, snapshot);
+  },
+  log,
+});
+
+async function readForCommand(filePath) {
+  let stats;
+  try {
+    stats = await fs.promises.stat(filePath);
+  } catch (error) {
+    return { content: null, note: error?.code === 'ENOENT' ? 'deleted' : 'unreadable' };
+  }
+  if (!stats.isFile()) return { content: null, note: 'unreadable' };
+  // Size first: a giant file is never read just to be refused.
+  if (stats.size > MAX_DIFF_BYTES) return { content: null, note: 'too-large' };
+  try {
+    const content = await fs.promises.readFile(filePath, 'utf8');
+    const verdict = diffability(content);
+    return verdict === 'ok' ? { content, note: null } : { content: null, note: verdict };
+  } catch {
+    return { content: null, note: 'unreadable' };
+  }
+}
+
+async function readHeadVersion(root, head, filePath) {
+  const relative = path.relative(root, filePath).split(path.sep).join('/');
+  return execFileAsync('git', ['--no-optional-locks', 'show', `${head}:${relative}`], {
+    cwd: root,
+    timeout: 3000,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+    .then(({ stdout }) => stdout)
+    .catch(() => null); // not at that HEAD, or git failed: fall back to the other baselines
+}
+
+async function recordCommandChange({ root, filePath, owners, untracked, fromHead }) {
+  const { content: after, note: readNote } = await readForCommand(filePath);
+  // An edit's own write (its Post landed after the poll): not a command's.
+  if (after !== null && editTracker.contentsAnywhere(filePath, realPathOf).includes(after)) return;
+  for (const owner of owners) {
+    const session = registry.list().find((item) => item.id === owner);
+    // Esc ends a turn without a Stop hook: the session is idle, the change is
+    // the user's — close the task instead of blaming the AI (#94 review).
+    if (session?.transcriptPath && (await readInterrupted(session.transcriptPath))) {
+      editTracker.endTask(owner);
+      continue;
+    }
+    let note = readNote;
+    let before = editTracker.knownContent(owner, filePath);
+    let baseline = before === null ? null : 'previous';
+    if (before === null && baselineSnapshots.get(root)?.has(filePath)) {
+      before = baselineSnapshots.get(root).get(filePath);
+      baseline = 'task-start';
+    }
+    if (before === null && fromHead) {
+      before = await readHeadVersion(root, fromHead, filePath);
+      baseline = 'head';
+    }
+    if (before === null && after !== null) {
+      if (untracked) {
+        before = '';
+        baseline = 'created';
+      } else {
+        before = await readIndexVersion(filePath);
+        baseline = before === null ? 'none' : 'git';
+      }
+    }
+    if (before !== null && diffability(before) !== 'ok') {
+      note = diffability(before);
+      before = null;
+    }
+    // A touch, a no-op formatter, stash/pop: nothing to show.
+    if (before !== null && before === after) continue;
+    const command = session?.transcriptPath ? await readLastBashCommand(session.transcriptPath) : null;
+    const edit = editTracker.addCommandEdit(owner, {
+      filePath,
+      before,
+      after,
+      baseline,
+      reason: commandReason(command),
+      note,
+      uncertainOwner: owners.length > 1,
+    });
+    logEdit(edit);
+  }
+}
+
+// Hooks may report a path through a symlink that git reports resolved: compare
+// real paths (#132). Cached — called per tracked file on every comparison.
+const realPaths = new Map();
+function realPathOf(file) {
+  if (realPaths.has(file)) return realPaths.get(file);
+  try {
+    const real = fs.realpathSync(file);
+    if (realPaths.size > 5000) realPaths.clear();
+    realPaths.set(file, real);
+    return real;
+  } catch {
+    // Not there yet (a Write still waiting on permission): resolve the
+    // folder, and never cache — the file may appear in a moment (review M-4).
+    try {
+      return path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+    } catch {
+      return file;
+    }
+  }
+}
+
+const COMMAND_ROOT_RETRY_MS = 60000;
+const commandRootCache = new Map(); // session cwd → { root, at } (null roots retried after a minute)
+let commandRootsTimer = null;
+
+// Which worktrees to poll, and for whom: sessions with a task running,
+// grouped by the worktree checkout their cwd is in (linked ones included).
+async function refreshCommandRoots() {
+  const owners = new Map();
+  for (const session of registry.list()) {
+    const task = editTracker.currentTask(session.id);
+    if (!session.cwd || !task || task.endedAt !== null) continue;
+    const cached = commandRootCache.get(session.cwd);
+    if (!cached || (cached.root === null && Date.now() - cached.at > COMMAND_ROOT_RETRY_MS))
+      commandRootCache.set(session.cwd, { root: await worktreeRootOf(session.cwd), at: Date.now() });
+    const root = commandRootCache.get(session.cwd).root;
+    if (!root) continue;
+    owners.set(root, [...(owners.get(root) ?? []), session.id]);
+  }
+  for (const root of commandWatcher.activeRoots())
+    if (!owners.has(root)) {
+      commandWatcher.setActive(root, []);
+      baselineSnapshots.delete(root);
+    }
+  for (const [root, sessions] of owners) commandWatcher.setActive(root, sessions);
+}
+
+function scheduleCommandRoots() {
+  if (commandRootsTimer) return;
+  commandRootsTimer = setTimeout(() => {
+    commandRootsTimer = null;
+    refreshCommandRoots().catch((error) => log(`command roots failed: ${error}`));
+  }, 200);
+}
+
+editTracker.on('task', scheduleCommandRoots);
+editTracker.on('change', scheduleCommandRoots);
+
+// --- 💬 comments on a change (#95) -----------------------------------------
+const commentStore = createCommentStore();
+// Is the session's own claude the job in front of that Vizor terminal? Its
+// pid comes from Claude Code's session registry; /proc says whether it leads
+// the terminal's foreground group, on THAT pty, and isn't stopped.
+function claudeInPty(session, ptyId) {
+  const tty = ptyHost?.ttyPath(ptyId);
+  const pid = session?.id ? readSessionPid(session.id) : null;
+  if (!tty || !pid) return false;
+  try {
+    return inForeground({ stat: fs.readFileSync(`/proc/${pid}/stat`, 'utf8'), ttyRdev: fs.statSync(tty).rdev });
+  } catch {
+    return false;
+  }
+}
+
+const commentDelivery = createCommentDelivery({
+  store: commentStore,
+  sessionOf: (sessionId) => linkedSession(sessionId),
+  claudeInPty,
+  writePty: (ptyId, data) => ptyHost?.write(ptyId, data),
+  sendPeer: (session, text) => sendPeerMessage(session, text),
+  typeReply: (session, text) => typeIntoTerminal(session, text),
+  log,
+});
+
+// Same ping as the edits: the inspector re-reads the session.
+commentStore.on('change', ({ sessionId }) => {
+  if (workspaceWindow?.isReady()) workspaceWindow.send('edits:changed', { sessionId });
+});
+
+ipcMain.handle('comments:add', async (event, { sessionId, editId, text } = {}) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string' || typeof editId !== 'string')
+    return { ok: false, error: 'pedido inválido' };
+  const valid = validateComment(text);
+  if (!valid.ok) return valid;
+  const task = editTracker.tasks(sessionId).find((item) => item.edits.some((edit) => edit.id === editId));
+  const edit = task
+    ? serializeTask({ ...task, edits: task.edits.filter((item) => item.id === editId) }, sessionWorktree(sessionId)).edits[0]
+    : null;
+  if (!edit) return { ok: false, error: 'mudança não encontrada' };
+  commentStore.add({ sessionId, editId, text: valid.text, message: buildCommentMessage(edit, valid.text) });
+  // immediate: the user just pressed Enviar — the only moment typing into a
+  // terminal window is acceptable.
+  commentDelivery
+    .flush(sessionId, { immediate: true })
+    .then(() => flushHeldComments())
+    .catch((error) => log(`comment flush failed: ${error}`));
+  return { ok: true };
+});
+
+// "copiar" on a comment that could not be delivered: the clipboard is only
+// ever written because the user asked.
+ipcMain.handle('comments:copy', (event, { sessionId, commentId } = {}) => {
+  if (!fromWorkspace(event)) return false;
+  const comment = commentStore.list(sessionId).find((item) => item.id === commentId);
+  if (!comment) return false;
+  clipboard.writeText(comment.message);
+  return true;
+});
+
+let knownSessionIds = new Set();
+function forgetRemovedSessions() {
+  const current = registry.list().map((session) => session.id);
+  for (const sessionId of removedIds(knownSessionIds, current)) {
+    editTracker.forgetSession(sessionId);
+    commentStore.forgetSession(sessionId);
+  }
+  knownSessionIds = new Set(current);
+}
+
+// A session that stops waiting gets its held comments. A comment held only
+// because a fresh notice hasn't settled is retried a moment later, since no
+// registry change will come to wake it.
+let heldRetryTimer = null;
+function flushHeldComments() {
+  let pending = false;
+  for (const session of registry.list())
+    if (commentStore.nextToSend(session.id, session)) {
+      pending = true;
+      commentDelivery.flush(session.id).catch((error) => log(`comment flush failed: ${error}`));
+    }
+  if (pending && !heldRetryTimer)
+    heldRetryTimer = setTimeout(() => {
+      heldRetryTimer = null;
+      flushHeldComments();
+    }, 3500);
+}
+
+ipcMain.on('workspace:selected', (event, sessionId) => {
+  if (fromWorkspace(event)) workspaceSelectedSession = typeof sessionId === 'string' ? sessionId : null;
+});
+
+// --- review screen (#revisão, phase 1) --------------------------------------
+// Wiring only: the logic lives in src/main/review/. The renderer asks through
+// IPC, and a worktree it names must be one the workspace already knows.
+const reviewRoots = new Set(); // worktrees the verifier may have processes in
+
+// git for the review service: stdin for `apply`/`cat-file --batch`, room for a
+// whole `git diff`. --no-optional-locks: it must never block the AI's own git.
+const reviewGit = (args, cwd, stdin) =>
+  new Promise((resolve, reject) => {
+    const child = execFile(
+      'git',
+      ['--no-optional-locks', ...args],
+      { cwd, maxBuffer: 64 * 1024 * 1024, timeout: 30000 },
+      (error, stdout) => (error ? reject(error) : resolve(stdout)),
+    );
+    child.stdin?.on('error', () => {}); // git exited before reading all of it
+    child.stdin?.end(stdin ?? '');
+  });
+
+const reviewVerifier = createVerifier({ spawn });
+const reviewStores = new Map(); // worktree → { load, approve, prune, setPrefs, prefs }
+function reviewStoreFor(worktree) {
+  let entry = reviewStores.get(worktree);
+  if (!entry) {
+    const store = createReviewStore({
+      readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+      writeFile: (file, data) => fs.promises.writeFile(file, data),
+      rename: (from, to) => fs.promises.rename(from, to),
+      mkdir: (dir, options) => fs.promises.mkdir(dir, options),
+      onError: (error) => log(`review state save failed: ${error}`),
+      dir: path.join(configDir, 'revisao'),
+      key: storeKey(worktree),
+      setTimeout,
+      clearTimeout,
+    });
+    // load() resets what is in memory: it runs once, for the service and for prefs alike.
+    let loaded = null;
+    let prefs = {};
+    const load = () => (loaded ??= store.load().then((result) => { prefs = result.prefs; return result; }));
+    entry = {
+      load,
+      approve: (id, on) => store.approve(id, on),
+      prune: (ids) => store.prune(ids),
+      flush: () => store.flush(),
+      setPrefs(partial) { prefs = { ...prefs, ...partial }; store.setPrefs(partial); },
+      async prefs() { await load(); return prefs; },
+    };
+    reviewStores.set(worktree, entry);
+  }
+  return entry;
+}
+
+const reviewSessionsIn = (worktree) => registry.list().filter((session) => sessionWorktree(session.id) === worktree);
+
+const reviewService = createReviewService({
+  checkpoints: createCheckpoints({ git: execGit }),
+  stepRefsOf: (worktree, issue) => taskService.checkpointsOf(worktree, issue),
+  git: reviewGit,
+  readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+  stat: (file) => fs.promises.stat(file),
+  graphFor,
+  graphBuilt: (root) => graphIndexers.get(root)?.graph() ?? null,
+  verifier: reviewVerifier,
+  storeFor: reviewStoreFor,
+  sessionsOf: reviewSessionsIn,
+  // Nothing runs before the workspace window first shows (its 'show' resumes it).
+  startPaused: true,
+  log,
+});
+
+const sendReviewChanged = (worktree) => {
+  if (workspaceWindow?.isReady()) workspaceWindow.send('review:changed', { worktree });
+};
+// The service holds its own notices while paused; the rest (a graph batch,
+// an issue body, a first prompt landing) wait here while the window is hidden
+// and go out once when it shows again.
+let reviewWindowHidden = true; // until the workspace window first shows
+const reviewHeldNotices = new Set();
+const notifyReview = (worktree) => {
+  if (reviewWindowHidden) reviewHeldNotices.add(worktree);
+  else sendReviewChanged(worktree);
+};
+reviewService.on('changed', sendReviewChanged);
+
+// What the dev asked for: the linked issue, else the chat's first prompt (read
+// off the main loop once; the screen is told when it lands).
+const firstPrompts = new Map(); // sessionId → text | null
+const ISSUE_BODY_MAX = 4000;
+const issueBodies = new Map(); // `${repo}#${number}` → body ('' while loading or on failure)
+const issueRepos = new Map(); // project root → owner/repo | null
+function issueBodyFor(project, number, worktree) {
+  const known = issueRepos.get(project);
+  if (known === undefined) {
+    issueRepos.set(project, null);
+    runText('git', ['remote', 'get-url', 'origin'], { cwd: project })
+      .then((remote) => { issueRepos.set(project, githubRepoOf(remote)); notifyReview(worktree); })
+      .catch((error) => log(`review: no origin for ${project}: ${error}`));
+    return '';
+  }
+  if (!known) return '';
+  const key = `${known}#${number}`;
+  if (!issueBodies.has(key)) {
+    issueBodies.set(key, '');
+    runText('gh', ['issue', 'view', String(number), '--json', 'body', '-q', '.body', '-R', known], { cwd: project })
+      .then((body) => { issueBodies.set(key, body.trim().slice(0, ISSUE_BODY_MAX)); notifyReview(worktree); })
+      .catch((error) => log(`review: issue body ${key} failed: ${error}`));
+  }
+  return issueBodies.get(key);
+}
+
+function reviewRequestOf(worktree) {
+  const sessions = reviewSessionsIn(worktree);
+  const project = [...worktreeCache].find(([, trees]) => (trees ?? []).some((tree) => tree.path === worktree))?.[0] ?? worktree;
+  for (const session of sessions) {
+    const number = taskLinks.numberOf(project, session.id);
+    const voiceIssue = number && lastGhResultsRoot === project && Array.isArray(lastGhResults?.openIssues) ? lastGhResults.openIssues.find((item) => item.number === number) : null;
+    // A project that is not the voice's: what its GitHub tab read.
+    const issue = voiceIssue ?? (number && githubRepos.has(project) ? githubFetcher.cachedIssue(githubRepos.get(project), number) : null);
+    if (issue) return { kind: 'issue', number, title: issue.title ?? '', body: issueBodyFor(project, number, worktree) };
+  }
+  const session = sessions.find((item) => item.id === workspaceSelectedSession && item.transcriptPath) ?? sessions.find((item) => item.transcriptPath);
+  if (!session) return null;
+  if (!firstPrompts.has(session.id)) {
+    firstPrompts.set(session.id, null);
+    readFirstPrompt(session.transcriptPath).then((text) => {
+      if (!text) return;
+      firstPrompts.set(session.id, text);
+      notifyReview(worktree);
+    });
+  }
+  const text = firstPrompts.get(session.id);
+  return text ? { kind: 'prompt', text } : null;
+}
+reviewService.setRequestSource(reviewRequestOf);
+
+function reviewInvalidate(sessionId) {
+  const worktree = sessionWorktree(sessionId);
+  if (worktree) reviewService.invalidate(worktree);
+}
+function reviewAgentStopped(sessionId) {
+  const worktree = sessionWorktree(sessionId);
+  if (!worktree) return;
+  reviewService.invalidate(worktree);
+  reviewRoots.add(worktree);
+  reviewService.onAgentStop(worktree).catch((error) => log(`review tsc after stop failed: ${error}`));
+}
+
+function reviewWorktreeOk(worktree) {
+  if (typeof worktree !== 'string' || !path.isAbsolute(worktree)) return false;
+  const known = workspaceProjects().includes(worktree)
+    || [...worktreeCache.values()].some((trees) => (trees ?? []).some((tree) => tree.path === worktree))
+    || registry.list().some((session) => sessionWorktree(session.id) === worktree);
+  if (known) reviewRoots.add(worktree);
+  return known;
+}
+
+// Every handler answers a safe value: a git failure never reaches the renderer as a throw.
+function reviewHandle(channel, fallback, run) {
+  ipcMain.handle(channel, async (event, args = {}) => {
+    if (!fromWorkspace(event)) return fallback('pedido inválido');
+    try {
+      return await run(args ?? {});
+    } catch (error) {
+      log(`${channel} failed: ${error}`);
+      return fallback('não deu pra ler o repositório');
+    }
+  });
+}
+const reviewFail = (error) => ({ ok: false, error });
+const BAD_REVIEW_REQUEST = 'pedido inválido';
+
+reviewHandle('review:summary', () => null, ({ worktree }) => (reviewWorktreeOk(worktree) ? reviewService.summary(worktree) : null));
+// force: the dev clicked "abrir mesmo assim" on a diff over 3,000 lines.
+reviewHandle('review:file', () => null, ({ worktree, path: rel, force }) =>
+  reviewWorktreeOk(worktree) && safeRelPath(rel) ? reviewService.file(worktree, rel, { force: force === true }) : null);
+reviewHandle('review:step-diff', (reason) => ({ error: reason }), ({ worktree, issue, n }) =>
+  reviewWorktreeOk(worktree) ? reviewService.stepDiff(worktree, Number(issue), Number(n)) : { error: BAD_REVIEW_REQUEST });
+reviewHandle('review:approve', reviewFail, async ({ worktree, hunkId, on }) => {
+  if (!reviewWorktreeOk(worktree) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
+  await reviewService.approve(worktree, hunkId, Boolean(on));
+  return { ok: true };
+});
+reviewHandle('review:slice', (reason) => ({ status: 'unavailable', reason }), ({ worktree, expanded, showHidden }) =>
+  reviewWorktreeOk(worktree)
+    ? reviewService.slice(worktree, { expanded: Array.isArray(expanded) ? expanded.filter((id) => typeof id === 'string') : [], showHidden: Boolean(showHidden) })
+    : { status: 'unavailable', reason: BAD_REVIEW_REQUEST });
+reviewHandle('review:verify', reviewFail, async ({ worktree, kind }) => {
+  if (!reviewWorktreeOk(worktree) || (kind !== 'tsc' && kind !== 'tests')) return reviewFail(BAD_REVIEW_REQUEST);
+  return reviewService.verify(worktree, kind);
+});
+reviewHandle('review:prefs', () => ({}), async ({ worktree, set }) => {
+  if (!reviewWorktreeOk(worktree)) return {};
+  const store = reviewStoreFor(worktree);
+  await store.prefs(); // load() resets the store: a set before it lands would be wiped
+  const clean = sanitizePrefs(set);
+  if (Object.keys(clean).length) store.setPrefs(clean);
+  return store.prefs();
+});
+
+// The composer and the "Desfiz" notice ride the 💬 channel: same queue, same
+// guarantee of never typing into a dialog; immediate because the dev just clicked.
+function sendReviewMessage(sessionId, text, message) {
+  commentStore.add({ sessionId, editId: `review:${createHash('sha1').update(message).digest('hex').slice(0, 12)}`, text, message });
+  commentDelivery
+    .flush(sessionId, { immediate: true })
+    .then(() => flushHeldComments())
+    .catch((error) => log(`comment flush failed: ${error}`));
+}
+
+reviewHandle('review:compose', reviewFail, ({ sessionId, context, text }) => {
+  if (typeof sessionId !== 'string' || !registry.sessions.has(sessionId)) return reviewFail('chat não encontrado');
+  const composed = composeMessage(context ?? null, text);
+  if (!composed.ok) return composed;
+  sendReviewMessage(sessionId, composed.text, composed.message);
+  return { ok: true };
+});
+
+reviewHandle('review:reject', reviewFail, async ({ worktree, path: rel, hunkId, sessionId }) => {
+  if (!reviewWorktreeOk(worktree) || !safeRelPath(rel) || typeof hunkId !== 'string') return reviewFail(BAD_REVIEW_REQUEST);
+  // The line has to be read before the hunk is gone.
+  // force: over 3,000 lines the view is cut, but the hunk still has to be found.
+  const hunk = (await reviewService.file(worktree, rel, { force: true }))?.hunks?.find((item) => item.id === hunkId);
+  const result = await reviewService.reject(worktree, rel, hunkId);
+  if (result.ok && hunk && typeof sessionId === 'string' && registry.sessions.has(sessionId)) {
+    const notice = rejectNotice(rel, hunk.newStart);
+    sendReviewMessage(sessionId, notice, notice);
+  }
+  return result;
+});
+
+// Hidden or minimized: no recompute, and the graphs are dropped after 10 min.
+workspaceWindow?.onVisibility((visible) => {
+  reviewWindowHidden = !visible;
+  if (visible) {
+    disarmGraphDiscard();
+    reviewService.resume();
+    // What landed while hidden, plus the worktree on screen (its graph may have been dropped and rebuilt),
+    // ride the service's debounce: with the dirty flush and the focus invalidate, one recompute each.
+    const selected = workspaceSelectedSession ? sessionWorktree(workspaceSelectedSession) : null;
+    if (selected) reviewHeldNotices.add(selected);
+    for (const worktree of reviewHeldNotices) reviewService.notify(worktree);
+    reviewHeldNotices.clear();
+  } else {
+    reviewService.pause();
+    armGraphDiscard();
+  }
+});
+
+function onWorkspaceFocus() {
+  if (workspaceSelectedSession) reviewInvalidate(workspaceSelectedSession);
+}
+
+// Edit-tool hooks feed the workspace's edit tracking, never the session
+// registry: they say nothing about whether the session is waiting or done.
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+function onToolEvent(event) {
+  // Bash/Task/Agent come through for the voice narration only (#161).
+  if (!EDIT_TOOLS.has(event?.tool_name)) return;
+  // The plan file is the card's, not a change to review.
+  if (isPlanEdit(event)) return;
+  editPipeline
+    .push(event)
+    .then((edit) => {
+      if (edit && event.hook_event_name === 'PostToolUse') logEdit(edit);
+    })
+    .catch((error) => log(`edit capture failed: ${error}`));
+}
+
+function logEdit(edit) {
+  const where = `${edit.baseline ?? '-'}${edit.note ? ` ${edit.note}` : ''}`;
+  const reason = JSON.stringify(edit.reason?.slice(0, 60) ?? null);
+  log(`edit #${edit.seq} ${path.basename(edit.filePath)} +${edit.added} −${edit.removed} [${where}] ${reason}`);
+}
+
+// A VIZOR_PTY_ID that doesn't hold (no such tab in this run, or the session
+// runs on another terminal — e.g. a terminal app started from a tab) is
+// dropped: the session is treated as an outside one (#140).
+const ptyIdentityHolds = createPtyIdentityCheck({
+  ttyPath: (ptyId) => ptyHost?.ttyPath(ptyId) ?? null,
+  ttyRdev: (tty) => fs.statSync(tty).rdev,
+  readSessionPid: (sessionId) => readSessionPid(sessionId),
+  readStat: (pid) => fs.readFileSync(`/proc/${pid}/stat`, 'utf8'),
+  pidAlive: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code === 'EPERM';
+    }
+  },
+});
+
+function verifiedTerm(event) {
+  const ptyId = event?.term?.VIZOR_PTY_ID;
+  if (!ptyId) return event;
+  if (ptyIdentityHolds(event.session_id, ptyId)) return event;
+  const { VIZOR_PTY_ID: _dropped, ...rest } = event.term;
+  return { ...event, term: Object.keys(rest).length ? rest : undefined, dropPtyId: true };
+}
+
+function onHookEvent(event, reply) {
+  // The status-line tap: usage numbers only. It never creates or touches a session.
+  if (event?.type === 'StatusLine') {
+    limits.ingest(event);
+    return;
+  }
+  // Only while the Maestro is on: off, nothing would ever forget it (review I2).
+  if (maestroOn()) backstage.onEvent(event);
+  // Sub-agent starts and stops are the backstage's only (#142).
+  if (event?.hook_event_name === 'SubagentStart' || event?.hook_event_name === 'SubagentStop') return;
+  if (event?.type === 'guard-ask' || event?.type === 'guard-event') {
+    onGuardMessage(event, reply);
+    return;
+  }
+  event = verifiedTerm(event);
+  // A chat the voice opened for a task: its first event names its session.
+  const newChat = event?.term?.VIZOR_PTY_ID && pendingNewChats.get(event.term.VIZOR_PTY_ID);
+  if (newChat && event.session_id) {
+    pendingNewChats.delete(event.term.VIZOR_PTY_ID);
+    newChat({ sessionId: event.session_id });
+  }
+  workPlans
+    .onEvent(event)
+    .then((changed) => {
+      if (!changed) return;
+      // Its Vizor-plano line lights the planned files on the graph, dashed (#159).
+      const playing = maestroOrchestra.find((musician) => musician.sessionId === event.session_id);
+      const planned = playing?.root ? parsePlan(workPlans.textOf(event.session_id), playing.root) : [];
+      if (planned.length) maestroPlans.set(event.session_id, planned);
+      pushWorkspaceState();
+    })
+    .catch((error) => log(`plan follow failed: ${error}`));
+  // The task flow: a plan file written binds its chat to the issue; a Stop re-reads it and checks the locked tests.
+  const taskIssue = event?.hook_event_name === 'PostToolUse' && workspaceKnowsCwd(event.cwd) ? planIssueOf(planFileOf(event)) : null;
+  if (taskIssue) bindTask(event.session_id, event.cwd, taskIssue);
+  if (event?.hook_event_name === 'Stop' && typeof event.session_id === 'string')
+    taskService.onStop(event.session_id, event.cwd).catch((error) => log(`task stop failed: ${error?.stack ?? error}`));
+  if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event?.hook_event_name)) {
+    voiceSession?.onToolEvent(event);
+    maestroNarrate(event);
+    const verdict = testOutcomeOf(event);
+    if (verdict && event.session_id) turnTests.set(event.session_id, verdict);
+    if (event.hook_event_name === 'PostToolUse' && EDIT_TOOLS.has(event.tool_name) && !isPlanEdit(event)) {
+      graphTouched(event);
+      reviewInvalidate(event.session_id);
+    }
+  }
+  // The chat speaks for itself now: its own term says which tab (if any) it
+  // runs in, so the resume mapping would only go stale (review I-2).
+  for (const [ptyId, sessionId] of resumedChats) if (sessionId === event?.session_id) resumedChats.delete(ptyId);
+  if (event?.hook_event_name === 'PreToolUse' || event?.hook_event_name === 'PostToolUse') {
+    onToolEvent(event);
+    return;
+  }
+  // A failed command: only the narration and the conductor read it (no edit landed).
+  if (event?.hook_event_name === 'PostToolUseFailure') return;
   if (event?.hook_event_name === 'Notification') {
     event = {
       ...event,
       permissionAsk: isPermissionAsk(event.message),
-      message: humanizeNotification(event.message),
+      message: humanizeNotification(event.message, Math.random, spokenLang()),
     };
   }
+  // Task boundaries ride the same per-session chain as the edits, so an
+  // edit still queued from this prompt can't land in the next one.
+  if (event?.hook_event_name === 'Stop') reviewAgentStopped(event.session_id);
+  if (event?.hook_event_name === 'UserPromptSubmit' || event?.hook_event_name === 'Stop')
+    editPipeline.push(event).catch((error) => log(`edit task tracking failed: ${error}`));
   const session = registry.applyEvent(event);
   if (!session) return;
   if (event.hook_event_name === 'Stop') {
@@ -1170,7 +3559,11 @@ function onHookEvent(event) {
 
 ipcMain.on('panel:opened', () => registry.markAllRead());
 
-ipcMain.on('session:remove', (_event, sessionId) => registry.remove(sessionId));
+ipcMain.on('session:remove', (_event, sessionId) => {
+  registry.remove(sessionId);
+  editTracker.forgetSession(sessionId);
+  commentStore.forgetSession(sessionId);
+});
 
 // Renaming a chat also becomes the folder's default nickname, so the next
 // chat in that folder is born with it (and can be renamed over). Clearing
@@ -1192,18 +3585,37 @@ ipcMain.on('session:rename', (_event, { sessionId, alias }) => {
 
 // The panel's rescan: adopt the live interactive chats the hooks never
 // reported — opened before the manager was up, or closed on the ✕.
+function withTranscript(record) {
+  const transcriptPath = claudeTranscriptPath(record.cwd, record.sessionId);
+  return { ...record, transcriptPath: fs.existsSync(transcriptPath) ? transcriptPath : null };
+}
+
 ipcMain.handle('sessions:rescan', () => {
   const records = readAdoptableSessions();
   if (!records) return 0;
-  return registry.adopt(
-    records.map((record) => {
-      const transcriptPath = claudeTranscriptPath(record.cwd, record.sessionId);
-      return { ...record, transcriptPath: fs.existsSync(transcriptPath) ? transcriptPath : null };
-    }),
-  );
+  return registry.adopt(records.map(withTranscript));
 });
 
-ipcMain.on('update:apply', applyUpdate);
+// A chat resumed in a tab sends no hook event until the user types: adopt it
+// from Claude Code's own registry so the sidebar lists it meanwhile (#155).
+function adoptResumedChats() {
+  if (appQuitting) return;
+  const missing = new Set([...resumedChats.values()].filter((sessionId) => !registry.sessions.has(sessionId)));
+  if (!missing.size) return;
+  const records = readAdoptableSessions()?.filter((record) => missing.has(record.sessionId));
+  if (records?.length) registry.adopt(records.map(withTranscript));
+}
+
+// A manual "apply" restarts the app too: with workspace terminals alive it
+// asks first, like any quit from the UI.
+ipcMain.on('update:apply', async () => {
+  const prompt = quitPrompt(ptyHost?.aliveCount() ?? 0);
+  if (prompt) {
+    const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Atualizar o Vizor', ...prompt });
+    if (response !== 0) return;
+  }
+  applyUpdate();
+});
 
 ipcMain.handle('bridge:status', async () => ({
   ...(await bridgeStatus()),
@@ -1229,6 +3641,10 @@ ipcMain.on('tts:speak', (_event, payload) => {
   const text = String(payload?.text ?? payload ?? '').slice(0, 300);
   if (!text) return;
   const volume = Number.isFinite(payload?.volume) ? payload.volume : 100;
+  if (voiceArbiter) {
+    voiceArbiter.say({ text, priority: 4, source: 'alert' });
+    return;
+  }
   tts.stopSpeaking();
   try {
     tts.speak(text, { voice: managerConfig.voice, volume });
@@ -1272,13 +3688,14 @@ ipcMain.handle('config:get', () => ({
     value,
     label: spec.label,
   })),
-  voices: Object.entries(VOICES).map(([value, spec]) => ({ value, label: spec.label })),
+  voices: Object.entries(VOICES).map(([value, spec]) => ({ value, label: spec.label, lang: spec.lang })),
   themes: Object.entries(THEMES).map(([value, spec]) => ({ value, label: spec.label })),
   palettes: Object.entries(PALETTES).map(([value, spec]) => ({ value, label: spec.label })),
   panelScaleRange: PANEL_SCALE,
 }));
 
-ipcMain.handle('config:set', (_event, partial) => {
+// The settings window and the tray menu both change the config through here.
+function applyConfig(partial) {
   const allowed = {};
   if (typeof partial?.terminal === 'string') allowed.terminal = partial.terminal;
   if (typeof partial?.voice === 'string' && VOICES[partial.voice]) allowed.voice = partial.voice;
@@ -1288,6 +3705,7 @@ ipcMain.handle('config:set', (_event, partial) => {
   }
   if (Number.isFinite(partial?.panelScale)) allowed.panelScale = clampScale(partial.panelScale);
   if (typeof partial?.crt === 'boolean') allowed.crt = partial.crt;
+  if (partial?.density === 'comfortable' || partial?.density === 'compact') allowed.density = partial.density;
   if (typeof partial?.autoUpdate === 'boolean') allowed.autoUpdate = partial.autoUpdate;
   if (typeof partial?.announceWhenFocusUnknown === 'boolean')
     allowed.announceWhenFocusUnknown = partial.announceWhenFocusUnknown;
@@ -1306,6 +3724,17 @@ ipcMain.handle('config:set', (_event, partial) => {
   if (partial?.shortcuts && typeof partial.shortcuts === 'object') {
     allowed.shortcuts = sanitizeShortcuts(partial.shortcuts, managerConfig.shortcuts);
   }
+  if (typeof partial?.voiceEnabled === 'boolean') allowed.voiceEnabled = partial.voiceEnabled;
+  if (partial?.voiceModel === 'parakeet' || partial?.voiceModel === 'base') allowed.voiceModel = partial.voiceModel;
+  if (typeof partial?.voiceNarration === 'boolean') allowed.voiceNarration = partial.voiceNarration;
+  if (['always', 'short', 'off'].includes(partial?.voiceSummary)) allowed.voiceSummary = partial.voiceSummary;
+  if (partial && 'voiceMic' in partial) allowed.voiceMic = normalizeMic(partial.voiceMic);
+  if (typeof partial?.maestroEnabled === 'boolean') allowed.maestroEnabled = partial.maestroEnabled;
+  if (partial?.limits && typeof partial.limits === 'object') allowed.limits = clampLimits(partial.limits, managerConfig.limits);
+  if (partial && 'audioOutput' in partial) allowed.audioOutput = normalizeOutput(partial.audioOutput);
+  const micChanged = 'voiceMic' in allowed && JSON.stringify(allowed.voiceMic) !== JSON.stringify(managerConfig.voiceMic ?? null);
+  const voiceRestart = ('voiceEnabled' in allowed && allowed.voiceEnabled !== managerConfig.voiceEnabled) ||
+    ('voiceModel' in allowed && allowed.voiceModel !== managerConfig.voiceModel);
   // Not config state: the OS holds the truth, so the flag is applied and
   // re-read instead of saved.
   if (typeof partial?.autostart === 'boolean') {
@@ -1316,16 +3745,40 @@ ipcMain.handle('config:set', (_event, partial) => {
     }
   }
   managerConfig = { ...managerConfig, ...allowed };
+  if ('audioOutput' in allowed) tts.setAudioOutput(managerConfig.audioOutput);
+  if ('audioOutput' in allowed || 'voiceMic' in allowed) refreshTrayMenu();
+  if ('maestroEnabled' in allowed) {
+    if (!allowed.maestroEnabled) {
+      maestroOrder.cancel();
+      maestroConductor.clear(); // no order left to fire on a later, unrelated stop
+      // The graphs stay: the review screen uses them; the hidden-window timer drops them.
+    }
+    pushWorkspaceState();
+  }
+  if ('audioOutput' in allowed && managerConfig.audioOutput && !chromiumSinkId(chromiumOutputs, managerConfig.audioOutput))
+    log(`audio output: no Chromium match for "${managerConfig.audioOutput.label}" (${chromiumOutputs.map((device) => device.label).join(' | ')}) — chimes stay on the default`);
+  // Muted by voice, the mic stays off: it only learns which one to open next.
+  if (micChanged)
+    micWindow?.webContents.send('mic:control', { command: voiceState === 'muted' ? 'stop' : 'restart', mic: managerConfig.voiceMic });
   try {
     saveConfig(configFile, managerConfig);
   } catch (error) {
     log(`config save failed: ${error}`);
   }
+  if (voiceRestart) {
+    stopVoice();
+    if (managerConfig.voiceEnabled) enableVoice();
+  }
+  if ('limits' in allowed) {
+    syncLimitsTap();
+    limits.reconfigure();
+  }
   sendState();
   if (allowed.panelScale && overlayMode === 'panel') showOverlay('panel', { focus: true });
   if (allowed.panelScale && settingsVisible()) openSettingsWindow();
   // Speaking the sample also pulls the model when it is not there yet.
-  if (allowed.voice) tts.speak('Voz trocada. Agora eu falo assim!', { voice: allowed.voice });
+  if (allowed.voice)
+    tts.speak(speechLang(allowed.voice) === 'en' ? 'Voice switched. This is how I sound now!' : 'Voz trocada. Agora eu falo assim!', { voice: allowed.voice });
   if (allowed.shortcuts) {
     applyShortcuts();
     sendState(); // failures are only known after the re-register
@@ -1334,7 +3787,28 @@ ipcMain.handle('config:set', (_event, partial) => {
   // now instead of on the first spoken line.
   if (allowed.ttsEnabled === true) tts.predownloadVoice(managerConfig.voice);
   return managerConfig;
+}
+
+ipcMain.handle('config:set', (_event, partial) => applyConfig(partial));
+// The settings section: the tap's state and the projects with their own statusLine.
+function limitsSettingsInfo() {
+  const snap = limits.snapshot();
+  return {
+    status: tapStatusText({ tap: limitsTapStatus, seenAt: snap.seenAt }),
+    overrides: projectStatusLineOverrides(workspaceProjects()),
+  };
+}
+const fromSettings = (event) => Boolean(settingsWindow && !settingsWindow.isDestroyed() && event.sender === settingsWindow.webContents);
+ipcMain.handle('limits:settings', (event) => (fromSettings(event) ? limitsSettingsInfo() : null));
+// "reconectar": the user confirmed, so the CURRENT statusLine becomes the original.
+// It writes ~/.claude/settings.json: only the settings window, and only confirmed.
+ipcMain.handle('limits:reconnect', (event, options) => {
+  if (!fromSettings(event) || options?.confirmed !== true) return null;
+  syncLimitsTap({ force: true });
+  limits.reconfigure();
+  return limitsSettingsInfo();
 });
+ipcMain.handle('limits:state', (event) => (fromWorkspace(event) ? limitsSnapshot() : null));
 
 // Remembers the exact window title each session was last found under, so the
 // next hunt hits it instantly instead of cycling tabs again.
@@ -1388,7 +3862,7 @@ function sessionFocusTarget(session) {
 let lastHint = null;
 
 function announceHint(hint) {
-  const parts = hintAnnouncement(hint);
+  const parts = hintAnnouncement(hint, spokenLang());
   if (!parts) return;
   lastHint = { key: hint.key, title: hint.title, body: hint.body };
   sendToRenderer('tooltip', parts.tooltip);
@@ -1516,7 +3990,13 @@ async function huntSessionTab(session) {
 }
 
 ipcMain.handle('warp:focus', (_event, sessionId) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
+  // A session born in the Vizor lives in a workspace tab: no window hunt.
+  if (session?.term?.VIZOR_PTY_ID && workspaceWindow) {
+    if (overlayMode === 'panel') hideOverlay();
+    workspaceWindow.focusSession(session.id);
+    return 'focused';
+  }
   return huntSessionTab(session);
 });
 
@@ -1529,12 +4009,40 @@ ipcMain.handle('transcript:tail', async (_event, sessionId) => {
 });
 
 ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
-  const session = registry.sessions.get(sessionId);
+  const session = linkedSession(sessionId);
   const index = Number(optionIndex);
   if (!session || !Number.isInteger(index) || index < 0) return 'failed';
 
   // Sending the option's own text beats simulating Down x N + Return: it needs
   // no window, and it cannot land on the wrong option if the list scrolled.
+  const ptyId = session.term?.VIZOR_PTY_ID;
+  if (ptyId && answerRoute({ session, claudeInFront: claudeInPty(session, ptyId) }) === 'pty') {
+    // One answer at a time per session: two chip clicks would mix arrows.
+    if (answering.has(sessionId)) return 'failed';
+    answering.add(sessionId);
+    try {
+      // The question the panel shows may be stale (answered in the terminal,
+      // replaced by a permission prompt): only press keys if the transcript
+      // still has THIS question pending, and the index is one of its options.
+      const fresh = session.transcriptPath
+        ? (await readTranscriptSnapshot(session.transcriptPath)).pendingQuestion
+        : null;
+      const shown = session.question?.questions?.[0];
+      const same =
+        fresh?.questions?.length === 1 &&
+        fresh.questions[0].question === shown?.question &&
+        JSON.stringify(fresh.questions[0].options) === JSON.stringify(shown?.options);
+      if (!same || index >= shown.options.length) return 'failed';
+      ptyHost.write(ptyId, answerKeys(index));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!claudeInPty(session, ptyId) || registry.sessions.get(sessionId)?.needsPermission) return 'failed';
+      ptyHost.write(ptyId, '\r');
+      registry.markAnswered(sessionId);
+      return 'answered';
+    } finally {
+      answering.delete(sessionId);
+    }
+  }
   const optionText = session.question?.questions?.[0]?.options?.[index];
   const channel = readSessionChannel(session.id);
   if (channel && typeof optionText === 'string' && optionText.trim()) {
@@ -1566,18 +4074,29 @@ ipcMain.handle('warp:answer', async (_event, { sessionId, optionIndex }) => {
 //    cannot deliver to the wrong chat because it is addressed by session id.
 // 2. The terminal window (xdotool), for builds where the messaging channel is
 //    gated off or the session predates it.
-async function replyToSession(session, text) {
+async function sendPeerMessage(session, text, { priority = null } = {}) {
   const channel = session?.id ? readSessionChannel(session.id) : null;
-  if (channel) {
-    // A panel reply is the user reacting to this chat right now — jump the
-    // queue instead of waiting for whatever turn is in flight to finish.
-    const outcome = await sendUserMessage(channel.socketPath, text, {
-      token: channel.token,
-      priority: 'now',
-    });
-    if (outcome === 'sent') return 'sent';
-    log(`peer channel unusable for ${session.id} (${outcome}) — falling back to the terminal`);
-  }
+  if (!channel) return 'no-channel';
+  const outcome = await sendUserMessage(channel.socketPath, text, {
+    token: channel.token,
+    ...(priority ? { priority } : {}),
+  });
+  if (outcome !== 'sent') log(`peer channel unusable for ${session.id} (${outcome}) — falling back to the terminal`);
+  return outcome;
+}
+
+async function replyToSession(session, text) {
+  // A panel reply is the user reacting to this chat right now — jump the
+  // queue instead of waiting for whatever turn is in flight to finish.
+  const peer = await sendPeerMessage(session, text, { priority: 'now' });
+  if (peer === 'sent') return 'sent';
+  // A channel that answered but did not close may have delivered it: typing it
+  // too would send the reply twice (same rule as comments, #138).
+  if (peer === 'failed') return 'failed';
+  return typeIntoTerminal(session, text);
+}
+
+async function typeIntoTerminal(session, text) {
   return terminal.sendReplyToWarp(await sessionSearchKeys(session), text, {
     writeClipboard: (value) => clipboard.writeText(value),
     terminal: managerConfig.terminal,
@@ -1587,11 +4106,141 @@ async function replyToSession(session, text) {
   });
 }
 
-ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
-  const session = registry.sessions.get(sessionId);
+// The quick reply of the bubble's panel and of the Agentes cards: one delivery.
+async function quickReply(sessionId, text) {
+  const session = linkedSession(sessionId);
   const reply = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!reply) return 'failed';
+  const ptyId = session?.term?.VIZOR_PTY_ID;
+  if (ptyId && replyRoute({ session, claudeInFront: claudeInPty(session, ptyId) }) === 'pty') {
+    ptyHost.write(ptyId, bracketedPaste(reply));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    if (claudeInPty(session, ptyId)) {
+      ptyHost.write(ptyId, '\r');
+      return 'sent';
+    }
+    // The paste is already in the terminal, without Enter: say so (#143).
+    return 'pasted';
+  }
   return replyToSession(session, reply);
+}
+ipcMain.handle('warp:reply', (_event, { sessionId, text }) => quickReply(sessionId, text));
+
+// The Agentes tab's card actions. Approving a plan and answering the rule
+// guard reuse workspace:plan and guard:answer.
+ipcMain.on('agents:seen', (event, sessionId) => {
+  if (fromWorkspace(event) && typeof sessionId === 'string') registry.markSeen(sessionId);
+});
+ipcMain.on('agents:dismiss', (event, sessionId) => {
+  if (fromWorkspace(event) && typeof sessionId === 'string') registry.dismiss(sessionId);
+});
+// Esc into the chat's own pty; a chat outside the Vizor has none to write to.
+ipcMain.handle('agents:interrupt', (event, sessionId) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
+  const session = linkedSession(sessionId);
+  const ptyId = session?.term?.VIZOR_PTY_ID;
+  // Esc only means "stop the turn" while a turn is running.
+  if (session?.status !== 'working' || !ptyId) return 'failed';
+  return maestroInterrupt(ptyId) ? 'interrupted' : 'failed';
+});
+ipcMain.handle('agents:answer', async (event, sessionId, text) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
+  // A tombstone has no chat left to hear the reply.
+  if (registry.sessions.get(sessionId)?.status === 'failed') return 'failed';
+  const outcome = await quickReply(sessionId, text);
+  if (outcome === 'sent' || outcome === 'pasted') registry.markSeen(sessionId);
+  return outcome;
+});
+
+// --- the GitHub tab --------------------------------------------------------
+// Every handler names a project root; only the workspace's own projects count,
+// and gh always gets -R owner/repo from that project's origin.
+const githubFetcher = createGithubFetcher({ gh: (args) => runText('gh', args) });
+const githubRepos = new Map(); // root -> owner/repo (only known GitHub projects)
+const CHAT_STATE_LABELS = { waiting: 'esperando você', working: 'trabalhando', done: 'terminou', idle: 'ociosa', failed: 'falhou' };
+
+async function githubRepoFor(root) {
+  if (typeof root !== 'string' || !workspaceProjects().includes(root)) return null;
+  if (githubRepos.has(root)) return githubRepos.get(root);
+  const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
+  const found = avatarOwnerOf(remote) ? githubRepoOf(remote) : null;
+  // The repo name reaches gh -R too: same alphabet as the owner.
+  const repo = found && /^[A-Za-z0-9._-]+$/.test(found.split('/')[1]) ? found : null;
+  if (repo) githubRepos.set(root, repo);
+  return repo;
+}
+
+// issue/PR number -> { state } of the newest chat linked to it.
+function githubChats(root, numbers) {
+  const chats = {};
+  for (const number of numbers) {
+    for (const id of taskLinks.linksFor(root, number)) {
+      const session = registry.sessions.get(id);
+      if (!session) continue;
+      chats[number] = { state: CHAT_STATE_LABELS[columnOf(session, { now: Date.now() })] ?? '' };
+      break;
+    }
+  }
+  return chats;
+}
+
+ipcMain.handle('github:repos', async (event) => {
+  if (!fromWorkspace(event)) return {};
+  const roots = workspaceProjects();
+  const repos = await Promise.all(roots.map((root) => githubRepoFor(root)));
+  return Object.fromEntries(roots.flatMap((root, index) => (repos[index] ? [[root, repos[index]]] : [])));
+});
+
+ipcMain.handle('github:list', async (event, root, force) => {
+  if (!fromWorkspace(event)) return { error: 'Ação desconhecida.' };
+  const repo = await githubRepoFor(root);
+  if (!repo) return { error: 'Esse projeto não está no GitHub.' };
+  try {
+    const raw = await githubFetcher.list(repo, { force: force === true });
+    for (const key of ['issues', 'mine', 'prs']) if (raw[key]?.error) log(`github: ${repo}: ${key} failed: ${raw[key].error}`);
+    // Checks arrive reduced: the rollup can be huge and the page needs one word.
+    const prs = Array.isArray(raw.prs) ? raw.prs.map(({ statusCheckRollup, ...pr }) => ({ ...pr, checks: reduceChecks(statusCheckRollup) })) : raw.prs;
+    const numbers = [...(Array.isArray(raw.issues) ? raw.issues : []), ...(Array.isArray(prs) ? prs : [])].map((item) => item.number);
+    return { data: { ...raw, prs }, chats: githubChats(root, numbers) };
+  } catch (error) {
+    log(`github: list failed: ${error}`);
+    return { error: String(error?.message ?? error) };
+  }
+});
+
+ipcMain.handle('github:body', async (event, root, kind, number) => {
+  const repo = fromWorkspace(event) && Number.isInteger(number) && (kind === 'issue' || kind === 'pr') ? await githubRepoFor(root) : null;
+  if (!repo) return null;
+  return githubFetcher.body(repo, kind, number).catch((error) => {
+    log(`github: body ${repo}#${number} failed: ${error}`);
+    return null;
+  });
+});
+
+// A chat for the issue in the tab's own project (not the voice's).
+const isIssueNumber = (number) => Number.isInteger(number) && number > 0;
+
+ipcMain.handle('github:pull', async (event, root, number) => {
+  const repo = fromWorkspace(event) && isIssueNumber(number) ? await githubRepoFor(root) : null;
+  if (!repo) return { error: 'Ação desconhecida.' };
+  // The title the tab already read names the chat's tab (no new gh call).
+  const title = githubFetcher.cachedIssue(repo, number)?.title ?? null;
+  return startIssue(number, { root, title }).catch((error) => ({ error: String(error?.message ?? error) }));
+});
+
+ipcMain.handle('github:review', async (event, root, number) => {
+  if (!fromWorkspace(event) || !isIssueNumber(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
+  return reviewPr(number, { root }).catch((error) => ({ error: String(error?.message ?? error) }));
+});
+
+// The URL is built here from the project's own origin, never taken from the page.
+ipcMain.handle('github:open', async (event, root, kind, number) => {
+  const repo = fromWorkspace(event) && Number.isInteger(number) && number > 0 && (kind === 'issue' || kind === 'pr') ? await githubRepoFor(root) : null;
+  if (!repo) return false;
+  const url = `https://github.com/${repo}/${kind === 'pr' ? 'pull' : 'issues'}/${number}`;
+  if (!url.startsWith('https://github.com/')) return false;
+  await shell.openExternal(url);
+  return true;
 });
 
 // Manual drag (managed/X11 mode only): the renderer reports press/release on
@@ -1629,7 +4278,7 @@ ipcMain.on('drag:end', () => {
     // it here raced the panel opening. The breadcrumb makes 'the bubble is
     // dead' reports diagnosable from the log.
     log('bubble click');
-    sendToRenderer('ui:click');
+    activateBubble();
     return;
   }
   haloActive = null; // force a re-show at the new spot
@@ -1656,12 +4305,12 @@ ipcMain.on('drag:end', () => {
 // app's own binary into the hook runtime — no system Node required.
 const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
 
+// null = the file exists but does not read as settings: every writer below
+// leaves it alone rather than replace the user's config with only our hooks.
 function readClaudeSettings() {
-  try {
-    return JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
-  } catch {
-    return {}; // no settings yet — start from empty
-  }
+  const settings = readClaudeSettingsFile(() => fs.readFileSync(claudeSettingsPath, 'utf8'));
+  if (!settings) log(`${claudeSettingsPath} is unreadable: left untouched`);
+  return settings;
 }
 
 // Every write backs the file up first: this is the user's global Claude Code
@@ -1677,6 +4326,7 @@ function writeClaudeSettings(next) {
 function removeHooksInstalled() {
   try {
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = removeAppHooks(settings);
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
     writeClaudeSettings(next);
@@ -1700,6 +4350,7 @@ function ensureHooksInstalled() {
       fs.writeFileSync(shim.path, shim.content);
     }
     const settings = readClaudeSettings();
+    if (!settings) return;
     const next = ensureHooks(settings, command);
     if (JSON.stringify(next) === JSON.stringify(settings)) return;
     writeClaudeSettings(next);
@@ -1707,6 +4358,1155 @@ function ensureHooksInstalled() {
   } catch (error) {
     log(`ensureHooksInstalled failed: ${error}`);
   }
+}
+
+// The rule guard (#160) lives in its own hook, copied to a stable path so it
+// keeps working with the app closed (an AppImage mount vanishes on quit). Its
+// state flags (guardInstalled, guardOffline, rulesUnreadable) sit near the top.
+function approvedRuleCount() {
+  const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
+  if (!rules) return 0;
+  return rules.global.length + Object.values(rules.repos).reduce((sum, list) => sum + list.length, 0);
+}
+
+function findNodeOnPath() {
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, 'node');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return fs.realpathSync(candidate);
+    } catch {
+      // next PATH entry
+    }
+  }
+  return null;
+}
+
+function copyGuardScript() {
+  const target = installGuardScript({ source: path.join(currentDir, '..', 'hook', 'rule-guard.js'), dir: guardDir });
+  // The .js copy of the first builds is never run again.
+  fs.rmSync(path.join(guardDir, 'rule-guard.js'), { force: true });
+  return target;
+}
+
+function syncGuardHook() {
+  try {
+    const compiledFile = path.join(rulesDir, 'compiladas.json');
+    rulesUnreadable = fs.existsSync(compiledFile) && !loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
+    const settings = readClaudeSettings();
+    if (!settings) return;
+    let next;
+    // An automação's guard rules need the hook even with no rule of the user's.
+    if (managerConfig.guardEnabled !== false && (approvedRuleCount() > 0 || automations.count() > 0 || taskService.hasActive())) {
+      const { command, offline, shim } = guardCommand({
+        platform: process.platform,
+        execPath: process.execPath,
+        appImage: process.env.APPIMAGE,
+        findNode: findNodeOnPath,
+        scriptPath: copyGuardScript(),
+        shimDir: configDir,
+      });
+      if (shim) {
+        fs.mkdirSync(path.dirname(shim.path), { recursive: true });
+        fs.writeFileSync(shim.path, shim.content);
+      }
+      guardOffline = offline;
+      guardInstalled = true;
+      next = ensureGuard(settings, command);
+    } else {
+      guardInstalled = false;
+      next = removeGuard(settings);
+    }
+    if (JSON.stringify(next) === JSON.stringify(settings)) return;
+    writeClaudeSettings(next);
+    log(`rule guard ${guardInstalled ? 'installed' : 'removed'}`);
+  } catch (error) {
+    log(`syncGuardHook failed: ${error}`);
+  }
+}
+
+// The status-line tap: on while any limits window is watched. Mirrors the
+// guard: the script is copied out of the app, and where only the AppImage's
+// own mount could run it (no node on PATH), it is removed on quit instead.
+// On POSIX settings.json points at a sh shim that falls back to the original
+// (kept as plain text in statusline-original.sh) when the runtime is gone, so
+// a crash or an uninstall never breaks the dev's line.
+const statusLineSidecar = path.join(configDir, 'statusline-original.json');
+const statusLineOriginalScript = path.join(configDir, 'statusline-original.sh');
+const tapDir = path.join(configDir, 'statusline');
+let limitsTapOffline = true;
+let limitsTapStatus = { installed: false, replaced: false };
+
+function readTapOriginal() {
+  try {
+    return JSON.parse(fs.readFileSync(statusLineSidecar, 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') log(`statusline sidecar unreadable: ${error}`);
+    return undefined;
+  }
+}
+
+function removeTapOriginal() {
+  fs.rmSync(statusLineSidecar, { force: true });
+  fs.rmSync(statusLineOriginalScript, { force: true });
+}
+
+function syncLimitsTap({ force = false } = {}) {
+  try {
+    const wanted = Boolean(managerConfig.limits.fiveHour || managerConfig.limits.sevenDay);
+    let tapCommand = null;
+    if (wanted) {
+      const tapSource = path.join(currentDir, '..', 'hook', 'statusline-tap.js');
+      if (fs.existsSync(tapSource)) {
+        const node = process.env.APPIMAGE ? findNodeOnPath() : null;
+        const built = buildStatusLineCommand({
+          platform: process.platform,
+          execPath: node ?? process.execPath,
+          tapScript: installTapScript({ source: tapSource, dir: tapDir }),
+          shimDir: process.platform === 'win32' ? configDir : tapDir,
+          originalScript: statusLineOriginalScript,
+        });
+        if (built.shim) {
+          fs.mkdirSync(path.dirname(built.shim.path), { recursive: true });
+          // Atomic: Claude Code may run the shim while it is rewritten.
+          fs.writeFileSync(`${built.shim.path}.tmp`, built.shim.content, { mode: built.shim.mode ?? 0o644 });
+          if (built.shim.mode) fs.chmodSync(`${built.shim.path}.tmp`, built.shim.mode);
+          fs.renameSync(`${built.shim.path}.tmp`, built.shim.path);
+        }
+        limitsTapOffline = process.platform === 'win32' ? false : !process.env.APPIMAGE || Boolean(node);
+        tapCommand = built.command;
+      } else {
+        log('statusline tap script is missing: limits stay unread');
+      }
+    }
+    limitsTapStatus = syncStatusLineTap({
+      enabled: tapCommand !== null,
+      tapCommand,
+      readSettings: readClaudeSettings,
+      writeSettings: writeClaudeSettings,
+      readOriginal: readTapOriginal,
+      writeOriginal: (value) => {
+        fs.mkdirSync(configDir, { recursive: true });
+        // The shim's copy first: the tap goes in only after both exist.
+        writeOriginalScript(statusLineOriginalScript, value);
+        fs.writeFileSync(statusLineSidecar, `${JSON.stringify(value)}\n`);
+      },
+      removeOriginal: removeTapOriginal,
+      force,
+    });
+    // Keeps the shim's plain-text copy in step with the sidecar (an install
+    // from before the shim has only the JSON).
+    if (limitsTapStatus.installed) writeOriginalScript(statusLineOriginalScript, readTapOriginal() ?? null);
+    if (limitsTapStatus.replaced) log('statusLine was changed by the user: the limits tap stays out');
+  } catch (error) {
+    log(`syncLimitsTap failed: ${error}`);
+  }
+}
+
+function removeLimitsTapIfOnlineOnly() {
+  if (limitsTapOffline || !limitsTapStatus.installed) return;
+  try {
+    // Re-reads settings.json: a line the dev swapped while the app ran is
+    // theirs, and the sidecar stays for the next boot's "reconectar?".
+    limitsTapStatus = syncStatusLineTap({
+      enabled: false,
+      tapCommand: null,
+      readSettings: readClaudeSettings,
+      writeSettings: writeClaudeSettings,
+      readOriginal: readTapOriginal,
+      writeOriginal: () => {},
+      removeOriginal: removeTapOriginal,
+    });
+    log(limitsTapStatus.replaced ? 'statusLine was changed by the user: left as is on quit' : 'limits tap removed on quit (no offline runtime)');
+  } catch (error) {
+    log(`removeLimitsTapIfOnlineOnly failed: ${error}`);
+  }
+}
+
+function removeGuardIfOnlineOnly() {
+  if (!guardInstalled || guardOffline) return;
+  try {
+    const settings = readClaudeSettings();
+    if (!settings) return;
+    const next = removeGuard(settings);
+    if (JSON.stringify(next) !== JSON.stringify(settings)) writeClaudeSettings(next);
+    log('rule guard removed on quit (no offline runtime)');
+  } catch (error) {
+    log(`removeGuardIfOnlineOnly failed: ${error}`);
+  }
+}
+
+function guardStatus() {
+  const snapshot = rulesStore.snapshot();
+  const repos = Object.values(snapshot.repos);
+  return {
+    enabled: managerConfig.guardEnabled !== false,
+    installed: guardInstalled,
+    offline: guardOffline,
+    active: snapshot.global.approved.length + repos.filter((repo) => repo.compiled).reduce((sum, repo) => sum + repo.approved.length, 0),
+    pending: snapshot.global.pending.length + repos.reduce((sum, repo) => sum + repo.pending.length, 0),
+    unreadable: rulesUnreadable,
+  };
+}
+
+// --- Rules window (#160) ----------------------------------------------------
+
+let rulesWindow = null;
+const rulesRootCache = new Map(); // cwd → repo root (main checkout) | null
+const rulesSynced = new Map(); // scope → markdown last handed to the store
+const rulesWatchers = new Map(); // watched dir → FSWatcher
+let rulesWatchTimer = null;
+
+function rulesFileOf(scope) {
+  return scope === 'global' ? globalRulesFile : path.join(scope, PROJECT_RULES_FILE);
+}
+
+function readRulesFile(scope) {
+  try {
+    return fs.readFileSync(rulesFileOf(scope), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// The same root the guard computes: worktrees share their main checkout's rules.
+async function rulesRootOf(cwd) {
+  if (rulesRootCache.has(cwd)) return rulesRootCache.get(cwd);
+  let root = null;
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd, timeout: 2000 });
+    const common = stdout.trim();
+    root = common.endsWith(`${path.sep}.git`) ? path.dirname(common) : common || null;
+  } catch {
+    // not a repo
+  }
+  rulesRootCache.set(cwd, root);
+  return root;
+}
+
+function syncRulesScope(scope) {
+  const markdown = readRulesFile(scope);
+  if (markdown === null && scope !== 'global' && !rulesStore.snapshot().repos[scope]) return;
+  if (rulesSynced.get(scope) === markdown) return;
+  rulesSynced.set(scope, markdown);
+  if (scope !== 'global' && markdown !== null) rulesStore.markSeenRepo(scope);
+  rulesStore.syncFile(scope, scope === 'global' ? (markdown ?? '') : markdown);
+}
+
+// Spec §5: a save, or an outside edit of a file already trusted, compiles
+// the new lines on its own. A repo file that came with a clone waits for the
+// user's first compile in the window.
+const rulesCompiling = new Set();
+const rulesCompileStatus = new Map(); // scope → error code of the last try
+
+function trustedScope(scope) {
+  return scope === 'global' || Boolean(rulesStore.snapshot().repos[scope]?.compiled);
+}
+
+async function autoCompile(scope, { force = false } = {}) {
+  if (rulesCompiling.has(scope) || (!force && !trustedScope(scope))) return;
+  const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+  const drafted = new Set((view?.drafts ?? []).map((draft) => draft.source));
+  const fresh = (view?.pending ?? []).filter((line) => !drafted.has(line));
+  const lines = fresh.length || !force ? fresh : (view?.pending ?? []);
+  if (lines.length === 0) return;
+  rulesCompiling.add(scope);
+  rulesCompileStatus.delete(scope);
+  notifyRulesChanged();
+  try {
+    const result = await compileRules({ lines, scope, budget: tokenBudget, budgetDaily: managerConfig.tokenBudgetDaily });
+    if (result.error) rulesCompileStatus.set(scope, result.error);
+    else rulesStore.setDrafts(scope, result.drafts);
+  } catch (error) {
+    log(`rules compile failed: ${error}`);
+    rulesCompileStatus.set(scope, 'sem-claude');
+  } finally {
+    rulesCompiling.delete(scope);
+    notifyRulesChanged();
+  }
+}
+
+async function ruleScopeKeys() {
+  const keys = new Set(['global']);
+  for (const root of workspaceProjects()) {
+    const repo = await rulesRootOf(root);
+    if (repo) keys.add(repo);
+  }
+  for (const session of registry.list()) {
+    if (!session.cwd) continue;
+    const repo = await rulesRootOf(session.cwd);
+    if (repo && readRulesFile(repo) !== null) keys.add(repo);
+  }
+  for (const repo of Object.keys(rulesStore.snapshot().repos)) keys.add(repo);
+  return [...keys];
+}
+
+function watchRulesDirs(keys) {
+  for (const scope of keys) {
+    const dir = path.dirname(rulesFileOf(scope));
+    if (rulesWatchers.has(dir) || !isDirectory(dir)) continue;
+    try {
+      const watcher = fs.watch(dir, (_type, name) => {
+        if (name && name !== 'regras.md') return;
+        clearTimeout(rulesWatchTimer);
+        rulesWatchTimer = setTimeout(() => {
+          for (const key of keys) syncRulesScope(key);
+          syncGuardHook();
+          notifyRulesChanged();
+          for (const key of keys) autoCompile(key);
+        }, 500);
+      });
+      watcher.on('error', () => rulesWatchers.delete(dir));
+      rulesWatchers.set(dir, watcher);
+    } catch (error) {
+      log(`rules watch failed for ${dir}: ${error}`);
+    }
+  }
+}
+
+async function rulesState() {
+  const keys = await ruleScopeKeys();
+  for (const key of keys) syncRulesScope(key);
+  watchRulesDirs(keys);
+  const snapshot = rulesStore.snapshot();
+  const scopes = keys.map((key) => {
+    const view = key === 'global' ? snapshot.global : snapshot.repos[key] ?? { approved: [], drafts: [], pending: [], compiled: true };
+    const markdown = readRulesFile(key);
+    return {
+      scope: key,
+      label: key === 'global' ? 'global' : path.basename(key),
+      file: rulesFileOf(key),
+      markdown: markdown ?? '',
+      approved: view.approved,
+      drafts: view.drafts,
+      pending: view.pending,
+      // A project the user starts from the window is theirs; only a file that
+      // arrived with the repo waits for a first compile.
+      compiled: markdown === null || view.compiled,
+      compiling: rulesCompiling.has(key),
+      compileError: rulesCompileStatus.get(key) ?? null,
+    };
+  });
+  return { status: guardStatus(), scopes, history: rulesStore.recentHistory(50) };
+}
+
+function notifyRulesChanged() {
+  if (rulesWindow && !rulesWindow.isDestroyed()) rulesWindow.webContents.send('rules:changed');
+  sendState();
+}
+
+// Opened from the tray menu, mutter's focus-stealing prevention leaves a new
+// (or re-shown) window behind the others; a moment of always-on-top makes it
+// come to the front, the same as a click on it would.
+function bringRulesWindowForward() {
+  if (!rulesWindow || rulesWindow.isDestroyed()) return;
+  if (rulesWindow.isMinimized()) rulesWindow.restore();
+  rulesWindow.show();
+  rulesWindow.setAlwaysOnTop(true);
+  rulesWindow.moveTop();
+  rulesWindow.focus();
+  setTimeout(() => {
+    if (rulesWindow && !rulesWindow.isDestroyed()) rulesWindow.setAlwaysOnTop(false);
+  }, 300);
+}
+
+function openRulesWindow() {
+  if (rulesWindow && !rulesWindow.isDestroyed()) {
+    bringRulesWindowForward();
+    return;
+  }
+  rulesWindow = new BrowserWindow({
+    width: 860,
+    height: 780,
+    minWidth: 560,
+    minHeight: 480,
+    title: 'Vizor — regras',
+    backgroundColor: '#0d1117',
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: { preload: path.join(rendererDir, 'rules-preload.cjs'), contextIsolation: true },
+  });
+  rulesWindow.removeMenu();
+  rulesWindow.on('close', (event) => {
+    if (appQuitting) return;
+    event.preventDefault();
+    rulesWindow.hide();
+  });
+  rulesWindow.once('ready-to-show', bringRulesWindowForward);
+  rulesWindow.loadFile(path.join(rendererDir, 'rules.html'));
+}
+
+const fromRules = (event) => Boolean(rulesWindow && !rulesWindow.isDestroyed() && event.sender === rulesWindow.webContents);
+
+function writeRulesFile(scope, markdown) {
+  const file = rulesFileOf(scope);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, markdown);
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+function validScope(scope) {
+  return scope === 'global' || (typeof scope === 'string' && path.isAbsolute(scope) && isDirectory(scope));
+}
+
+ipcMain.on('rules:open', () => openRulesWindow());
+
+ipcMain.handle('rules:state', (event) => (fromRules(event) ? rulesState() : null));
+
+ipcMain.handle('rules:save', async (event, { scope, markdown } = {}) => {
+  if (!fromRules(event) || !validScope(scope) || typeof markdown !== 'string') return rulesState();
+  writeRulesFile(scope, markdown);
+  // Saved from the window: the user's own text, so it is never shown as "de
+  // fora" while the first compile runs (or when it fails), and it compiles
+  // right away.
+  if (scope !== 'global') rulesStore.markOwnedRepo(scope);
+  syncRulesScope(scope);
+  syncGuardHook();
+  autoCompile(scope, { force: true });
+  return rulesState();
+});
+
+ipcMain.handle('rules:compile', async (event, { scope } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return { error: 'origem inválida' };
+  syncRulesScope(scope);
+  const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+  const pending = view?.pending ?? [];
+  const drafted = new Set((view?.drafts ?? []).map((draft) => draft.source));
+  const fresh = pending.filter((line) => !drafted.has(line));
+  const lines = fresh.length ? fresh : pending;
+  if (lines.length === 0) return { state: await rulesState(), compiled: 0 };
+  const result = await compileRules({ lines, scope, budget: tokenBudget, budgetDaily: managerConfig.tokenBudgetDaily });
+  if (result.error) return { error: result.error };
+  rulesStore.setDrafts(scope, result.drafts);
+  sendState();
+  return { state: await rulesState(), compiled: result.drafts.length };
+});
+
+ipcMain.handle('rules:approve', async (event, { scope, ruleId, edited = null } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return rulesState();
+  let clean = null;
+  if (edited) {
+    const view = scope === 'global' ? rulesStore.snapshot().global : rulesStore.snapshot().repos[scope];
+    const draft = view?.drafts.find((candidate) => candidate.id === ruleId);
+    clean = draft ? validateEditedRule(draft, edited) : null;
+    // A risky regex says why, instead of the generic message.
+    if (!clean) return { ...(await rulesState()), error: 'edicao-invalida', reason: editProblem(edited) ?? undefined };
+  }
+  rulesStore.approve(scope, ruleId, clean);
+  syncGuardHook();
+  notifyRulesChanged();
+  return rulesState();
+});
+
+ipcMain.handle('rules:discard', async (event, { scope, ruleId } = {}) => {
+  if (!fromRules(event) || !validScope(scope)) return rulesState();
+  rulesStore.discard(scope, ruleId);
+  notifyRulesChanged();
+  return rulesState();
+});
+
+ipcMain.handle('rules:test', (event, { scope, command } = {}) => {
+  if (!fromRules(event) || !validScope(scope) || typeof command !== 'string') return null;
+  const snapshot = rulesStore.snapshot();
+  const rules = [...snapshot.global.approved, ...(scope === 'global' ? [] : (snapshot.repos[scope]?.approved ?? []))];
+  const hit = evaluate({ rules, call: { tool: 'Bash', input: { command } }, git: scope === 'global' ? null : gitContextOf(scope) });
+  return hit ? { kind: hit.rule.kind, source: hit.rule.source, explain: hit.rule.explain } : null;
+});
+
+// Also flipped from the settings window, hence no sender check.
+ipcMain.handle('rules:set-enabled', async (event, enabled) => {
+  managerConfig = { ...managerConfig, guardEnabled: Boolean(enabled) };
+  saveConfig(configFile, managerConfig);
+  syncGuardHook();
+  notifyRulesChanged();
+  return fromRules(event) ? rulesState() : guardStatus();
+});
+
+let rulesRefreshTimer = null;
+function refreshRuleWatches() {
+  clearTimeout(rulesRefreshTimer);
+  rulesRefreshTimer = setTimeout(async () => {
+    try {
+      const keys = await ruleScopeKeys();
+      for (const key of keys) syncRulesScope(key);
+      watchRulesDirs(keys);
+      syncGuardHook();
+    } catch (error) {
+      log(`rules refresh failed: ${error}`);
+    }
+  }, 2000);
+}
+
+function bootSyncRules() {
+  for (const scope of ['global', ...Object.keys(rulesStore.snapshot().repos)]) {
+    try {
+      syncRulesScope(scope);
+    } catch (error) {
+      log(`rules sync failed for ${scope}: ${error}`);
+    }
+  }
+  pruneSeenSessions({
+    dir: path.join(rulesDir, 'sessoes'),
+    now: Date.now(),
+    readdir: (dir) => fs.readdirSync(dir),
+    stat: (file) => fs.statSync(file),
+    unlink: (file) => fs.unlinkSync(file),
+  });
+}
+
+// --- Voice (#161) -------------------------------------------------------------
+// Linux only in v1. The engine runs in a worker thread; a hidden window owns
+// the microphone; nothing is recorded.
+
+function voiceAvailable() {
+  return process.platform === 'linux';
+}
+
+function onVoiceUtterance(text) {
+  log(`voice: "${text}"`);
+  voiceSession?.onUtterance(text).catch((error) => {
+    log(`voice failed: ${error?.stack ?? error}`);
+    voiceArbiter?.say({ text: spokenLang() === 'en' ? 'Something went wrong here; check the log.' : 'Deu erro aqui; olha o log.', priority: 1 });
+  });
+}
+
+// --- Voice session (#161): what an utterance does --------------------------
+const voiceDir = path.join(configDir, 'voz');
+const vocabularyStore = createVocabularyStore({
+  dir: path.join(voiceDir, 'vocabulario'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+// Routines (#163), per project; without one open, a shared list.
+const routinesStore = createRoutines({
+  file: path.join(voiceDir, 'rotinas.json'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const routinesHere = () => voiceRoot() ?? '*';
+
+const taskLinks = createTaskLinks({
+  file: path.join(voiceDir, 'tasks.json'),
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  writeFile: (file, content) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  },
+  rename: (from, to) => fs.renameSync(from, to),
+});
+const VOCABULARY_MAX_AGE_MS = 24 * 3600 * 1000;
+const voiceScanning = new Set();
+const voiceInfoCache = new Map(); // sessionId → { title, lastMessage, cwd }
+const pendingNewChats = new Map(); // pty id → resolve({ sessionId })
+let lastGhDigest = null;
+
+const runText = async (command, args, options = {}) => (await execFileAsync(command, args, { maxBuffer: 1e7, timeout: 15000, ...options })).stdout;
+
+function voiceProject() {
+  const focused = ptyHost?.list().find((terminal) => terminal.id === activeTerminalId)?.cwd ?? null;
+  const target = voiceSession?.target();
+  const boundCwd = target?.kind === 'chat' ? (registry.sessions.get(target.sessionId)?.cwd ?? voiceInfoCache.get(target.sessionId)?.cwd ?? null) : null;
+  return resolveProject({ focusedCwd: focused, boundCwd, projects: workspaceProjects() });
+}
+
+function voiceRoot() {
+  return voiceProject().root ?? workspaceProjects()[0] ?? null;
+}
+
+let vocabularySentFor = null; // `${root}:${scannedAt}:${learned}` last handed to the worker
+
+// The voice worker corrects transcripts with the focused project's names.
+function syncVoiceVocabulary({ force = false } = {}) {
+  const root = voiceRoot();
+  if (!voiceListener || !root) return;
+  refreshVocabulary(root);
+  const data = vocabularyStore.load(root);
+  const signature = `${root}:${data.scannedAt}:${data.learned.length}`;
+  if (!force && signature === vocabularySentFor) return;
+  vocabularySentFor = signature;
+  voiceListener.setVocabulary(data.terms, data.learned);
+}
+
+function refreshVocabulary(root) {
+  if (!root || voiceScanning.has(root)) return;
+  if (Date.now() - vocabularyStore.load(root).scannedAt < VOCABULARY_MAX_AGE_MS) return;
+  voiceScanning.add(root);
+  scanVocabulary({ root, run: runText })
+    .then(({ terms }) => {
+      vocabularyStore.save(root, { terms, scannedAt: Date.now() });
+      syncVoiceVocabulary();
+    })
+    .catch((error) => log(`vocabulary scan failed: ${error}`))
+    .finally(() => voiceScanning.delete(root));
+}
+
+async function voiceGhDigest() {
+  const root = voiceRoot();
+  // Whatever is read now belongs to this root; until then, nothing does.
+  lastGhResults = null;
+  lastGhResultsRoot = root;
+  const english = spokenLang() === 'en';
+  if (!root) return { speech: english ? 'Open a project in the workspace first.' : 'Abra um projeto no workspace primeiro.', lines: [] };
+  try {
+    const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
+    const repo = githubRepoOf(remote);
+    if (!repo) return { speech: english ? "This project isn't on GitHub." : 'Esse projeto não está no GitHub.', lines: [] };
+    let defaultBranch = 'main';
+    try {
+      defaultBranch = (await runText('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: root })).trim().replace(/^[^/]+\//, '') || 'main';
+    } catch {
+      // no origin/HEAD: main
+    }
+    // allSettled: one failing query becomes `{ error }` for its key, the rest still arrive.
+    const results = {};
+    const entries = Object.entries(ghQueries(repo, defaultBranch));
+    const settled = await Promise.allSettled(entries.map(async ([, args]) => JSON.parse(await runText('gh', args, { cwd: root }))));
+    settled.forEach((outcome, index) => {
+      results[entries[index][0]] = outcome.status === 'fulfilled' ? outcome.value : { error: String(outcome.reason) };
+    });
+    settled.forEach((outcome, index) => {
+      if (outcome.status === 'rejected') log(`gh digest: ${entries[index][0]} failed: ${outcome.reason}`);
+    });
+    if (settled.every((outcome) => outcome.status === 'rejected')) throw settled[0].reason;
+    lastGhDigest = buildDigest(results, spokenLang());
+    lastGhContext = managerContext(results);
+    lastGhResults = results;
+    lastGhDigestAt = Date.now();
+  } catch (error) {
+    log(`gh digest failed: ${error}`);
+    lastGhDigest = buildDigest({ error: String(error) }, spokenLang());
+    lastGhContext = managerContext({ error: String(error) });
+    lastGhResults = null;
+  }
+  return lastGhDigest;
+}
+
+async function voiceResolveTask(number, { byTitle = true, root: given = null } = {}) {
+  const root = given ?? voiceRoot();
+  if (!root) return { none: true };
+  const worktrees = worktreeCache.get(root) ?? (await listWorktrees(root).catch(() => [])) ?? [];
+  const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
+  const conversations = [];
+  for (const folder of folders) {
+    for (const conversation of await listConversations(await resolveClaudeProjectDir(folder), { limit: 200 }))
+      conversations.push({ ...conversation, cwd: folder });
+  }
+  const found = resolveTask({ number, links: taskLinks.linksFor(root, number), conversations, worktrees, byTitle });
+  if (found.sessionId) {
+    const snapshot = await readTranscriptSnapshot(claudeTranscriptPath(found.cwd, found.sessionId)).catch(() => null);
+    const title = conversations.find((item) => item.sessionId === found.sessionId)?.title ?? null;
+    voiceInfoCache.set(found.sessionId, { title, lastMessage: snapshot?.lastAssistantMessage ?? null, cwd: found.cwd });
+  }
+  return found;
+}
+
+function ptyOfSession(sessionId) {
+  const session = registry.sessions.get(sessionId);
+  if (session?.term?.VIZOR_PTY_ID && ptyHost?.list().some((terminal) => terminal.id === session.term.VIZOR_PTY_ID && terminal.alive))
+    return session.term.VIZOR_PTY_ID;
+  for (const [ptyId, resumed] of resumedChats) if (resumed === sessionId) return ptyId;
+  return null;
+}
+
+async function voiceOpenOrFocus({ sessionId, cwd }) {
+  workspaceWindow?.show();
+  if (!ptyOfSession(sessionId)) {
+    const live = readLiveSessionIds();
+    if (live?.has(sessionId)) {
+      // Running in another terminal: two processes on one history would be
+      // worse than not opening it.
+      const outside = registry.sessions.get(sessionId);
+      if (outside) huntSessionTab(outside).catch?.((error) => log(`voice focus failed: ${error}`));
+      return { sessionId };
+    }
+    const opened = openTerminal({ cwd, kind: 'resume', sessionId });
+    if (opened.error) log(`voice resume failed: ${opened.error}`);
+  }
+  setTimeout(() => workspaceWindow?.focusSession(sessionId), 400);
+  return { sessionId };
+}
+
+// The plan file stays out of git: `.vizor/` joins the repo's info/exclude.
+async function excludePlanFile(cwd) {
+  try {
+    const file = path.resolve(cwd, (await runText('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd })).trim());
+    const current = await fs.promises.readFile(file, 'utf8').catch(() => '');
+    const next = excludeWithPlan(current);
+    if (next === null) return;
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(file, next);
+  } catch (error) {
+    log(`plan exclude failed: ${error}`);
+  }
+}
+
+// task: the issue the chat is for, which names its tab (taskTitles, over the
+// title the terminal sets itself).
+async function voiceOpenNew({ cwd, prompt, task = null, root = null, title = null }) {
+  workspaceWindow?.show();
+  if (cwd) await excludePlanFile(cwd);
+  const opened = openTerminal({ cwd, kind: 'claude', prompt });
+  if (opened.error) return Promise.resolve({ sessionId: null });
+  if (Number.isInteger(task)) {
+    const issue = title ? null : catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root: root ?? voiceRoot() }).issues.find((item) => item.number === task);
+    taskTitles.set(opened.id, taskTabTitle(task, title ?? issue?.title));
+  }
+  return new Promise((resolve) => {
+    pendingNewChats.set(opened.id, resolve);
+    setTimeout(() => {
+      if (pendingNewChats.delete(opened.id)) resolve({ sessionId: null });
+    }, 30000);
+  });
+}
+
+// The same rule as the 💬 comments: type into the tab only between turns and
+// only when its own claude is the job in front; otherwise wait for the turn.
+const PROMPT_ENTER_DELAY_MS = 150;
+async function voiceDeliverPrompt(sessionId, text) {
+  if (!sessionId) return 'failed';
+  const ptyId = ptyOfSession(sessionId);
+  if (!ptyId) return 'failed';
+  const session = registry.sessions.get(sessionId) ?? { id: sessionId, status: 'done' };
+  if (!safeToTypeIdle(session, Date.now()) || !claudeInPty(session, ptyId)) return 'hold';
+  ptyHost.write(ptyId, bracketedPaste(text));
+  await new Promise((resolve) => setTimeout(resolve, PROMPT_ENTER_DELAY_MS));
+  if (!claudeInPty(session, ptyId)) return 'failed';
+  ptyHost.write(ptyId, '\r');
+  return 'sent';
+}
+
+const GH_DIGEST_MAX_AGE_MS = 2 * 60 * 1000;
+let lastGhDigestAt = 0;
+let lastGhContext = null;
+let lastGhResults = null; // the raw gh lists, for the Ctrl+K bar
+let lastGhResultsRoot = null; // the project they were read for
+
+// The gerente has no tools of its own: it gets the project's GitHub state
+// with the question (live test: "não tenho acesso ao GitHub").
+async function voiceAskManager(text) {
+  if (!lastGhDigest || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
+  // Every open PR and issue, read by the Vizor with gh (#159: the gerente
+  // reads, the músicos act).
+  const github = lastGhContext ? `\n\n(GitHub do projeto agora — use pra responder:\n${lastGhContext})` : '';
+  const { reply, tokensUsed } = await askManager({ sessions: listWithDisplayNames(), history: [], userMessage: `${text}${github}`, lang: spokenLang() });
+  tokenBudget.add(tokensUsed);
+  return reply;
+}
+
+// A spoken work order no command matched, often garbled ("pega eixo e um
+// meia 9"): Haiku reads it against the open issues and says which one was
+// meant. Only a number that is really open counts (live test).
+async function voiceInterpret(text) {
+  if (isEconomyMode()) return null;
+  if (!lastGhContext || Date.now() - lastGhDigestAt > GH_DIGEST_MAX_AGE_MS) await voiceGhDigest();
+  const open = new Set([...String(lastGhContext ?? '').matchAll(/^issue #(\d+)/gm)].map((match) => Number(match[1])));
+  if (!open.size) return null;
+  const result = await runClaude({
+    prompt: [
+      'Você interpreta um pedido falado em pt-BR, transcrito com erros (números e a palavra "issue" saem errados: "eixo e um meia 9" é "issue 169").',
+      'Issues abertas do projeto:',
+      String(lastGhContext).split('\n').filter((line) => line.startsWith('issue #')).join('\n'),
+      `Pedido: "${text}"`,
+      'Se o pedido é começar, pegar ou desenvolver UMA dessas issues, responda só {"action":"pick-issue","number":N}. Senão, responda só {"action":"none"}.',
+    ].join('\n'),
+    timeoutMs: 15000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  const number = Number(String(result?.text ?? '').match(/"number"\s*:\s*(\d+)/)?.[1]);
+  const picked = /"action"\s*:\s*"pick-issue"/.test(result?.text ?? '') && open.has(number);
+  log(`voice interpret: "${text}" → ${picked ? `issue ${number}` : 'nothing'}`);
+  return picked ? { type: 'pick-issue', number } : null;
+}
+
+async function voiceSummarize(plain) {
+  if (isEconomyMode()) return null;
+  const result = await runClaude({
+    prompt:
+      spokenLang() === 'en'
+        ? `Summarize in at most two short sentences, in American English, to be spoken aloud, no markdown and no code. The text may be in Portuguese:\n\n${plain.slice(0, 4000)}`
+        : `Resuma em no máximo duas frases curtas, em pt-BR, pra ser falado em voz alta, sem markdown e sem código:\n\n${plain.slice(0, 4000)}`,
+    timeoutMs: 15000,
+  });
+  tokenBudget.add(result?.tokens ?? 0);
+  return result?.text?.trim() || null;
+}
+
+function voiceAnswerGuard(choice) {
+  const ask = guardAsks.pending().at(-1);
+  if (!ask) return false;
+  const request = guardAsks.answer(ask.id, choice);
+  if (request) recordGuardOutcome({ ...request, summary: ask.summary }, GUARD_OUTCOMES[choice] ?? choice);
+  return Boolean(request);
+}
+
+function voiceFindChat(query) {
+  const wanted = String(query ?? '').toLowerCase();
+  const number = Number(wanted);
+  const root = voiceRoot();
+  if (Number.isInteger(number) && number > 0 && root) {
+    const linked = taskLinks.linksFor(root, number).find((id) => registry.sessions.has(id) || voiceInfoCache.has(id));
+    if (linked) return linked;
+  }
+  const match = listWithDisplayNames().find((session) =>
+    [session.displayName, session.title, session.promptPreview, session.cwd && path.basename(session.cwd)]
+      .filter(Boolean)
+      .some((name) => String(name).toLowerCase().includes(wanted)),
+  );
+  return match?.id ?? null;
+}
+
+function voiceSessionInfo(sessionId) {
+  const session = registry.sessions.get(sessionId);
+  const cached = voiceInfoCache.get(sessionId) ?? {};
+  return {
+    title: session?.title ?? cached.title ?? (session ? displayNameOf(session) : null),
+    lastMessage: session?.lastMessage ?? cached.lastMessage ?? null,
+    cwd: session?.cwd ?? cached.cwd ?? null,
+  };
+}
+
+function createVoiceSessionForApp() {
+  return createVoiceSession({
+    say: (item) => voiceArbiter?.say(item),
+    flushSpeech: () => voiceArbiter?.flush(),
+    // Corrected in the voice worker already (heavy on a big repo); here
+    // only a project switch is noticed so the worker gets its names.
+    correct: (text) => {
+      syncVoiceVocabulary();
+      return { text };
+    },
+    ghDigest: voiceGhDigest,
+    showLines: (lines) => {
+      if (!lines.length) return;
+      sendToRenderer('tooltip', { projectName: 'GitHub', text: lines.slice(0, 8).join(' · '), kind: 'hint', sessionId: null });
+      showTooltip();
+    },
+    resolveTask: voiceResolveTask,
+    openOrFocus: voiceOpenOrFocus,
+    openNew: voiceOpenNew,
+    linkTask: (number, sessionId) => {
+      const root = voiceRoot();
+      if (root && sessionId) taskLinks.link(root, number, sessionId);
+      // A resumed chat is bound to its task now; a new one when it writes its plan.
+      bindTask(sessionId, registry.sessions.get(sessionId)?.cwd, number);
+    },
+    startTask: (number, sessionId, cwd) => startTask(sessionId, cwd ?? voiceRoot(), number),
+    sessionInfo: voiceSessionInfo,
+    deliverPrompt: voiceDeliverPrompt,
+    askManager: voiceAskManager,
+    answerGuard: voiceAnswerGuard,
+    workspace: (action, file) => {
+      workspaceWindow?.show();
+      workspaceWindow?.send('workspace:voice', { action, file: file ?? null });
+    },
+    summarize: voiceSummarize,
+    economy: () => isEconomyMode(),
+    learn: (pair) => {
+      const root = voiceRoot();
+      if (root) vocabularyStore.learn(root, pair);
+      syncVoiceVocabulary({ force: true });
+    },
+    findChat: voiceFindChat,
+    dictation: (on) => voiceListener?.dictation(on),
+    keepListening: () => voiceListener?.wake(),
+    projectRoot: () => voiceRoot(),
+    settings: () => ({ narration: managerConfig.voiceNarration !== false, summary: managerConfig.voiceSummary ?? 'always' }),
+    lang: spokenLang,
+    maestro: maestroOn,
+    setMaestro: (on) => applyConfig({ maestroEnabled: on }),
+    orchestra: () => maestroOrchestra,
+    focus: maestroFocus,
+    interrupt: maestroInterrupt,
+    pendingOrder: maestroOrder,
+    routines: {
+      save: (name, steps) => routinesStore.save(routinesHere(), name, steps),
+      get: (name) => routinesStore.get(routinesHere(), name),
+      list: () => routinesStore.list(routinesHere()),
+      remove: (name) => routinesStore.remove(routinesHere(), name),
+    },
+    interpret: voiceInterpret,
+    planAction: async (sessionId, action) => planAction(sessionId, action),
+    taskState: (sessionId) => taskService.state(sessionId).catch(() => null),
+    taskAction: (sessionId, name) => taskService.run(sessionId, name),
+    sessionBlocked: (sessionId) => blocksTyping(registry.sessions.get(sessionId)),
+    focusedSession: () => (maestroOn() ? maestroFocusId : workspaceSelectedSession ?? null),
+    conductor: maestroConductor,
+    // Now only for a chat really at rest: no question, no permission ask on screen (review C1).
+    startOrderNow: (sessionId) => {
+      const session = registry.sessions.get(sessionId);
+      if (!session || blocksTyping(session)) return;
+      if (session.status === 'done' || session.status === 'waiting') runConductor(maestroConductor.turnEnded(sessionId, { tests: null }));
+    },
+    linkedSessions: (number) => {
+      const root = voiceRoot();
+      return root ? taskLinks.linksFor(root, number) : [];
+    },
+    onError: (error) => log(`maestro order failed: ${error?.stack ?? error}`),
+  });
+}
+
+function voiceStatus() {
+  const target = voiceSession?.target();
+  const title = target?.kind === 'chat' ? voiceSessionInfo(target.sessionId).title : null;
+  return {
+    available: voiceAvailable(),
+    enabled: Boolean(managerConfig.voiceEnabled),
+    state: voiceState,
+    model: managerConfig.voiceModel ?? 'parakeet',
+    narration: managerConfig.voiceNarration !== false,
+    summary: managerConfig.voiceSummary ?? 'always',
+    mic: managerConfig.voiceMic ?? null,
+    mics: micDevices,
+    download: voiceDownload,
+    target: target?.kind === 'chat' ? `chat ${title ? title.slice(0, 40) : ''}`.trim() : voiceListener ? 'gerente' : null,
+  };
+}
+
+// Turned on: the models come down first (with progress), then it listens.
+function enableVoice() {
+  if (!voiceAvailable() || !managerConfig.voiceEnabled) return;
+  const model = managerConfig.voiceModel ?? 'parakeet';
+  if (!missingVoiceModels(voiceSherpaDir, model).length) {
+    startVoice();
+    return;
+  }
+  if (voiceDownload && !voiceDownload.error) return;
+  const sizes = { kws: KWS_MODEL.approxMB, vad: VAD_MODEL.approxMB, [ASR_MODELS[model].id]: ASR_MODELS[model].approxMB };
+  const total = Object.values(sizes).reduce((sum, size) => sum + size, 0);
+  const received = {};
+  voiceDownload = { percent: 0 };
+  sendState();
+  let lastPush = 0;
+  installVoiceModels(voiceSherpaDir, model, {
+    onProgress: ({ id, received: bytes, total: size }) => {
+      received[id] = size ? (bytes / size) * (sizes[id] ?? 0) : 0;
+      voiceDownload = { percent: Math.min(99, Math.round((100 * Object.values(received).reduce((sum, mb) => sum + mb, 0)) / total)) };
+      if (Date.now() - lastPush > 500) {
+        lastPush = Date.now();
+        sendState();
+      }
+    },
+  })
+    .then(() => {
+      voiceDownload = null;
+      log('voice: models installed');
+      startVoice();
+      sendState();
+    })
+    .catch((error) => {
+      voiceDownload = { error: String(error?.message ?? error) };
+      log(`voice models failed: ${error}`);
+      sendState();
+    });
+}
+
+// Another app recording the mic (a call) pauses listening (#161).
+async function checkMeeting() {
+  if (!voiceListener) return;
+  try {
+    const dump = parsePwDump(await runText('pw-dump', []));
+    if (!dump) return; // a garbled dump is not a reason to stop watching
+    const ours = new Set(app.getAppMetrics().map((metric) => metric.pid));
+    const others = otherRecorders(dump, ours);
+    const inMeeting = others.length > 0;
+    if (inMeeting !== (voiceState === 'meeting')) {
+      log(`voice: ${inMeeting ? `paused, ${others.join(', ')} is recording` : 'back from the meeting'}`);
+      voiceListener.meeting(inMeeting);
+    }
+  } catch (error) {
+    // no pw-dump: no meeting detection on this machine
+    clearInterval(meetingTimer);
+    meetingTimer = null;
+    log(`voice: meeting detection off (${error?.message ?? error})`);
+  }
+}
+
+ipcMain.handle('voice:vocabulary', () => {
+  const root = voiceRoot();
+  if (!root) return { root: null, terms: 0, learned: [] };
+  const data = vocabularyStore.load(root);
+  return { root, project: path.basename(root), terms: data.terms.length, learned: data.learned, scanning: voiceScanning.has(root) };
+});
+ipcMain.handle('voice:unlearn', (_event, heard) => {
+  const root = voiceRoot();
+  if (root && typeof heard === 'string') vocabularyStore.unlearn(root, heard);
+  syncVoiceVocabulary({ force: true });
+  return true;
+});
+ipcMain.handle('voice:rescan', () => {
+  const root = voiceRoot();
+  if (!root) return false;
+  vocabularyStore.save(root, { terms: vocabularyStore.load(root).terms, scannedAt: 0 });
+  refreshVocabulary(root);
+  return true;
+});
+
+function createMicWindow() {
+  micWindow = new BrowserWindow({
+    show: false,
+    width: 200,
+    height: 100,
+    webPreferences: { preload: path.join(rendererDir, 'mic-preload.cjs'), contextIsolation: true, backgroundThrottling: false },
+  });
+  micWindow.webContents.once('did-finish-load', () =>
+    micWindow?.webContents.send('mic:control', { command: 'start', mic: managerConfig.voiceMic ?? null }),
+  );
+  micWindow.loadFile(path.join(rendererDir, 'mic.html'));
+}
+
+function startVoice() {
+  if (voiceListener || !voiceAvailable() || !managerConfig.voiceEnabled) return;
+  const model = managerConfig.voiceModel ?? 'parakeet';
+  const missing = missingVoiceModels(voiceSherpaDir, model);
+  if (missing.length) {
+    voiceState = 'sem-modelos';
+    log(`voice: models missing (${missing.join(', ')})`);
+    enableVoice();
+    return;
+  }
+  const worker = new Worker(new URL('./voice/worker.js', import.meta.url), {
+    workerData: { paths: voiceModelPaths(voiceSherpaDir, model) },
+  });
+  worker.on('error', (error) => log(`voice worker failed: ${error}`));
+  // A dead engine must not leave the voice "listening" and deaf: restart it,
+  // a few times, waiting longer each time.
+  worker.on('exit', (code) => {
+    if (!voiceListener || appQuitting) return;
+    log(`voice worker exited (${code})`);
+    stopVoice();
+    voiceRestarts += 1;
+    if (voiceRestarts > 3) {
+      voiceState = 'erro';
+      sendState();
+      return;
+    }
+    setTimeout(() => {
+      if (managerConfig.voiceEnabled) startVoice();
+    }, 2000 * voiceRestarts);
+  });
+  worker.on('message', (message) => {
+    if (message?.type === 'error') log(`voice: ${message.error}`);
+    if (message?.type === 'ready') log('voice: engine ready');
+  });
+  voiceListener = createListener({ worker });
+  voiceArbiter = createSpeechArbiter({
+    lang: spokenLang,
+    speak: (text, item) =>
+      new Promise((resolve) => {
+        // The balloon: the gerente's and the voice's own lines. A músico's
+        // answer shows as its real message on Stop, its narration in the
+        // consequences strip; the "ok" and "só um momento" are not news.
+        const fromMusician = maestroOrchestra.some((musician) => musician.sessionId === item.source);
+        if (!fromMusician && !item.replaceKey && item.kind !== 'ack' && item.kind !== 'filler') maestroSay('manager', text);
+        // The short "ok" does not pause listening, but its own echo must not
+        // count as the user talking: ignored until it played, plus a margin.
+        if (item.kind === 'ack') voiceListener?.ignoreSpeech(30000);
+        else voiceListener?.speakingStarted();
+        const volume = Math.round((managerConfig.voiceVolume * managerConfig.soundVolume) / 100);
+        tts.speak(text, {
+          voice: managerConfig.voice,
+          volume,
+          onDone: () => {
+            if (item.kind === 'ack') voiceListener?.ignoreSpeech(300);
+            resolve();
+          },
+        });
+      }),
+    stop: () => tts.stopSpeaking(),
+  });
+  voiceArbiter.on('quiet', ({ followUp } = {}) => voiceListener?.speakingEnded({ followUp }));
+  voiceListener.on('state', (state) => {
+    voiceState = state;
+    // The user is finishing a sentence (maybe "cancela"): the order waits.
+    if (state === 'closing' || state === 'grace') maestroOrder.pause();
+    else maestroOrder.resume();
+    // Held through the grace window too: a line starting there would pause
+    // listening and lose the utterance (only the "ok" passes).
+    voiceArbiter?.userSpeaking(state === 'listening' || state === 'closing' || state === 'grace');
+    sendState();
+  });
+  voiceListener.on('echo', ({ text }) => {
+    sendToRenderer('tooltip', { projectName: 'você disse', text, kind: 'hint', sessionId: null });
+    showTooltip();
+  });
+  // A beep, not a spoken "ok" (live test: the word every time was tiring);
+  // its echo is not the user talking.
+  voiceListener.on('ack', () => {
+    sendToRenderer('chime', { kind: 'beep' });
+    voiceListener?.ignoreSpeech(500);
+  });
+  voiceListener.on('error', (error) => log(`voice engine: ${error}`));
+  voiceListener.on('barge', () => voiceArbiter?.flush());
+  voiceListener.on('cancelled', (payload) => {
+    if (payload?.stopSpeaking) voiceArbiter?.flush();
+    // "não, espera" / "para" never reach the session: the listener takes
+    // them. A held order goes with them (review I2).
+    if (maestroOrder.pending()) {
+      maestroOrder.cancel();
+      voiceArbiter?.say({ text: spokenLang() === 'en' ? 'Cancelled.' : 'Cancelado.', priority: 1 });
+    }
+  });
+  voiceListener.on('utterance', ({ text }) => {
+    voiceRestarts = 0; // the engine works again
+    voiceArbiter?.noteUserTurn();
+    onVoiceUtterance(text);
+  });
+  voiceSession = createVoiceSessionForApp();
+  vocabularySentFor = null;
+  syncVoiceVocabulary();
+  voiceState = 'sleeping';
+  createMicWindow();
+  meetingTimer = setInterval(checkMeeting, 3000);
+}
+
+function stopVoice() {
+  clearInterval(meetingTimer);
+  meetingTimer = null;
+  voiceSession = null;
+  voiceArbiter?.flush();
+  voiceArbiter = null;
+  voiceListener?.close();
+  voiceListener = null;
+  if (micWindow && !micWindow.isDestroyed()) micWindow.destroy();
+  micWindow = null;
+  voiceState = 'off';
+}
+
+const fromMic = (event) => Boolean(micWindow && !micWindow.isDestroyed() && event.sender === micWindow.webContents);
+ipcMain.on('mic:chunk', (event, samples) => {
+  if (fromMic(event)) voiceListener?.feed(samples);
+});
+ipcMain.on('mic:devices', (event, found) => {
+  if (!fromMic(event)) return;
+  chromiumOutputs = normalizeMicList(found?.outputs);
+  const next = normalizeMicList(found?.mics);
+  if (JSON.stringify(next) !== JSON.stringify(micDevices)) log(`mic devices: ${next.map((mic) => mic.label).join(' | ') || 'none'}`);
+  micDevices = next;
+  sendState();
+  refreshTrayMenu();
+});
+ipcMain.on('mic:status', (event, status) => {
+  if (fromMic(event)) log(`mic: ${status}`);
+});
+
+// The microphone is the mic window's alone; every other permission keeps
+// Electron's default.
+function setupMediaPermissions() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) =>
+    callback(permission !== 'media' || webContents === micWindow?.webContents),
+  );
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) =>
+    permission !== 'media' || webContents === micWindow?.webContents,
+  );
 }
 
 // crossSessionInbound decides what a session does with the quick reply this app
@@ -1717,6 +5517,7 @@ ipcMain.handle('inbound:get', () => readInboundPolicy(readClaudeSettings()));
 
 ipcMain.handle('inbound:set', (_event, value) => {
   const settings = readClaudeSettings();
+  if (!settings) return readInboundPolicy(null);
   const next = setInboundPolicy(settings, value);
   if (!next) {
     log(`inbound policy refused: ${value}`);
@@ -1743,7 +5544,7 @@ function announceUpdateIfJustInstalled() {
     return;
   }
   if (!shouldAnnounce(mark, app.getVersion())) return;
-  speakAsManager(UPDATE_DONE_PHRASE);
+  speakAsManager(updateDonePhrase(spokenLang()));
 }
 
 function hydrateRegistry() {
@@ -1757,8 +5558,45 @@ function hydrateRegistry() {
 
 // Drops the sessions whose terminal was closed: they never send a hook on the
 // way out, so without this they linger frozen on their last status.
+// A working chat missing from Claude Code's registry is only a failure if
+// its turn was really open: an Esc, or a Stop lost while the Vizor was down,
+// already ended it. Those transcripts are read first (async); the reaping
+// itself stays one synchronous pass.
+let reaping = false;
 function reapDeadSessions() {
-  registry.reconcileLiveSessions(readLiveSessionIds());
+  if (reaping) return;
+  const liveIds = readLiveSessionIds();
+  const unsure = liveIds
+    ? registry.list().filter((session) => session.status === 'working' && session.transcriptPath && !liveIds.has(session.id) && (liveIds.size > 0 || session.seenAlive))
+    : [];
+  if (!unsure.length) return reapNow(new Set());
+  reaping = true;
+  Promise.all(unsure.map(async (session) => ((await readTurnClosed(session.transcriptPath)) ? session.id : null)))
+    .then((ids) => reapNow(new Set(ids.filter(Boolean))))
+    .catch((error) => log(`reap failed: ${error}`))
+    .finally(() => {
+      reaping = false;
+    });
+}
+
+function reapNow(closedTurns) {
+  adoptResumedChats();
+  const liveIds = readLiveSessionIds();
+  if (!appQuitting) {
+    trackChatEnds({ watched: chatsInTabs(), liveIds, seen: chatsSeenAlive, ended: chatsEnded });
+    // A resumed chat that ended no longer stands for its tab (review I-2).
+    for (const [ptyId, sessionId] of resumedChats) if (chatsEnded.has(sessionId)) resumedChats.delete(ptyId);
+    scheduleTabsSave();
+  }
+  const before = [...registry.sessions.keys()];
+  registry.reconcileLiveSessions(liveIds, { closedTurns });
+  for (const sessionId of before)
+    if (!registry.sessions.has(sessionId)) {
+      editTracker.forgetSession(sessionId);
+      commentStore.forgetSession(sessionId);
+      guardAsks.dropSession(sessionId);
+      voiceSession?.onSessionEnded(sessionId);
+    }
 }
 
 let saveTimer = null;
@@ -1795,34 +5633,132 @@ app.whenReady().then(() => {
   announceUpdateIfJustInstalled();
   renewMacosGrantAfterUpdate();
   ensureHooksInstalled();
+  bootSyncRules();
+  // The guard hook is synced once the automações are read (one of them is
+  // enough to need it) and before any of them is scheduled to run.
+  automations
+    .load()
+    .catch((error) => log(`automations load failed: ${error?.stack ?? error}`))
+    .then(() => {
+      automationCountSynced = automations.count();
+      syncGuardHook();
+      sendState();
+      return automations.start();
+    })
+    .catch((error) => log(`automations start failed: ${error?.stack ?? error}`))
+    .finally(() => markAutomationsReady());
+  // The tasks' guard rules are rewritten from their saved state, and the idle ones expire.
+  taskService.start().catch((error) => log(`tasks start failed: ${error?.stack ?? error}`));
+  // The scheduler's timer does not run while the machine sleeps: recheck on wake.
+  powerMonitor.on('resume', () => automations.wake());
+  // A limit's alarm timer sleeps with the machine: look at the clock on wake.
+  powerMonitor.on('resume', () => limits.recheck());
+  powerMonitor.on('unlock-screen', () => limits.recheck());
+  limits.boot().catch((error) => log(`limits boot failed: ${error}`));
+  syncLimitsTap();
   autoSetupBridgeOnWayland();
   hydrateRegistry();
   reapDeadSessions();
   createWindows();
   socketServer = startSocketServer(socketPath, onHookEvent, log);
+  setupMediaPermissions();
+  startVoice();
   setupTray();
+  if (process.platform === 'linux') {
+    refreshAudioOutputs();
+    setInterval(refreshAudioOutputs, 10000);
+  }
   registry.on('change', sendState);
+  registry.on('change', scheduleCommandRoots);
+  registry.on('change', flushHeldComments);
+  registry.on('change', forgetRemovedSessions);
   registry.on('change', updateNotificationHalo);
   registry.on('change', scheduleSessionsSave);
+  registry.on('change', refreshRuleWatches);
+  refreshRuleWatches();
+  registry.on('change', scheduleTabsSave);
+  restoreWorkspaceTabs();
   setInterval(() => registry.prune(), PRUNE_INTERVAL_MS);
   setInterval(reapDeadSessions, LIVENESS_INTERVAL_MS);
-  updaterHandle = setupUpdater({ onStatus: onUpdateStatus, log });
+  updaterHandle = setupUpdater({ onStatus: onUpdateStatus, log, beforeExit: freezeWorkspaceTabs });
   applyShortcuts();
 });
 
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => {
+  noticeBatch.cancel();
+  quitFreeze.willQuit();
+  globalShortcut.unregisterAll();
+  ptyHost?.killAll();
+  commandWatcher.stopAll();
+});
 
 app.on('window-all-closed', () => {
   // with a tray icon the app lives on with every window hidden
   if (!tray) app.quit();
 });
 
-app.on('before-quit', () => {
+// Quitting kills the workspace terminals (they live in this process), so a
+// quit the USER asks for through our UI confirms first when one is alive. Only
+// UI paths ask: a logout, shutdown or SIGTERM also reaches before-quit (Electron
+// turns SIGTERM into a quit before any JS signal listener runs), and a dialog
+// there would hold the whole session hostage.
+let quitAsking = false;
+async function requestQuit() {
+  if (quitAsking) return; // a second click while the dialog is up (#118)
+  const prompt = quitPrompt(ptyHost?.aliveCount() ?? 0);
+  if (prompt) {
+    quitAsking = true;
+    try {
+      const { response } = await dialog.showMessageBox({ type: 'warning', title: 'Encerrar o Vizor', ...prompt });
+      if (response !== 0) return;
+    } finally {
+      quitAsking = false;
+    }
+  }
+  app.quit();
+}
+
+// The review state saves 500 ms after a click: a quit inside that window
+// would lose an approval, so the first quit waits for the writes and asks again.
+let reviewSaved = false;
+app.on('before-quit', (event) => {
+  if (!reviewSaved) {
+    reviewSaved = true;
+    event.preventDefault();
+    // A stalled disk must not hold a logout or SIGTERM hostage: give up after 1.5 s.
+    // Running automações are cancelled here too, so their history says "cancelled".
+    const saves = Promise.allSettled([
+      ...[...reviewStores.values()].map((entry) => Promise.resolve().then(() => entry.flush())),
+      Promise.resolve().then(() => automations.shutdown()),
+      limits.flush(),
+    ])
+      .then((results) => {
+        for (const result of results) if (result.status === 'rejected') log(`review state flush on quit failed: ${result.reason}`);
+      });
+    Promise.race([saves, new Promise((resolve) => setTimeout(resolve, 1500))]).finally(() => app.quit());
+    return;
+  }
+  appQuitting = true;
+  // Before will-quit kills the terminals: their chats are still alive here.
+  // A quit cancelled after this point thaws the saves again (#157).
+  quitFreeze.beforeQuit();
   // closing for real means the hooks stop firing too — parking in the tray is
   // not closing, so they stay while the app watches from there
   removeHooksInstalled();
+  removeGuardIfOnlineOnly();
+  removeLimitsTapIfOnlineOnly();
+  limits.stop();
+  stopVoice();
+  // A question still on screen would end in a deny when the socket closes;
+  // "offline" sends it to the terminal's own permission prompt instead.
+  guardAsks.releaseAll('offline');
   tts.stopSpeaking();
   killPendingClaude();
+  // Whatever automação survived the cancel dies now; its inflight record
+  // becomes a "cancelled" entry on the next start.
+  automations.killAllNow();
+  // verify.js runs detached process groups: they would outlive the app.
+  for (const root of reviewRoots) reviewVerifier.cancelAll(root);
   stopSocketServer(socketServer, socketPath);
   tray?.destroy();
   tray = null;

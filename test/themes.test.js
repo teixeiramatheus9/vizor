@@ -6,6 +6,10 @@ import {
   DEFAULT_PALETTE,
   migrateThemeConfig,
 } from '../src/main/themes.js';
+import { backgroundFor } from '../src/main/themes.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 describe('themes', () => {
   it('ships the classic and arcade skins', () => {
@@ -52,5 +56,22 @@ describe('migrateThemeConfig', () => {
   it('normalizes an unknown palette instead of letting it linger', () => {
     const migrated = migrateThemeConfig({ theme: 'classico', palette: 'plasma' });
     expect(migrated.palette).toBe(DEFAULT_PALETTE);
+  });
+});
+
+describe('backgroundFor (#108)', () => {
+  const css = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'renderer', 'tokens.css'), 'utf8');
+
+  it('reads the palette surface colour from the shared tokens', () => {
+    const giz = css.match(/body\[data-palette='giz'\]\s*\{[^}]*--bg-surface:\s*(#[0-9a-fA-F]{3,8})/)[1];
+    expect(backgroundFor({ theme: 'classico', palette: 'giz' }, css)).toBe(giz);
+  });
+
+  it('the arcade skin wins over the palette, and unknown values fall back to the root', () => {
+    const arcade = css.match(/body\[data-theme='arcade'\]\s*\{[^}]*--bg-surface:\s*(#[0-9a-fA-F]{3,8})/)[1];
+    expect(backgroundFor({ theme: 'arcade', palette: 'giz' }, css)).toBe(arcade);
+    const root = css.match(/:root\s*\{[^}]*--bg-surface:\s*(#[0-9a-fA-F]{3,8})/)[1];
+    expect(backgroundFor({ theme: 'classico', palette: 'nope' }, css)).toBe(root);
+    expect(backgroundFor({ theme: 'classico', palette: 'giz' }, '')).toBe('#0d1117');
   });
 });

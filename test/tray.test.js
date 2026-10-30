@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { detectTrayHost, hasTrayHostIn, trayMenuTemplate } from '../src/main/tray.js';
+import { actionMenuAnchor, detectTrayHost, deviceChoice, hasTrayHostIn, trayMenuTemplate } from '../src/main/tray.js';
 
 describe('trayMenuTemplate', () => {
+  it('opens the workspace first when it is available', () => {
+    expect(trayMenuTemplate({ bubbleVisible: true, workspace: true })[0]).toEqual({
+      id: 'workspace',
+      label: 'Abrir o workspace',
+    });
+    expect(
+      trayMenuTemplate({ bubbleVisible: true, workspace: false }).some((item) => item.id === 'workspace'),
+    ).toBe(false);
+  });
+
   const ids = (options) => trayMenuTemplate(options).filter((item) => item.id).map((item) => item.id);
 
   it('opens the app and its settings straight from the tray', () => {
@@ -11,6 +21,10 @@ describe('trayMenuTemplate', () => {
     expect(ids({ bubbleVisible: false })).toContain('settings');
   });
 
+  it('opens the rules window from the tray', () => {
+    expect(trayMenuTemplate({ bubbleVisible: true }).find((item) => item.id === 'rules')).toEqual({ id: 'rules', label: 'Regras…' });
+  });
+
   it('offers to find a bubble that got lost off screen', () => {
     expect(ids({ bubbleVisible: true })).toContain('find');
   });
@@ -18,6 +32,12 @@ describe('trayMenuTemplate', () => {
   it('offers to hide the bubble while it is on screen', () => {
     const toggle = trayMenuTemplate({ bubbleVisible: true }).find((item) => item.id === 'toggle');
     expect(toggle.label).toBe('Esconder a bolha');
+  });
+
+  it('never offers to hide the bubble where nothing could bring it back (#169)', () => {
+    // the workspace's menu also runs without a tray: hiding there would be a trap
+    expect(ids({ bubbleVisible: true, canHide: false })).not.toContain('toggle');
+    expect(ids({ bubbleVisible: true, canHide: false })).toContain('find');
   });
 
   it('offers to bring the bubble back once it is hidden', () => {
@@ -80,3 +100,74 @@ describe('detectTrayHost', () => {
   });
 });
 
+
+describe('trayMenuTemplate: microphone and audio output', () => {
+  const audio = {
+    mics: [{ id: 'a1', label: 'Microfone digital' }, { id: 'h510', label: 'H510' }],
+    mic: { id: 'h510', label: 'H510' },
+    outputs: [{ name: 'spk', label: 'Alto-falantes' }],
+    output: null,
+  };
+
+  it('two submenus of radio items: the system default first, the chosen one checked', () => {
+    const template = trayMenuTemplate({ bubbleVisible: true, audio });
+    const mic = template.find((item) => item.id === 'mic-menu');
+    const output = template.find((item) => item.id === 'output-menu');
+    expect(mic.label).toBe('Microfone');
+    expect(mic.submenu.map((item) => [item.id, item.label, item.type, item.checked])).toEqual([
+      ['mic:default', 'Padrão do sistema', 'radio', false],
+      ['mic:0', 'Microfone digital', 'radio', false],
+      ['mic:1', 'H510', 'radio', true],
+    ]);
+    expect(output.label).toBe('Saída de áudio');
+    expect(output.submenu.map((item) => [item.id, item.checked])).toEqual([['output:default', true], ['output:0', false]]);
+  });
+
+  it('a pinned device that is unplugged stays listed, marked; no mics yet says why', () => {
+    const template = trayMenuTemplate({ bubbleVisible: true, audio: { mics: [], mic: { id: 'z', label: 'Blue Yeti' }, outputs: [], output: null } });
+    const mic = template.find((item) => item.id === 'mic-menu');
+    expect(mic.submenu.map((item) => [item.id, item.label, item.checked ?? null, item.enabled ?? true])).toEqual([
+      ['mic:default', 'Padrão do sistema', false, true],
+      ['mic:pinned', 'Blue Yeti (desconectado)', true, true],
+      ['mic:none', 'ligue a voz pra listar os microfones', null, false],
+    ]);
+  });
+
+  it('without audio info (not Linux) there are no audio submenus', () => {
+    expect(trayMenuTemplate({ bubbleVisible: true }).some((item) => item.id === 'mic-menu')).toBe(false);
+  });
+});
+
+describe('deviceChoice', () => {
+  it('reads a listed device by its position', () => {
+    expect(deviceChoice('mic:1')).toEqual({ kind: 'mic', index: 1 });
+    expect(deviceChoice('output:0')).toEqual({ kind: 'output', index: 0 });
+  });
+
+  it('reads the system default as clearing the pin', () => {
+    expect(deviceChoice('mic:default')).toEqual({ kind: 'mic', index: 'default' });
+  });
+
+  it('ignores the entries that pick nothing: the unplugged pin, the empty notice', () => {
+    expect(deviceChoice('mic:pinned')).toBeNull();
+    expect(deviceChoice('output:none')).toBeNull();
+  });
+
+  it('ignores anything that is not a device id', () => {
+    for (const id of ['quit', 'mic', 'mic:', 'mic:-1', 'mic:1.5', 'speaker:0', null]) expect(deviceChoice(id)).toBeNull();
+  });
+});
+
+describe('actionMenuAnchor', () => {
+  it('opens the menu right under the clicked label, in window coordinates (#169)', () => {
+    expect(actionMenuAnchor({ left: 12, bottom: 32 })).toEqual({ x: 12, y: 32 });
+  });
+
+  it('rounds a fractional rect: popup takes whole pixels', () => {
+    expect(actionMenuAnchor({ left: 12.4, bottom: 31.6 })).toEqual({ x: 12, y: 32 });
+  });
+
+  it('falls back to the cursor when the renderer sent no usable rect', () => {
+    for (const rect of [null, undefined, {}, { left: 'x', bottom: 3 }, { left: -5, bottom: 3 }]) expect(actionMenuAnchor(rect)).toEqual({});
+  });
+});

@@ -8,7 +8,7 @@ import {
 
 describe('SHORTCUT_ACTIONS', () => {
   it('covers the four main actions with pt-BR labels', () => {
-    expect(SHORTCUT_ACTIONS.map((a) => a.id)).toEqual(['panel', 'bubble', 'find', 'chat']);
+    expect(SHORTCUT_ACTIONS.map((a) => a.id)).toEqual(['panel', 'bubble', 'find', 'chat', 'voiceTalk', 'voiceMute']);
     for (const action of SHORTCUT_ACTIONS) expect(action.label).toBeTruthy();
   });
 

@@ -2,222 +2,9 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="guard-card.css" />
     <style>
-      @font-face {
-        font-family: 'IBM Plex Mono';
-        font-weight: 400;
-        font-display: swap;
-        src: url('fonts/ibm-plex-mono-400.woff2') format('woff2');
-      }
-      @font-face {
-        font-family: 'IBM Plex Mono';
-        font-weight: 500;
-        font-display: swap;
-        src: url('fonts/ibm-plex-mono-500.woff2') format('woff2');
-      }
-      @font-face {
-        font-family: 'IBM Plex Mono';
-        font-weight: 600;
-        font-display: swap;
-        src: url('fonts/ibm-plex-mono-600.woff2') format('woff2');
-      }
-      /* Arcade skin only. OFL licensed — see fonts/silkscreen-OFL.txt. */
-      @font-face {
-        font-family: 'Silkscreen';
-        font-weight: 400;
-        font-display: swap;
-        src: url('fonts/silkscreen-400.ttf') format('truetype');
-      }
-      @font-face {
-        font-family: 'Silkscreen';
-        font-weight: 700;
-        font-display: swap;
-        src: url('fonts/silkscreen-700.ttf') format('truetype');
-      }
-
-      :root {
-        --bg-surface: #0d1117;
-        --bg-header: #10151d;
-        --bg-footer: #0a0e14;
-        --border: #1f2733;
-        --hairline: #161b22;
-        --track: #232b38;
-        --text: #e6edf3;
-        --text-2: #b9c2cf;
-        --text-3: #8b95a7;
-        --muted: #6e7681;
-        --dim: #3d4a5c;
-        --accent: #7aa2f7;
-        --warn: #d29922;
-        --knob: #e6edf3;
-      }
-
-      body[data-palette='ambar'] {
-        --bg-surface: #13100b;
-        --bg-header: #18140e;
-        --bg-footer: #100d09;
-        --border: #2b2419;
-        --hairline: #1e1911;
-        --track: #30281c;
-        --text: #f3eee6;
-        --text-2: #d9c7af;
-        --text-3: #be9f74;
-        --muted: #a37e4c;
-        --dim: #685131;
-        --knob: #f3eee6;
-        --accent: #f4b765;
-        --warn: #d45d52;
-      }
-      body[data-palette='magenta'] {
-        --bg-surface: #140f17;
-        --bg-header: #19131d;
-        --bg-footer: #110d13;
-        --border: #2e2234;
-        --hairline: #1f1724;
-        --track: #33263a;
-        --text: #eee8f1;
-        --text-2: #c9b6d2;
-        --text-3: #a181b1;
-        --muted: #815c93;
-        --dim: #523b5e;
-        --knob: #eee8f1;
-        --accent: #e279c4;
-        --warn: #ca9c3e;
-      }
-      body[data-palette='ciano'] {
-        --bg-surface: #0d1416;
-        --bg-header: #10191c;
-        --bg-footer: #0b1112;
-        --border: #1e2e32;
-        --hairline: #141f22;
-        --track: #213338;
-        --text: #e8f0f1;
-        --text-2: #b5d0d3;
-        --text-3: #7faeb3;
-        --muted: #599096;
-        --dim: #395c60;
-        --knob: #e8f0f1;
-        --accent: #7fd2db;
-        --warn: #ca9c3e;
-      }
-      body[data-palette='mono'] {
-        --bg-surface: #111213;
-        --bg-header: #151617;
-        --bg-footer: #0e0f10;
-        --border: #27292b;
-        --hairline: #1b1c1d;
-        --track: #2b2e30;
-        --text: #ebecee;
-        --text-2: #c0c4c8;
-        --text-3: #93999f;
-        --muted: #70787f;
-        --dim: #484d51;
-        --knob: #ebecee;
-        --accent: #e7edf3;
-        --warn: #ca9c3e;
-      }
-
-      /* Giz: the light twin of monocromo — chalk on warm paper, greys only,
-         amber as the single colour. Ink (--accent) plays the role the bright
-         white plays on mono: same token, inverted lightness. */
-      body[data-palette='giz'] {
-        --bg-surface: #f7f5f1;
-        --bg-header: #efede8;
-        --bg-footer: #f1efea;
-        --border: #d8d5cf;
-        --hairline: #e6e3dd;
-        --track: #e2dfd9;
-        --text: #2b2e33;
-        --text-2: #565a61;
-        --text-3: #7d8289;
-        --muted: #989ca3;
-        --dim: #c6c4bf;
-        --knob: #2b2e33;
-        --accent: #3c4046;
-        --warn: #b8860b;
-      }
-
-      body[data-palette='magma'] {
-        --bg-surface: #110b0b;
-        --bg-header: #150e0e;
-        --bg-footer: #0e0909;
-        --border: #271919;
-        --hairline: #1a1111;
-        --track: #2b1c1c;
-        --text: #f2e8e7;
-        --text-2: #d5b6b3;
-        --text-3: #b6817c;
-        --muted: #995c56;
-        --dim: #623b37;
-        --knob: #f2e8e7;
-        --accent: #ed726e;
-        --warn: #ca9c3e;
-      }
-      body[data-palette='matrix'] {
-        --bg-surface: #0b110d;
-        --bg-header: #0e1510;
-        --bg-footer: #090e0b;
-        --border: #19271e;
-        --hairline: #111a14;
-        --track: #1c2b21;
-        --text: #e8f1eb;
-        --text-2: #b5d3be;
-        --text-3: #80b28f;
-        --muted: #5a956c;
-        --dim: #396045;
-        --knob: #e8f1eb;
-        --accent: #7bd599;
-        --warn: #ca9c3e;
-      }
-      /* Phosphor reads right only when the text is brighter than the accent —
-         on a real tube the glow is the lit dot, not the highlight colour. */
-      body[data-palette='pipboy'] {
-        --bg-surface: #071008;
-        --bg-header: #0a1710;
-        --bg-footer: #050d07;
-        --border: #1c3a24;
-        --hairline: #102616;
-        --track: #1b3d26;
-        --text: #b6ffc9;
-        --text-2: #6fe093;
-        --text-3: #48b06a;
-        --muted: #2f8a4d;
-        --dim: #1e5c34;
-        --knob: #b6ffc9;
-        --accent: #3fff6a;
-        --warn: #ffb642;
-      }
-
-      /* --- arcade: the whole app in fliperama language ---------------------
-         A skin, not a palette: fixed look per docs/vizor-arcade-handoff spec
-         (the colour picker only exists on the classic skin — its row hides
-         below). This block sits AFTER the palette blocks so the skin wins the
-         specificity tie over any palette value still stored in config. */
-      body[data-theme='arcade'] {
-        --bg-surface: #050505;
-        --bg-header: #070d12;
-        --bg-footer: #070d12;
-        --border: #35e0ff;
-        --hairline: #14202a;
-        --track: #14202a;
-        --text: #eaeaea;
-        --text-2: #9aa5ae;
-        --text-3: #5a6672;
-        --muted: #5a6672;
-        --dim: #4a4a52;
-        /* Cabinet colour split: cyan chrome/links, yellow marquee + knobs,
-           magenta hard shadow + section comments, green action verbs. */
-        --knob: #ffe14d;
-        --accent: #35e0ff;
-        --warn: #ffe14d;
-        --section: #ff4da6;
-        --action: #57ff7a;
-        font-family: 'Silkscreen', 'IBM Plex Mono', ui-monospace, monospace;
-        /* Spec type scale: titles 12, body 10, secondary 9, micro 8.5 — the
-           pixel font is drawn for these; the classic sizes read inflated. */
-        font-size: 10px;
-        text-transform: uppercase;
-      }
       /* Window chrome: near-black, 2px cyan frame, neon glow (the outer half
          clips at the window edge; the inset half carries it). The spec's
          scanlines came out too loud over real text — dropped; the crt toggle
@@ -823,6 +610,9 @@
         background: var(--accent);
         animation: pulse 1.6s ease-in-out infinite;
       }
+      .dot.failed {
+        background: var(--danger, #e5534b);
+      }
       .dot.waiting,
       .dot.question {
         background: var(--warn);
@@ -932,6 +722,31 @@
         font-size: 11.5px;
         line-height: 1.55;
         color: var(--text-2);
+      }
+      #voice-badge {
+        margin-left: 8px;
+        color: var(--accent);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      #voice-learned {
+        margin: 4px 0 6px;
+        padding: 0;
+        list-style: none;
+        font-size: 11px;
+      }
+      #voice-learned li {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--text-2);
+      }
+      #voice-learned button {
+        background: none;
+        border: none;
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
       }
       .question-text {
         color: var(--text-2);
@@ -1681,6 +1496,7 @@
         </svg>
         <h1 title="Vizor">vzr</h1>
         <span id="header-path">~/.claude/sessions</span>
+        <span id="voice-badge" class="hidden"></span>
         <button id="close" title="Fechar">✕</button>
       </header>
       <button id="update-banner" class="hidden"></button>
@@ -1739,6 +1555,8 @@
           <button class="nav-item" data-section="terminal-voz">terminal &amp; voz</button>
           <button class="nav-item" data-section="resposta">resposta rápida</button>
           <button class="nav-item" data-section="limites">limites</button>
+          <button class="nav-item" data-section="regras">regras</button>
+          <button class="nav-item voice-only" data-section="voz">voz</button>
           <button class="nav-item" data-section="sistema">sistema</button>
         </nav>
         <div id="settings-content">
@@ -1814,6 +1632,14 @@
               <input id="panel-scale" type="range" />
               <span class="slider-value" data-for="panel-scale"></span>
             </label>
+            <div class="setting-subtitle"># workspace</div>
+            <label class="setting-row">
+              <span>densidade</span>
+              <span class="sel"><select id="density">
+                <option value="comfortable">confortável</option>
+                <option value="compact">compacta</option>
+              </select></span>
+            </label>
             <label class="setting-row wide-label">
               <span>tubo crt (scanline, brilho, curvatura)</span>
               <input id="crt" type="checkbox" /><span class="switch"></span>
@@ -1837,6 +1663,14 @@
             <label class="setting-row">
               <span>abrir o chat do gerente</span>
               <input class="shortcut-input" data-shortcut="chat" readonly placeholder="clique e tecle" />
+            </label>
+            <label class="setting-row voice-only">
+              <span>falar com o Vizor (sem dizer o nome)</span>
+              <input class="shortcut-input" data-shortcut="voiceTalk" readonly placeholder="clique e tecle" />
+            </label>
+            <label class="setting-row voice-only">
+              <span>mudo do microfone</span>
+              <input class="shortcut-input" data-shortcut="voiceMute" readonly placeholder="clique e tecle" />
             </label>
             <div class="setting-hint" id="shortcuts-hint">backspace limpa o atalho</div>
           </section>
@@ -1889,6 +1723,102 @@
             </label>
             <div id="usage-detail"></div>
             <div id="usage-bar"><div></div></div>
+            <div class="setting-subtitle"># limites do claude</div>
+            <label class="setting-row wide-label">
+              <span>janela de 5h</span>
+              <input id="lim-five" type="checkbox" /><span class="switch"></span>
+              <span id="lim-five-state">[on]</span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>janela semanal</span>
+              <input id="lim-seven" type="checkbox" /><span class="switch"></span>
+              <span id="lim-seven-state">[on]</span>
+            </label>
+            <label class="setting-row">
+              <span>avisar a partir de</span>
+              <input id="lim-warn" type="range" min="50" max="95" step="5" />
+              <span class="slider-value" id="lim-warn-label"></span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>avisar quando o limite resetar, mesmo sem ter estourado</span>
+              <input id="lim-reset" type="checkbox" /><span class="switch"></span>
+              <span id="lim-reset-state">[on]</span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>mostrar na barra de status</span>
+              <input id="lim-bar" type="checkbox" /><span class="switch"></span>
+              <span id="lim-bar-state">[on]</span>
+            </label>
+            <div class="setting-hint" id="lim-status"></div>
+            <div class="setting-actions hidden" id="lim-reconnect-row">
+              <span class="prompt">❯</span>
+              <button id="lim-reconnect">[reconectar]</button>
+            </div>
+            <div id="lim-overrides"></div>
+          </section>
+          <section class="settings-section" data-section="regras">
+            <div class="setting-subtitle"># regras</div>
+            <div class="setting-hint" id="guard-status"></div>
+            <label class="setting-row wide-label">
+              <span>travar os Claudes pelas minhas regras</span>
+              <input id="guard-enabled" type="checkbox" /><span class="switch"></span>
+              <span id="guard-enabled-state">[on]</span>
+            </label>
+            <div class="setting-hint hidden" id="guard-offline"># neste formato (AppImage sem node) a trava só funciona com o Vizor aberto</div>
+            <div class="setting-actions">
+              <span class="prompt">❯</span>
+              <button id="open-rules">[abrir regras]</button>
+            </div>
+          </section>
+          <section class="settings-section" data-section="voz">
+            <div class="setting-subtitle"># voz</div>
+            <div class="setting-hint" id="voice-mode-status"></div>
+            <label class="setting-row wide-label">
+              <span>conversar por voz (diga "Vizor")</span>
+              <input id="voice-enabled" type="checkbox" /><span class="switch"></span>
+              <span id="voice-enabled-state">[off]</span>
+            </label>
+            <div class="setting-hint" id="voice-download"># os modelos (~500 MB) baixam ao ligar; nada de áudio sai da máquina</div>
+            <label class="setting-row wide-label">
+              <span>modo Maestro (o código no centro, você rege pela voz)</span>
+              <input id="maestro-enabled" type="checkbox" /><span class="switch"></span>
+              <span id="maestro-enabled-state">[off]</span>
+            </label>
+            <div class="setting-hint"># ou diga "Vizor, ative o modo Maestro"; funciona também com a voz desligada</div>
+            <label class="setting-row">
+              <span>microfone</span>
+              <span class="sel"><select id="voice-mic">
+                <option value="">padrão do sistema</option>
+              </select></span>
+            </label>
+            <label class="setting-row">
+              <span>transcrição</span>
+              <span class="sel"><select id="voice-model">
+                <option value="parakeet">precisa (Parakeet, ~640 MB)</option>
+                <option value="base">leve (Whisper base, erra mais)</option>
+              </select></span>
+            </label>
+            <label class="setting-row wide-label">
+              <span>narrar os passos do chat</span>
+              <input id="voice-narration" type="checkbox" /><span class="switch"></span>
+              <span id="voice-narration-state">[on]</span>
+            </label>
+            <label class="setting-row">
+              <span>no fim da resposta</span>
+              <span class="sel"><select id="voice-summary">
+                <option value="always">resumo falado</option>
+                <option value="short">só respostas curtas</option>
+                <option value="off">só avisar que terminou</option>
+              </select></span>
+            </label>
+            <div class="setting-subtitle"># vocabulário do projeto</div>
+            <div class="setting-hint" id="voice-vocab"></div>
+            <ul id="voice-learned"></ul>
+            <div class="setting-actions">
+              <span class="prompt">❯</span>
+              <button id="voice-rescan">[reexplorar o projeto]</button>
+            </div>
+            <div class="setting-hint"># atalhos de voz ficam em "atalhos"</div>
           </section>
           <section class="settings-section" data-section="sistema">
             <div class="setting-subtitle"># sistema</div>
@@ -1913,5 +1843,6 @@
       </div>
     </div>
     <script src="app.js"></script>
+    <script type="module" src="guard-card-global.js"></script>
   </body>
 </html>

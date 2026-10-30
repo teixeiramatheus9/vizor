@@ -9,3 +9,4 @@ dist/
 # private working context (kept local only)
 CLAUDE.local.md
 docs/
+.superpowers/

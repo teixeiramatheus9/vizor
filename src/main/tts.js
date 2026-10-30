@@ -2,7 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_VOICE, VOICES, installVoice, isVoiceInstalled, runtimeName, voicePaths } from './sherpa-installer.js';
+import { DEFAULT_VOICE, VOICES, installVoice, isVoiceInstalled, runtimeName, speechLang, voicePaths } from './sherpa-installer.js';
 import { encodeAnsiArgvText, psQuote, readAnsiCodepage } from './win32-native.js';
 import { applyGain } from './wav-gain.js';
 import { configDir } from './paths.js';
@@ -14,6 +14,11 @@ const legacyPiperDir = path.join(configDir, 'piper');
 const downloading = new Set();
 let processes = [];
 let onDownloadStatus = () => {};
+let audioOutput = null; // the sink pinned in the tray menu; null = system default
+
+export function setAudioOutput(output) {
+  audioOutput = output ?? null;
+}
 
 // The renderer shows a line while a model is on its way.
 export function watchDownloads(listener) {
@@ -36,7 +41,8 @@ export function stopSpeaking() {
 }
 
 // Pure command builders so every platform's spawn line is unit-testable.
-export function playerCommand(wavFile, platform = process.platform) {
+// output: the sink pinned in the tray menu ({ name, label }), Linux only.
+export function playerCommand(wavFile, platform = process.platform, output = null) {
   if (platform === 'darwin') return ['afplay', [wavFile]];
   if (platform === 'win32') {
     return [
@@ -49,14 +55,23 @@ export function playerCommand(wavFile, platform = process.platform) {
       ],
     ];
   }
+  if (output?.name) return ['pw-play', ['--target', output.name, wavFile]];
   return ['aplay', ['-q', wavFile]];
 }
 
-export function systemVoiceCommand(text, volume, platform = process.platform, useVoiceFlag = true) {
+// lang: the chosen voice's language, so an English voice still downloading
+// is covered by an English system voice.
+const SYSTEM_VOICE = {
+  pt: { locale: 'pt-BR', mac: 'Luciana' },
+  en: { locale: 'en-US', mac: 'Samantha' },
+};
+
+export function systemVoiceCommand(text, volume, platform = process.platform, useVoiceFlag = true, lang = 'pt') {
+  const system = SYSTEM_VOICE[lang] ?? SYSTEM_VOICE.pt;
   if (platform === 'darwin') {
     // `say` takes the volume inline.
     const spoken = volume < 100 ? `[[volm ${(volume / 100).toFixed(2)}]]${text}` : text;
-    return ['say', useVoiceFlag ? ['-v', 'Luciana', '--', spoken] : ['--', spoken]];
+    return ['say', useVoiceFlag ? ['-v', system.mac, '--', spoken] : ['--', spoken]];
   }
   if (platform === 'win32') {
     const level = Math.max(0, Math.min(100, Math.round(volume)));
@@ -64,26 +79,44 @@ export function systemVoiceCommand(text, volume, platform = process.platform, us
       'Add-Type -AssemblyName System.Speech',
       '$s = New-Object System.Speech.Synthesis.SpeechSynthesizer',
       `$s.Volume = ${level}`,
-      "$v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -eq 'pt-BR' } | Select-Object -First 1",
+      `$v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Culture.Name -eq '${system.locale}' } | Select-Object -First 1`,
       'if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }',
       `$s.Speak(${psQuote(text)})`,
     ].join('; ');
     return ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]];
   }
   // spd-say wants -100..100.
-  return ['spd-say', ['-l', 'pt-BR', '-i', String(Math.round(volume * 2 - 100)), '--', text]];
+  // -w: exits only once the line was said, so onDone means silence.
+  return ['spd-say', ['-w', '-l', system.locale, '-i', String(Math.round(volume * 2 - 100)), '--', text]];
 }
 
 // The system voice covers the gap while a model downloads.
-function speakWithSystemVoice(text, spawnFn, volume = 100, useVoiceFlag = true) {
-  const [command, args] = systemVoiceCommand(text, volume, process.platform, useVoiceFlag);
+// onDone fires once, when the line was said, failed or was cut (#161: the
+// voice mode must know when the Vizor stops talking).
+function once(callback) {
+  let called = false;
+  return () => {
+    if (called) return;
+    called = true;
+    callback();
+  };
+}
+
+function speakWithSystemVoice(text, spawnFn, volume = 100, useVoiceFlag = true, onDone = () => {}, lang = 'pt') {
+  const done = once(onDone);
+  const [command, args] = systemVoiceCommand(text, volume, process.platform, useVoiceFlag, lang);
   const child = spawnFn(command, args, { stdio: 'ignore' });
-  child.on('error', (error) => log(`${command} failed: ${error}`));
-  if (darwin && useVoiceFlag) {
-    child.on('exit', (code, signal) => {
-      if (code !== 0 && code !== null && !signal) speakWithSystemVoice(text, spawnFn, volume, false);
-    });
-  }
+  child.on('error', (error) => {
+    log(`${command} failed: ${error}`);
+    done();
+  });
+  child.on('exit', (code, signal) => {
+    if (darwin && useVoiceFlag && code !== 0 && code !== null && !signal) {
+      speakWithSystemVoice(text, spawnFn, volume, false, done, lang);
+      return;
+    }
+    done();
+  });
   processes = [child];
 }
 
@@ -101,7 +134,8 @@ function neuralArgvText(text) {
 
 // sherpa-onnx has no raw-audio streaming mode, so it renders a wav and the
 // system player plays it.
-export function speakNeural(text, voiceId, spawnFn = spawn, volume = 100) {
+export function speakNeural(text, voiceId, spawnFn = spawn, volume = 100, onDone = () => {}) {
+  const done = once(onDone);
   const { binary, libDir, args } = voicePaths(sherpaDir, voiceId);
   const wavFile = path.join(os.tmpdir(), 'vizor-tts.wav');
   const env = { ...process.env, DYLD_LIBRARY_PATH: libDir, LD_LIBRARY_PATH: libDir };
@@ -115,9 +149,15 @@ export function speakNeural(text, voiceId, spawnFn = spawn, volume = 100) {
     { env, stdio: 'ignore' },
   );
   processes = [synth];
-  synth.on('error', (error) => log(`sherpa failed: ${error}`));
+  synth.on('error', (error) => {
+    log(`sherpa failed: ${error}`);
+    done();
+  });
   synth.on('exit', (code, signal) => {
-    if (code !== 0 || signal) return;
+    if (code !== 0 || signal) {
+      done();
+      return;
+    }
     if (volume < 100) {
       try {
         fs.writeFileSync(wavFile, applyGain(fs.readFileSync(wavFile), volume));
@@ -125,10 +165,14 @@ export function speakNeural(text, voiceId, spawnFn = spawn, volume = 100) {
         log(`gain failed: ${error}`);
       }
     }
-    const [playCommand, playArgs] = playerCommand(wavFile);
+    const [playCommand, playArgs] = playerCommand(wavFile, process.platform, audioOutput);
     const player = spawnFn(playCommand, playArgs, { stdio: 'ignore' });
     processes = [player];
-    player.on('error', (error) => log(`player failed: ${error}`));
+    player.on('error', (error) => {
+      log(`player failed: ${error}`);
+      done();
+    });
+    player.on('exit', done);
   });
 }
 
@@ -139,12 +183,13 @@ function ensureVoiceInBackground(voiceId) {
   onDownloadStatus(voiceId);
   log(`voice: downloading ${voiceId}…`);
   installVoice(sherpaDir, voiceId)
-    .then(() => {
+    .then((installed) => {
+      if (!installed) throw new Error('files missing after the install');
       log(`voice: ${voiceId} installed`);
       downloading.delete(voiceId);
       onDownloadStatus(null);
       fs.rmSync(legacyPiperDir, { recursive: true, force: true });
-      speakNeural('Voz instalada. Agora eu falo assim!', voiceId);
+      speakNeural(speechLang(voiceId) === 'en' ? 'Voice installed. This is how I sound now!' : 'Voz instalada. Agora eu falo assim!', voiceId);
     })
     .catch((error) => {
       downloading.delete(voiceId); // allow a retry on the next speak
@@ -166,8 +211,70 @@ export function predownloadVoice(voiceId, { enabled = true, ensureFn = ensureVoi
 // The brand is pronounced like the English "visor" ("váizor"), but pt-BR
 // voices read the spelling literally. Respell it for SPEECH only — every
 // displayed surface keeps "Vizor" (issue #71).
-export function speakableText(text) {
-  return String(text ?? '').replace(/\bvizor\b/gi, 'Váizor');
+// Dev words are said the way Brazilian devs say them (#161). Kokoro (Santa)
+// reads "GitHub" as "Jite Chob" and "PRs" as "pê erê esse", so its terms are
+// respelled in pt-BR; the user's own references set the rule ("guitirrube",
+// "pê érre"). Speech only — every displayed surface keeps the real word.
+// Longer terms come first.
+const DEV_WORDS = [
+  [/\bgithub\b/gi, 'guitirrube'],
+  [/\bpull requests\b/gi, 'pul riquéstis'],
+  [/\bpull request\b/gi, 'pul riquésti'],
+  [/\bPRs\b/g, 'pê érres'],
+  [/\bPR\b/g, 'pê érre'],
+  [/\bissues\b/gi, 'íchus'],
+  [/\bissue\b/gi, 'íchu'],
+  [/\bpush\b/gi, 'púxi'],
+  [/\bcommits?\b/gi, 'comíti'],
+  [/\bmerge\b/gi, 'mérdji'],
+  [/\bbranches\b/gi, 'brénchis'],
+  [/\bbranch\b/gi, 'brénchi'],
+  [/\brebase\b/gi, 'ribêissi'],
+  [/\bbuild\b/gi, 'bíldi'],
+  [/\bdeploy\b/gi, 'diplói'],
+  [/\breview\b/gi, 'riviú'],
+  [/\bfeatures?\b/gi, 'fítcher'],
+  [/\btasks\b/gi, 'tésquis'],
+  [/\btask\b/gi, 'tésqui'],
+  [/\bbugs?\b/gi, 'bâgui'],
+  [/\bmain\b/gi, 'mêin'],
+  [/\bCI\b/g, 'ci ái'],
+  [/\bworktrees?\b/gi, 'uôrqui tri'],
+  [/\bhotfix\b/gi, 'rótfiqs'],
+  [/\bfrontend\b/gi, 'frontendi'],
+  [/\bbackend\b/gi, 'béquendi'],
+];
+
+// Supertonic says most terms right as written; these the user tuned by ear.
+const SUPERTONIC_WORDS = [
+  [/\bPRs\b/g, 'peérris'],
+  [/\bfront-?end\b/gi, 'front-êndi'],
+  [/\bback-?end\b/gi, 'béqui-êndi'],
+  [/\bfront\b(?!-)/gi, 'fronti'],
+  [/\bback\b(?!-)/gi, 'béqui'],
+  [/\breview\b/gi, 'rêvíu'],
+  [/\btasks\b/gi, 'téskís'],
+  [/\btask\b/gi, 'téskí'],
+];
+const SUPERTONIC_TERMS =
+  'github|prs?|pull requests?|issues?|push|commits?|merge|branch(?:es)?|main|rebase|build|deploy|features?|bugs?|frontend|backend|front|back|worktrees?|hotfix|ci';
+// Supertonic glues "a"/"pra" to the English word after it ("A task" came out
+// as English "a task"); a double space keeps the Portuguese word apart.
+// Words respelled in Portuguese (review, task) need no gap, so they are not
+// in the list.
+const ARTICLE_BEFORE_TERM = new RegExp(`\\b(a|pra|para) (?=(?:${SUPERTONIC_TERMS})\\b)`, 'gi');
+
+export function speakableText(text, voiceId = DEFAULT_VOICE) {
+  // An English voice reads English text: nothing to respell.
+  if (VOICES[voiceId]?.lang === 'en') return String(text ?? '');
+  let speech = String(text ?? '').replace(/\bvizor\b/gi, 'Váizor');
+  if (VOICES[voiceId]?.engine === 'supertonic') {
+    speech = speech.replace(ARTICLE_BEFORE_TERM, '$1  ');
+    for (const [pattern, spoken] of SUPERTONIC_WORDS) speech = speech.replace(pattern, spoken);
+    return speech;
+  }
+  for (const [pattern, spoken] of DEV_WORDS) speech = speech.replace(pattern, spoken);
+  return speech;
 }
 
 export function speak(
@@ -178,16 +285,20 @@ export function speak(
     spawnFn = spawn,
     installed = null,
     ensureFn = ensureVoiceInBackground,
+    onDone = () => {},
   } = {},
 ) {
-  if (volume <= 0) return;
-  const speech = speakableText(text);
-  const voiceId = VOICES[voice] ? voice : DEFAULT_VOICE;
-  const ready = installed ?? isVoiceInstalled(sherpaDir, voiceId);
-  if (ready) {
-    speakNeural(speech, voiceId, spawnFn, volume);
+  if (volume <= 0) {
+    onDone();
     return;
   }
-  speakWithSystemVoice(speech, spawnFn, volume);
+  const voiceId = VOICES[voice] ? voice : DEFAULT_VOICE;
+  const speech = speakableText(text, voiceId);
+  const ready = installed ?? isVoiceInstalled(sherpaDir, voiceId);
+  if (ready) {
+    speakNeural(speech, voiceId, spawnFn, volume, onDone);
+    return;
+  }
+  speakWithSystemVoice(speech, spawnFn, volume, true, onDone, speechLang(voiceId));
   ensureFn(voiceId);
 }

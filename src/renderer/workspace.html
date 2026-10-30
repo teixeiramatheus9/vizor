@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <title>Vizor — workspace</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="workspace.css" />
+    <link rel="stylesheet" href="guard-card.css" />
+  </head>
+  <body data-inspector-width="compact" data-review-tab="summary">
+    <script src="boot.js"></script>
+    <header id="topbar"></header>
+    <nav id="top-tabs" role="tablist" aria-label="Telas"></nav>
+    <div class="view" id="view-workspace">
+    <main id="columns">
+      <nav id="sidebar" aria-label="Projetos"></nav>
+      <section id="review" aria-label="Revisão">
+        <div class="pane-bar" id="review-tabs" role="tablist"></div>
+        <div id="review-body">
+          <div class="review-panel" id="review-summary" data-review-panel="summary">
+            <div id="summary-head"></div>
+            <div id="plan-card"></div>
+            <details id="summary-backstage" hidden>
+              <summary>Bastidores</summary>
+              <div id="maestro-consequences"></div>
+            </details>
+          </div>
+          <div class="review-panel" id="review-changes" data-review-panel="changes" hidden>
+            <div class="changes-list">
+              <input id="changes-filter" placeholder="filtrar arquivos…" autocomplete="off" spellcheck="false" />
+              <div id="changes-node-filter"></div>
+              <div id="changes-files"></div>
+            </div>
+            <div id="changes-diff"></div>
+          </div>
+          <div class="review-panel" id="review-impact" data-review-panel="impact" hidden>
+            <div id="impact-tools"></div>
+            <div id="impact-body"></div>
+          </div>
+          <div class="review-panel" id="review-live" data-review-panel="live" hidden>
+            <aside class="pane" id="inspector" aria-label="Mudanças ao vivo">
+              <div class="pane-bar" id="inspector-head"></div>
+              <div id="task-picker"></div>
+              <div id="timeline"></div>
+              <div id="detail"></div>
+              <div id="rail"></div>
+              <div id="composer" hidden></div>
+            </aside>
+          </div>
+          <div id="maestro-order" class="maestro-only"></div>
+          <div id="maestro-balloon" class="maestro-only"></div>
+        </div>
+        <div id="terminal-drawer" class="open">
+          <div id="drawer-bar" title="arraste pra mudar a altura">
+            <span class="drawer-title">terminal</span>
+            <span class="drawer-hint">Ctrl+`</span>
+            <button class="drawer-toggle" data-toggle-drawer>▾</button>
+          </div>
+          <section class="pane" id="terminal-pane">
+            <div class="pane-bar" id="tabs"></div>
+            <div id="term-host"></div>
+            <div class="placeholder" id="term-placeholder"></div>
+            <div id="new-menu" hidden></div>
+            <div id="guard-asks" class="guard-asks" hidden></div>
+          </section>
+        </div>
+      </section>
+      <aside id="review-side" aria-label="Compositor">
+        <div id="review-composer"></div>
+      </aside>
+    </main>
+    </div>
+    <section class="view" id="view-agents" aria-label="Agentes" hidden></section>
+    <section class="view" id="view-github" aria-label="GitHub" hidden></section>
+    <section class="view" id="view-automations" aria-label="Automações" hidden>
+      <div id="au-top"></div>
+      <div class="au-body">
+        <div id="au-list" class="au-list"></div>
+        <aside id="au-side" class="au-side" aria-label="Formulário e histórico"></aside>
+      </div>
+    </section>
+    <div id="shortcuts-help" role="dialog" aria-label="Atalhos" hidden></div>
+    <div id="command-bar" hidden>
+      <input id="command-input" placeholder="puxar issue, ir para um chat, aprovar o plano…" autocomplete="off" spellcheck="false" />
+      <ul id="command-list" role="listbox"></ul>
+    </div>
+    <div id="command-toast" hidden></div>
+    <div id="limits-popover" role="dialog" aria-label="Limites do Claude" hidden></div>
+    <footer id="status-bar" aria-label="Status"></footer>
+    <script type="module" src="workspace.js"></script>
+  </body>
+</html>

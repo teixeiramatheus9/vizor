@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('manager', {
   togglePanel: () => ipcRenderer.send('overlay:toggle-panel'),
+  activateBubble: () => ipcRenderer.send('bubble:activate'),
+  tooltipClick: (sessionId) => ipcRenderer.send('tooltip:click', sessionId ?? null),
   openPanel: () => ipcRenderer.send('overlay:open-panel'),
   closeOverlay: () => ipcRenderer.send('overlay:close'),
   openSettings: () => ipcRenderer.send('settings:open'),
@@ -27,8 +29,16 @@ contextBridge.exposeInMainWorld('manager', {
   answerQuestion: (sessionId, optionIndex) =>
     ipcRenderer.invoke('warp:answer', { sessionId, optionIndex }),
   chatWithManager: (text) => ipcRenderer.invoke('manager:chat', text),
+  answerGuard: (id, choice) => ipcRenderer.invoke('guard:answer', { id, choice }),
+  openRules: () => ipcRenderer.send('rules:open'),
+  voiceVocabulary: () => ipcRenderer.invoke('voice:vocabulary'),
+  voiceUnlearn: (heard) => ipcRenderer.invoke('voice:unlearn', heard),
+  voiceRescan: () => ipcRenderer.invoke('voice:rescan'),
+  setGuardEnabled: (enabled) => ipcRenderer.invoke('rules:set-enabled', enabled),
   getInboundPolicy: () => ipcRenderer.invoke('inbound:get'),
   setInboundPolicy: (value) => ipcRenderer.invoke('inbound:set', value),
+  limitsSettings: () => ipcRenderer.invoke('limits:settings'),
+  limitsReconnect: () => ipcRenderer.invoke('limits:reconnect', { confirmed: true }),
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (partial) => ipcRenderer.invoke('config:set', partial),
   onState: (callback) => ipcRenderer.on('state', (_event, state) => callback(state)),

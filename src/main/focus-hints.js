@@ -114,11 +114,14 @@ export function linuxFocusHint(result, term, { canInjectInput = true, bridge = '
 // (voice is the worst medium for "sudo apt install ..."), the system
 // notification mirrors it, and the speech line is spoken by the MAIN process
 // only — kind 'hint' tells the renderer to add no speech of its own.
-export function hintAnnouncement(hint) {
+// An English voice says one generic line: the how-to is pt-BR on screen.
+const ENGLISH_HINT = 'I need a quick setup tweak from you. The details are on screen.';
+
+export function hintAnnouncement(hint, lang = 'pt') {
   if (!hint) return null;
   return {
     tooltip: { projectName: 'Vizor', text: hint.body, kind: 'hint' },
     notification: { title: hint.title, body: hint.body },
-    speech: hint.speech,
+    speech: lang === 'en' ? ENGLISH_HINT : hint.speech,
   };
 }

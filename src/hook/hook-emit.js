@@ -44,6 +44,43 @@ function fallbackNotify(event) {
   }
 }
 
+// Edit-tool events carry whole file contents (Write) and tool output. The app
+// reads every file from disk anyway, so megabytes over the socket on each
+// edit would buy nothing but a slower hook.
+const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'];
+const MAX_TOOL_STRING = 65536;
+
+function truncateLargeStrings(value) {
+  if (typeof value === 'string')
+    return value.length > MAX_TOOL_STRING ? { truncated: value.length } : value;
+  if (Array.isArray(value)) return value.map(truncateLargeStrings);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([key, inner]) => [key, truncateLargeStrings(inner)]),
+    );
+  return value;
+}
+
+function slimToolEvent(event) {
+  const { tool_response: response, error, ...rest } = event;
+  // A failed command (PostToolUseFailure) brings its output in the error text.
+  if (rest.tool_name === 'Bash' && typeof error === 'string' && error) rest.tool_output_tail = error.slice(-300);
+  // Write reports whether it created the file: the one bit of the response
+  // the app needs (a new file diffs against empty).
+  if (response?.type === 'create' || response?.type === 'update')
+    rest.tool_response_type = response.type;
+  // The voice narration only needs to know how a command ended ("3 failed").
+  // A background run (#142): only its task id, the app finds the log itself.
+  if (rest.tool_name === 'Bash' && typeof response?.backgroundTaskId === 'string' && /^[A-Za-z0-9_-]+$/.test(response.backgroundTaskId))
+    rest.background_task_id = response.backgroundTaskId;
+  if (rest.tool_name === 'Bash' && response && typeof response === 'object') {
+    const output = `${response.stdout ?? ''}\n${response.stderr ?? ''}`.trim();
+    if (output) rest.tool_output_tail = output.slice(-300);
+  }
+  if (rest.tool_input) rest.tool_input = truncateLargeStrings(rest.tool_input);
+  return rest;
+}
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
@@ -57,6 +94,10 @@ process.stdin.on('end', () => {
   } catch {
     process.exit(0);
   }
+  // Claude Code always sends an object; anything else would throw on the
+  // property writes below and break the exit-0 promise.
+  if (!event || typeof event !== 'object' || Array.isArray(event)) process.exit(0);
+  if (TOOL_EVENTS.includes(event?.hook_event_name)) event = slimToolEvent(event);
   const { WAVETERM_BLOCKID, WAVETERM_TABID, WAVETERM_JWT } = process.env;
   if (WAVETERM_BLOCKID && WAVETERM_TABID && WAVETERM_JWT) {
     event.wave = { blockId: WAVETERM_BLOCKID, tabId: WAVETERM_TABID, jwt: WAVETERM_JWT };
@@ -80,6 +121,9 @@ process.stdin.on('end', () => {
     // Warp hands every session a uuid that its own warp://session/<uuid> url
     // focuses — the whole tab hunt collapses into opening that link.
     'WARP_TERMINAL_SESSION_UUID',
+    // Set on every terminal the Vizor workspace spawns: ties the session to
+    // its embedded tab.
+    'VIZOR_PTY_ID',
   ]) {
     if (process.env[key]) term[key] = process.env[key];
   }

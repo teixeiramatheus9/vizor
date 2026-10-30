@@ -34,8 +34,8 @@ describe('socket server', () => {
     await sendLines(socketFile, '{"a":1}\n{"b":2}\n');
     await waitTick();
     expect(onEvent).toHaveBeenCalledTimes(2);
-    expect(onEvent).toHaveBeenCalledWith({ a: 1 });
-    expect(onEvent).toHaveBeenCalledWith({ b: 2 });
+    expect(onEvent).toHaveBeenCalledWith({ a: 1 }, expect.any(Function));
+    expect(onEvent).toHaveBeenCalledWith({ b: 2 }, expect.any(Function));
     server.close();
   });
 
@@ -50,7 +50,7 @@ describe('socket server', () => {
     await sendLines(socketFile, 'garbage\n{"ok":true}\n');
     await waitTick();
     expect(onEvent).toHaveBeenCalledTimes(1);
-    expect(onEvent).toHaveBeenCalledWith({ ok: true });
+    expect(onEvent).toHaveBeenCalledWith({ ok: true }, expect.any(Function));
     expect(logFn).toHaveBeenCalled();
     server.close();
   });
@@ -99,5 +99,52 @@ describe('isPipePath', () => {
   it('rejects filesystem paths', () => {
     expect(isPipePath('/home/u/.config/claude-manager/manager.sock')).toBe(false);
     expect(isPipePath('C:\\Users\\u\\.config\\manager.sock')).toBe(false);
+  });
+});
+
+describe('socket server replies', () => {
+  it('a client that waits gets the reply line; a one-way client still works', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-server-'));
+    const socketFile = testSocketPath(dir, 'srv.sock');
+    const seen = [];
+    const server = startSocketServer(
+      socketFile,
+      (event, reply) => {
+        seen.push(event);
+        if (event.type === 'guard-ask') reply({ answer: 'liberar' });
+      },
+      () => {},
+    );
+    await new Promise((resolve) => server.on('listening', resolve));
+    const answer = await new Promise((resolve, reject) => {
+      const client = net.connect(socketFile, () => client.write('{"type":"guard-ask"}\n'));
+      let data = '';
+      client.on('data', (chunk) => (data += chunk));
+      client.on('close', () => resolve(data));
+      client.on('error', reject);
+    });
+    expect(JSON.parse(answer)).toEqual({ answer: 'liberar' });
+    await sendLines(socketFile, '{"hook_event_name":"Stop"}\n');
+    await waitTick();
+    expect(seen).toHaveLength(2);
+    server.close();
+  });
+
+  it('tells the handler when the asking client goes away', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-server-'));
+    const socketFile = testSocketPath(dir, 'srv.sock');
+    let closed = false;
+    const server = startSocketServer(socketFile, (_event, reply) => reply.onClose(() => (closed = true)), () => {});
+    await new Promise((resolve) => server.on('listening', resolve));
+    await new Promise((resolve) => {
+      const client = net.connect(socketFile, () => {
+        client.write('{"type":"guard-ask"}\n');
+        setTimeout(() => client.destroy(), 30);
+      });
+      client.on('close', resolve);
+    });
+    await waitTick();
+    expect(closed).toBe(true);
+    server.close();
   });
 });

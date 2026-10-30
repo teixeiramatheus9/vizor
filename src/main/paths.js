@@ -23,3 +23,8 @@ export const configFile = path.join(configDir, 'config.json');
 export const usageFile = path.join(configDir, 'usage.json');
 export const updateNoticeFile = path.join(configDir, 'update-notice.json');
 export const logFile = path.join(configDir, 'log');
+export const globalRulesFile = path.join(configDir, 'regras.md');
+export const rulesDir = path.join(configDir, 'regras');
+export const guardDir = path.join(configDir, 'guard');
+// Per project: <repo root>/.vizor/regras.md
+export const PROJECT_RULES_FILE = path.join('.vizor', 'regras.md');

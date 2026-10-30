@@ -1,0 +1,1 @@
+- O Vizor guarda, pra cada edição do Claude, o diff real e o porquê que a IA deu antes de mexer — a base do diff ao vivo

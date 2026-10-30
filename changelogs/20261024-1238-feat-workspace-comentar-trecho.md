@@ -1,0 +1,1 @@
+- Comentar uma mudança direto no workspace: o 💬 em cada trecho manda o comentário pro Claude da sessão já dizendo o arquivo, as linhas e a edição; se a sessão estiver esperando você, o comentário fica na fila e sai sozinho depois

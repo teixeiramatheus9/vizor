@@ -1,0 +1,303 @@
+import { describe, it, expect, vi } from 'vitest';
+import { createAgentsController } from '../src/renderer/agents/agents-controller.js';
+
+const NOW = 1_000_000_000;
+const MIN = 60000;
+
+function setup(overrides = {}) {
+  const listeners = {};
+  const el = {
+    innerHTML: '',
+    addEventListener: (type, fn) => (listeners[type] = fn),
+    querySelector: () => null,
+  };
+  const api = {
+    agentsSeen: vi.fn(),
+    agentsDismiss: vi.fn(),
+    agentsInterrupt: vi.fn(async () => 'interrupted'),
+    agentsAnswer: vi.fn(async () => 'sent'),
+    planAction: vi.fn(),
+    answerGuard: vi.fn(),
+    focusOutside: vi.fn(),
+  };
+  const timers = [];
+  const clock = { now: NOW };
+  const controller = createAgentsController({
+    el,
+    api,
+    openSession: vi.fn(),
+    now: () => clock.now,
+    setTimer: (fn, ms) => {
+      const handle = { fn, ms, cleared: false };
+      timers.push(handle);
+      return handle;
+    },
+    clearTimer: (handle) => (handle.cleared = true),
+    reducedMotion: () => true,
+    ...overrides,
+  });
+  const live = () => timers.filter((timer) => !timer.cleared);
+  return { el, api, listeners, controller, timers, live, clock, openSession: undefined };
+}
+
+const session = (over = {}) => ({
+  id: 's1', status: 'working', needsPermission: false, question: null, seenAt: 0, updatedAt: NOW - MIN, failedAt: null,
+  adopted: false, alias: null, title: 'Tarefa', projectName: 'a', cwd: '/p/a', ptyId: 'pty-1', term: { VIZOR_PTY_ID: 'pty-1' },
+  project: { root: '/p/a', branch: 'main' }, ...over,
+});
+
+// A target whose closest() resolves the selectors the controller asks about.
+const target = (match) => ({ closest: (selector) => (selector in match ? match[selector] : null) });
+const click = (listeners, match) => listeners.click({ target: target(match) });
+const actionButton = (action, id) => ({ '[data-action]': { dataset: { action, cardId: id } } });
+
+describe('agents controller', () => {
+  it('renders nothing while hidden and draws on show', () => {
+    const { el, controller } = setup();
+    controller.setState({ sessions: [session()] });
+    expect(el.innerHTML).toBe('');
+    controller.setVisible(true);
+    expect(el.innerHTML).toContain('kb-board');
+    expect(el.innerHTML).toContain('Tarefa');
+  });
+
+  it('only keeps a timer while visible, at the next 30 min cut', () => {
+    const { controller, live } = setup();
+    controller.setState({ sessions: [session({ status: 'done', updatedAt: NOW - 10 * MIN })] });
+    expect(live()).toHaveLength(0);
+    controller.setVisible(true);
+    expect(live()).toHaveLength(1);
+    expect(live()[0].ms).toBe(20 * MIN + 50);
+    controller.setVisible(false);
+    expect(live()).toHaveLength(0);
+    controller.setState({ sessions: [session({ status: 'done', updatedAt: NOW - 10 * MIN })] });
+    expect(live()).toHaveLength(0);
+  });
+
+  it('moves a done card to idle when the timer fires', () => {
+    const { el, controller, live, clock } = setup();
+    controller.setState({ sessions: [session({ status: 'done', updatedAt: NOW - 10 * MIN })] });
+    controller.setVisible(true);
+    expect(el.innerHTML).toMatch(/data-card="s1" data-column="done"/);
+    clock.now += 21 * MIN;
+    live()[0].fn();
+    expect(el.innerHTML).toMatch(/data-card="s1" data-column="idle"/);
+  });
+
+  it('schedules nothing when no card is about to change column', () => {
+    const { controller, live } = setup();
+    controller.setState({ sessions: [session()] });
+    controller.setVisible(true);
+    expect(live()).toHaveLength(0);
+  });
+
+  it('clicking a card marks it seen and opens it in the Workspace', () => {
+    const openSession = vi.fn();
+    const { api, listeners, controller } = setup({ openSession });
+    controller.setState({ sessions: [session()] });
+    controller.setVisible(true);
+    click(listeners, { '[data-card]': { dataset: { card: 's1' } } });
+    expect(api.agentsSeen).toHaveBeenCalledWith('s1');
+    expect(openSession).toHaveBeenCalledWith('s1');
+  });
+
+  it('uses the terminal focus for a chat outside the Vizor', () => {
+    const openSession = vi.fn();
+    const { api, listeners, controller } = setup({ openSession });
+    controller.setState({ sessions: [session({ ptyId: null, term: null })] });
+    controller.setVisible(true);
+    click(listeners, actionButton('focus', 's1'));
+    expect(api.focusOutside).toHaveBeenCalledWith('s1');
+    expect(openSession).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when a failed tombstone is clicked', () => {
+    const { api, listeners, controller } = setup();
+    controller.setState({ sessions: [session({ status: 'failed', failedAt: NOW - MIN })] });
+    controller.setVisible(true);
+    click(listeners, { '[data-card]': { dataset: { card: 's1' } } });
+    expect(api.agentsSeen).not.toHaveBeenCalled();
+    click(listeners, actionButton('dismiss', 's1'));
+    expect(api.agentsDismiss).toHaveBeenCalledWith('s1');
+  });
+
+  it('asks before interrupting, and only then interrupts', () => {
+    const { el, api, listeners, controller } = setup();
+    controller.setState({ sessions: [session()] });
+    controller.setVisible(true);
+    click(listeners, actionButton('interrupt', 's1'));
+    expect(api.agentsInterrupt).not.toHaveBeenCalled();
+    expect(el.innerHTML).toContain('Interromper?');
+    click(listeners, actionButton('cancel', 's1'));
+    expect(el.innerHTML).not.toContain('Interromper?');
+    click(listeners, actionButton('interrupt', 's1'));
+    click(listeners, actionButton('interrupt-confirm', 's1'));
+    expect(api.agentsInterrupt).toHaveBeenCalledWith('s1');
+  });
+
+  it('says so when the interrupt is refused', async () => {
+    const { el, api, listeners, controller } = setup();
+    api.agentsInterrupt.mockResolvedValue('failed');
+    controller.setState({ sessions: [session()] });
+    controller.setVisible(true);
+    click(listeners, actionButton('interrupt', 's1'));
+    click(listeners, actionButton('interrupt-confirm', 's1'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(el.innerHTML).toContain('não deu pra interromper');
+  });
+
+  it('answers through the reply box and closes it when sent', async () => {
+    const { el, api, listeners, controller } = setup();
+    controller.setState({ sessions: [session({ status: 'waiting', question: 'Qual?' })] });
+    controller.setVisible(true);
+    click(listeners, actionButton('answer', 's1'));
+    expect(el.innerHTML).toContain('kb-reply-input');
+    const form = { dataset: { cardId: 's1' }, querySelector: () => ({ value: ' sim ' }) };
+    await listeners.submit({ preventDefault() {}, target: { closest: () => form } });
+    expect(api.agentsAnswer).toHaveBeenCalledWith('s1', 'sim');
+    expect(el.innerHTML).not.toContain('kb-reply-input');
+  });
+
+  it('keeps the reply box open with an error when the delivery fails', async () => {
+    const { el, api, listeners, controller } = setup();
+    api.agentsAnswer.mockResolvedValue('failed');
+    controller.setState({ sessions: [session({ status: 'waiting', question: 'Qual?' })] });
+    controller.setVisible(true);
+    click(listeners, actionButton('answer', 's1'));
+    const form = { dataset: { cardId: 's1' }, querySelector: () => ({ value: 'sim' }) };
+    await listeners.submit({ preventDefault() {}, target: { closest: () => form } });
+    expect(el.innerHTML).toContain('não consegui enviar');
+  });
+
+  it('approves an unapproved plan from the card, and answers the guard', () => {
+    const { el, api, listeners, controller } = setup();
+    controller.setState({
+      sessions: [session({ status: 'waiting', question: 'ok?' })],
+      plans: { s1: { steps: [{ text: 'a', done: false }], approved: false } },
+      guardAsks: [{ id: 'g1', sessionId: 's1', summary: 'rm x', ruleSource: 'r', cwd: '/p/a', tool: 'Bash' }],
+    });
+    controller.setVisible(true);
+    expect(el.innerHTML).toContain('data-action="approve-plan"');
+    expect(el.innerHTML).toContain('>Aprovar plano<');
+    expect(el.innerHTML).toContain('data-guard-id="g1"');
+    click(listeners, actionButton('approve-plan', 's1'));
+    expect(api.planAction).toHaveBeenCalledWith('s1', 'approve');
+    click(listeners, { '[data-guard-choice]': { dataset: { guardId: 'g1', guardChoice: 'liberar' }, closest: () => null } });
+    expect(api.answerGuard).toHaveBeenCalledWith('g1', 'liberar');
+  });
+
+  it('on a permission ask, Aprovar opens the chat even with a plan waiting; the plan has its own button', () => {
+    const openSession = vi.fn();
+    const t = setup({ openSession });
+    t.controller.setState({
+      sessions: [session({ status: 'waiting', needsPermission: true })],
+      plans: { s1: { steps: [{ text: 'a', done: false }], approved: false } },
+    });
+    t.controller.setVisible(true);
+    expect(t.el.innerHTML).toContain('data-action="approve"');
+    expect(t.el.innerHTML).toContain('data-action="approve-plan"');
+    click(t.listeners, actionButton('approve', 's1'));
+    expect(t.api.planAction).not.toHaveBeenCalled();
+    expect(openSession).toHaveBeenCalledWith('s1');
+    click(t.listeners, actionButton('approve-plan', 's1'));
+    expect(t.api.planAction).toHaveBeenCalledWith('s1', 'approve');
+  });
+
+  it('marks a finished chat seen once per Stop when looked at', () => {
+    const { api, controller } = setup();
+    controller.setState({ sessions: [session({ status: 'done' })] });
+    controller.lookingAt('s1');
+    controller.lookingAt('s1');
+    expect(api.agentsSeen).toHaveBeenCalledTimes(1);
+    controller.lookingAt('nope');
+    expect(api.agentsSeen).toHaveBeenCalledTimes(1);
+    api.agentsSeen.mockClear();
+    controller.setState({ sessions: [session({ status: 'working' })] });
+    controller.lookingAt('s1');
+    expect(api.agentsSeen).not.toHaveBeenCalled();
+  });
+
+  it('marks a finished chat seen after its idle Notification too, once per Stop', () => {
+    const { api, controller } = setup();
+    const stop = NOW - 2 * MIN;
+    controller.setState({ sessions: [session({ status: 'waiting', stoppedAt: stop, updatedAt: stop + MIN })] });
+    controller.lookingAt('s1');
+    expect(api.agentsSeen).toHaveBeenCalledTimes(1);
+    controller.setState({ sessions: [session({ status: 'done', stoppedAt: stop, updatedAt: stop })] });
+    controller.lookingAt('s1');
+    expect(api.agentsSeen).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count the idle Notification after a Stop as waiting', () => {
+    const { controller } = setup();
+    controller.setState({ sessions: [session({ status: 'waiting', stoppedAt: NOW - 2 * MIN, updatedAt: NOW - MIN })] });
+    expect(controller.counts()).toEqual({ working: 0, waiting: 0 });
+  });
+
+  it('counts the cards waiting on the user, hidden or not', () => {
+    const { controller } = setup();
+    controller.setState({ sessions: [session({ status: 'waiting', question: 'q' }), session({ id: 's2' })] });
+    expect(controller.waitingCount()).toBe(1);
+  });
+
+  it('filters by project and by "needs me"', () => {
+    const { el, listeners, controller } = setup({ projects: () => ({ '/p/a': { name: 'a' } }) });
+    controller.setState({ sessions: [session(), session({ id: 's2', project: null, title: 'Solta' })] });
+    controller.setVisible(true);
+    expect(el.innerHTML).toContain('Outros');
+    click(listeners, { '[data-kb-filter]': { dataset: { kbFilter: 'project', value: '__other__' } } });
+    expect(el.innerHTML).toContain('Solta');
+    expect(el.innerHTML).not.toContain('>Tarefa<');
+    click(listeners, { '[data-kb-filter]': { dataset: { kbFilter: 'needsMe' } } });
+    expect(el.innerHTML).toContain('nenhum agente rodando');
+  });
+
+  it('draws a running automação as a card with the "automação" badge, in Trabalhando', () => {
+    const { el, controller } = setup({ projects: () => ({ '/p/a': { name: 'a' } }) });
+    controller.setVisible(true);
+    controller.setState({
+      sessions: [],
+      automationRuns: [{ id: 'automation:a1', automationId: 'a1', column: 'working', title: 'PRs <b>', projectRoot: '/p/a', avatarKey: '/p/a', since: NOW - MIN, late: true, waiting: false, badge: 'automação' }],
+    });
+    expect(el.innerHTML).toContain('kb-automation');
+    expect(el.innerHTML).toContain('>automação<');
+    expect(el.innerHTML).toContain('atrasada');
+    expect(el.innerHTML).toContain('PRs &lt;b&gt;');
+    expect(el.innerHTML).not.toContain('nenhum agente rodando');
+    // it leaves the board when it ends
+    controller.setState({ sessions: [], automationRuns: [] });
+    expect(el.innerHTML).toContain('nenhum agente rodando');
+  });
+
+  it('puts the automação\'s own guard question on its card', () => {
+    const { el, controller } = setup();
+    controller.setVisible(true);
+    const run = { id: 'automation:a1', automationId: 'a1', column: 'waiting', title: 'PRs', projectRoot: null, avatarKey: null, since: NOW, waiting: true, badge: 'automação' };
+    const ask = { id: 'g1', sessionId: 'zzz', cwd: '/p/a', tool: 'Bash', summary: 'gh pr comment 1', ruleSource: 'r', irreversible: false, automationId: 'a1', automationName: 'PRs' };
+    controller.setState({ sessions: [], automationRuns: [run], guardAsks: [ask, { ...ask, id: 'g2', automationId: 'other', summary: 'rm' }] });
+    expect(el.innerHTML).toContain('a automação PRs quer…');
+    expect(el.innerHTML).toContain('gh pr comment 1');
+    expect(el.innerHTML).not.toContain('liberar-sessao');
+    expect(el.innerHTML).not.toContain('>rm<');
+  });
+
+  it('counts running automações as rodando, and as esperando with a pending guard ask', () => {
+    const { controller } = setup();
+    const run = (id, column) => ({ id: `automation:${id}`, automationId: id, column, title: id, projectRoot: null, avatarKey: null, since: NOW, badge: 'automação' });
+    controller.setState({ sessions: [session()], automationRuns: [run('a1', 'working'), run('a2', 'waiting')] });
+    expect(controller.counts()).toEqual({ working: 2, waiting: 1 });
+    expect(controller.automationCounts()).toEqual({ working: 1, waiting: 1 });
+    expect(controller.waitingCount()).toBe(1);
+  });
+
+  it('a click on an automação card opens that automação, never a chat', () => {
+    const openAutomation = vi.fn();
+    const { listeners, controller, api } = setup({ openAutomation });
+    controller.setVisible(true);
+    controller.setState({ sessions: [], automationRuns: [{ id: 'automation:a1', automationId: 'a1', column: 'working', title: 'PRs', projectRoot: null, avatarKey: null, since: NOW, badge: 'automação' }] });
+    click(listeners, { '[data-card]': { dataset: { card: 'automation:a1' } } });
+    expect(openAutomation).toHaveBeenCalledWith('a1');
+    expect(api.agentsSeen).not.toHaveBeenCalled();
+  });
+});

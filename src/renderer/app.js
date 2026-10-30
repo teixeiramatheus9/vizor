@@ -33,6 +33,7 @@ const STATUS_LABEL = {
   done: 'concluído',
   waiting: 'esperando você',
   question: 'pergunta',
+  failed: 'falhou',
 };
 
 // Fliperama wording for the arcade skin — same states, another language.
@@ -71,13 +72,23 @@ function togglePanel() {
 // Managed/X11: the whole bubble is press-to-drag, and main reports back a
 // 'ui:click' when the press didn't move — so DOM clicks are ignored there
 // to avoid double toggling.
+// Main decides what a click opens: the workspace on Linux (#96), the panel
+// elsewhere — the same call the X11 drag path makes.
 core.addEventListener('click', () => {
-  if (!managed) togglePanel();
+  if (!managed) window.manager.activateBubble();
 });
 badge.addEventListener('click', () => {
-  if (!managed) togglePanel();
+  if (!managed) window.manager.activateBubble();
 });
-tooltip.addEventListener('click', openPanel);
+// Right-click always opens the panel — the quick view stays one click away.
+bubble.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  togglePanel();
+});
+// The balloon remembers which session it is about: one born in the Vizor
+// opens its workspace tab (#144), anything else opens the panel.
+let tooltipSessionId = null;
+tooltip.addEventListener('click', () => window.manager.tooltipClick(tooltipSessionId));
 document.getElementById('close').addEventListener('click', closePanel);
 const quitButton = document.getElementById('quit');
 quitButton.addEventListener('click', () => window.manager.quit());
@@ -93,7 +104,10 @@ function renderQuitButton(trayAvailable) {
 
 
 bubble.addEventListener('mousedown', (event) => {
-  if (managed && event.button === 0) window.manager.dragStart();
+  // macOS ctrl-click is a right-click: it also fires contextmenu (panel), so
+  // it must not start the drag/click path too, or the panel flashes.
+  const macContextClick = event.ctrlKey && navigator.platform.startsWith('Mac');
+  if (managed && event.button === 0 && !macContextClick) window.manager.dragStart();
 });
 window.addEventListener('mouseup', () => {
   if (managed) window.manager.dragEnd();
@@ -131,6 +145,7 @@ window.manager.onSpotted(() => {
 const muteButton = document.getElementById('mute');
 let muted = false;
 let audioContext = null;
+let audioSinkId = ''; // the output pinned in the tray menu, as Chromium names it ("" = default)
 
 function renderMuteButton() {
   muteButton.textContent = muted ? '[mudo]' : '[som]';
@@ -280,7 +295,9 @@ document.getElementById('mirror-back').addEventListener('click', () => setMirror
 
 const MIRROR_FEEDBACK = {
   typed: null, // the message shows up in the conversation itself
+  sent: null, // delivered through the session's channel (#147)
   clipboard: '# copiado! cola no chat',
+  pasted: '# ficou no terminal, sem Enter — confere lá',
   failed: '# não consegui enviar — tenta de novo',
 };
 
@@ -292,7 +309,7 @@ async function sendMirrorReply() {
   const mode = await window.manager.sendReply(mirrorSession.id, text);
   mirrorSend.disabled = false;
   const feedback = MIRROR_FEEDBACK[mode];
-  if (mode === 'typed') {
+  if (mode === 'typed' || mode === 'sent') {
     mirrorInput.value = '';
     setTimeout(refreshMirror, 700);
   }
@@ -436,7 +453,7 @@ bridgeInstallButton.addEventListener('click', async () => {
   try {
     const result = await window.manager.bridgeInstall();
     if (result.installed && !result.active && ttsEnabled && !muted) {
-      speakSample('Instalei a ponte! Sai e entra da sessão que aí eu alcanço teu terminal.');
+      speakSample(spoken('bridge'));
     }
   } finally {
     bridgeInstallButton.disabled = false;
@@ -467,7 +484,7 @@ volumeInput.addEventListener('change', () => {
 voiceVolumeInput.addEventListener('change', () => {
   voiceVolume = Number(voiceVolumeInput.value);
   window.manager.setConfig({ voiceVolume });
-  speakSample('Volume da voz do gerente.');
+  speakSample(spoken('volume'));
 });
 timbreSelect.addEventListener('change', () => {
   soundTimbre = timbreSelect.value;
@@ -494,8 +511,28 @@ ttsCheckbox.addEventListener('change', () => {
   ttsEnabled = ttsCheckbox.checked;
   window.manager.setConfig({ ttsEnabled });
   renderTtsState();
-  if (ttsEnabled) speakSample('Notificação por voz ativada.');
+  if (ttsEnabled) speakSample(spoken('ttsOn'));
 });
+
+// What the Vizor says follows the voice's language (#161): an English voice
+// speaks English. The screen stays pt-BR.
+let voiceLang = 'pt';
+let voiceLangs = {}; // voice id → its language, from the config
+const SPOKEN = {
+  pt: {
+    bridge: 'Instalei a ponte! Sai e entra da sessão que aí eu alcanço teu terminal.',
+    volume: 'Volume da voz do gerente.',
+    ttsOn: 'Notificação por voz ativada.',
+    test: 'Testando a voz do gerente.',
+  },
+  en: {
+    bridge: 'I installed the bridge! Log out and back in so I can reach your terminal.',
+    volume: "The manager's voice volume.",
+    ttsOn: 'Voice notifications on.',
+    test: "Testing the manager's voice.",
+  },
+};
+const spoken = (key) => (SPOKEN[voiceLang] ?? SPOKEN.pt)[key];
 
 // The manager's voice answers to its own slider and to the master volume.
 function speakSample(text) {
@@ -503,7 +540,7 @@ function speakSample(text) {
 }
 
 document.getElementById('voice-test').addEventListener('click', () => {
-  speakSample('Testando a voz do gerente.');
+  speakSample(spoken('test'));
 });
 
 // Sliders paint their own fill and print the value beside them.
@@ -633,6 +670,10 @@ updateCheckButton.addEventListener('click', async () => {
       updateCheckFeedback.textContent = `# v${status.available} disponível — clica no banner acima`;
     } else if (status.mode === 'off') {
       updateCheckFeedback.textContent = '# modo dev — atualização desligada';
+    } else if (status.checkFailed) {
+      // The check itself failed (offline, rate limit, missing release asset):
+      // never claim "latest" on a failure (#55).
+      updateCheckFeedback.textContent = '# não consegui checar agora — tenta mais tarde';
     } else {
       updateCheckFeedback.textContent = `# você já está na mais recente (v${status.currentVersion}) ✓`;
     }
@@ -670,6 +711,9 @@ function applyTheme(theme, palette) {
     ? '[v]testar voz'
     : '[testar voz]';
 }
+
+const densitySelect = document.getElementById('density');
+densitySelect.addEventListener('change', () => window.manager.setConfig({ density: densitySelect.value }));
 
 // The tube is orthogonal to the palette: it rides over whichever theme is on.
 const crtCheckbox = document.getElementById('crt');
@@ -769,6 +813,191 @@ autostartCheckbox.addEventListener('change', () => {
   window.manager.setConfig({ autostart: autostartCheckbox.checked });
 });
 
+// Settings › regras (#160): the lock's state in one line, its switch, and the
+// way into the rules window.
+const guardCheckbox = document.getElementById('guard-enabled');
+const guardEnabledState = document.getElementById('guard-enabled-state');
+
+function renderGuardStatus(guard) {
+  if (!guard) return;
+  const off = !guard.enabled || guard.unreadable;
+  document.getElementById('guard-status').textContent = guard.unreadable
+    ? '# trava desligada: o arquivo das regras está ilegível'
+    : `# ${off ? 'trava desligada' : 'trava ligada'} · ${guard.active} ativas · ${guard.pending} esperando revisão`;
+  guardCheckbox.checked = guard.enabled;
+  guardEnabledState.textContent = guard.enabled ? '[on]' : '[off]';
+  document.getElementById('guard-offline').classList.toggle('hidden', !(guard.enabled && guard.installed && !guard.offline));
+}
+
+guardCheckbox.addEventListener('change', () => {
+  guardEnabledState.textContent = guardCheckbox.checked ? '[on]' : '[off]';
+  window.manager.setGuardEnabled(guardCheckbox.checked);
+});
+document.getElementById('open-rules').addEventListener('click', () => window.manager.openRules());
+
+// Settings › limites do claude: toggles persist through config:set; the status
+// row and the per-project warnings are read when the section opens.
+const limControls = {
+  fiveHour: document.getElementById('lim-five'),
+  sevenDay: document.getElementById('lim-seven'),
+  resetNotice: document.getElementById('lim-reset'),
+  showInStatusBar: document.getElementById('lim-bar'),
+};
+const limWarn = document.getElementById('lim-warn');
+
+function renderLimitsConfig(limits) {
+  if (!limits) return;
+  for (const [key, box] of Object.entries(limControls)) {
+    box.checked = Boolean(limits[key]);
+    document.getElementById(`${box.id}-state`).textContent = box.checked ? '[on]' : '[off]';
+  }
+  limWarn.value = String(limits.warnAt);
+  document.getElementById('lim-warn-label').textContent = `${limits.warnAt}%`;
+  renderSlider(limWarn);
+}
+
+function renderLimitsInfo(info) {
+  if (!info) return;
+  document.getElementById('lim-status').textContent = `# status line: ${info.status.text}`;
+  document.getElementById('lim-reconnect-row').classList.toggle('hidden', info.status.kind !== 'replaced');
+  document.getElementById('lim-overrides').replaceChildren(
+    ...info.overrides.map((project) => {
+      const hint = document.createElement('div');
+      hint.className = 'setting-hint';
+      hint.textContent = `# o projeto ${project.name} usa outra status line; os números dos chats dele não chegam`;
+      return hint;
+    }),
+  );
+}
+
+const refreshLimitsInfo = () => window.manager.limitsSettings().then((info) => info && renderLimitsInfo(info)).catch(() => {});
+window.manager.getConfig().then((config) => renderLimitsConfig(config.limits));
+document.querySelector('[data-section="limites"].nav-item')?.addEventListener('click', refreshLimitsInfo);
+refreshLimitsInfo();
+
+for (const [key, box] of Object.entries(limControls)) {
+  box.addEventListener('change', () => {
+    document.getElementById(`${box.id}-state`).textContent = box.checked ? '[on]' : '[off]';
+    window.manager.setConfig({ limits: { [key]: box.checked } }).then((config) => {
+      renderLimitsConfig(config?.limits);
+      refreshLimitsInfo();
+    });
+  });
+}
+limWarn.addEventListener('input', () => {
+  document.getElementById('lim-warn-label').textContent = `${limWarn.value}%`;
+  renderSlider(limWarn);
+});
+limWarn.addEventListener('change', () => window.manager.setConfig({ limits: { warnAt: Number(limWarn.value) } }));
+document.getElementById('lim-reconnect').addEventListener('click', () => {
+  if (!window.confirm('Reconectar troca a sua status line atual pela do Vizor (a sua é guardada e volta ao desligar). Continuar?')) return;
+  window.manager
+    .limitsReconnect()
+    .then((info) => info && renderLimitsInfo(info))
+    .catch(() => {});
+});
+
+// Settings › voz (#161). Linux only: elsewhere the section and its
+// shortcuts are hidden.
+const VOICE_STATE_TEXT = {
+  off: 'desligada',
+  sleeping: 'esperando "Vizor"',
+  listening: 'ouvindo',
+  closing: 'ouvindo',
+  grace: 'entendi',
+  'paused-speaking': 'falando',
+  muted: 'mudo',
+  meeting: 'pausada: outro app usando o microfone',
+  'sem-modelos': 'baixando os modelos',
+};
+const voiceEnabledBox = document.getElementById('voice-enabled');
+const voiceNarrationBox = document.getElementById('voice-narration');
+const voiceModelSelect = document.getElementById('voice-model');
+const voiceSummarySelect = document.getElementById('voice-summary');
+const voiceMicSelect = document.getElementById('voice-mic');
+let voiceMics = [];
+let pinnedMic = null;
+
+// The mics the mic window found; a pinned one that is unplugged stays listed,
+// marked, so the choice is not lost (the system default covers meanwhile).
+function renderMics(voice) {
+  if (document.activeElement === voiceMicSelect) return;
+  voiceMics = voice.mics ?? [];
+  const pinned = voice.mic;
+  pinnedMic = pinned;
+  const options = [new Option('padrão do sistema', ''), ...voiceMics.map((mic) => new Option(mic.label, mic.id))];
+  if (pinned && !voiceMics.some((mic) => mic.id === pinned.id)) options.push(new Option(`${pinned.label} (desconectado)`, pinned.id));
+  voiceMicSelect.replaceChildren(...options);
+  voiceMicSelect.value = pinned?.id ?? '';
+}
+
+function renderVoice(voice) {
+  if (!voice) return;
+  for (const element of document.querySelectorAll('.voice-only')) element.classList.toggle('hidden', !voice.available);
+  voiceEnabledBox.checked = voice.enabled;
+  document.getElementById('voice-enabled-state').textContent = voice.enabled ? '[on]' : '[off]';
+  voiceNarrationBox.checked = voice.narration;
+  document.getElementById('voice-narration-state').textContent = voice.narration ? '[on]' : '[off]';
+  if (document.activeElement !== voiceModelSelect) voiceModelSelect.value = voice.model;
+  if (document.activeElement !== voiceSummarySelect) voiceSummarySelect.value = voice.summary;
+  renderMics(voice);
+  document.getElementById('voice-mode-status').textContent = `# ${VOICE_STATE_TEXT[voice.state] ?? voice.state}${voice.target ? ` · falando com ${voice.target}` : ''}`;
+  document.getElementById('voice-download').textContent = voice.download?.error
+    ? `# não consegui baixar os modelos: ${voice.download.error}`
+    : voice.download
+      ? `# baixando os modelos… ${voice.download.percent}%`
+      : '# os modelos (~500 MB) baixam ao ligar; nada de áudio sai da máquina';
+  const badge = document.getElementById('voice-badge');
+  badge.classList.toggle('hidden', !voice.enabled);
+  badge.textContent = voice.enabled ? `🎙 ${VOICE_STATE_TEXT[voice.state] ?? voice.state}` : '';
+}
+
+async function renderVocabulary() {
+  const vocabulary = await window.manager.voiceVocabulary();
+  document.getElementById('voice-vocab').textContent = vocabulary.root
+    ? `# ${vocabulary.terms} nomes de ${vocabulary.project}${vocabulary.scanning ? ' (explorando…)' : ''}`
+    : '# abra um projeto no workspace pra ter vocabulário';
+  const list = document.getElementById('voice-learned');
+  list.replaceChildren(
+    ...vocabulary.learned.map(({ heard, meant }) => {
+      const item = document.createElement('li');
+      const text = document.createElement('span');
+      text.textContent = `"${heard}" → ${meant}`;
+      const forget = document.createElement('button');
+      forget.textContent = '[esquecer]';
+      forget.addEventListener('click', async () => {
+        await window.manager.voiceUnlearn(heard);
+        renderVocabulary();
+      });
+      item.append(text, forget);
+      return item;
+    }),
+  );
+}
+
+voiceEnabledBox.addEventListener('change', () => window.manager.setConfig({ voiceEnabled: voiceEnabledBox.checked }));
+// The Maestro (#159): the voice, the workspace button and this switch all
+// write the same config, so the state push keeps them in sync.
+const maestroBox = document.getElementById('maestro-enabled');
+function renderMaestroSwitch(on) {
+  maestroBox.checked = Boolean(on);
+  document.getElementById('maestro-enabled-state').textContent = on ? '[on]' : '[off]';
+}
+maestroBox.addEventListener('change', () => window.manager.setConfig({ maestroEnabled: maestroBox.checked }));
+voiceNarrationBox.addEventListener('change', () => window.manager.setConfig({ voiceNarration: voiceNarrationBox.checked }));
+voiceModelSelect.addEventListener('change', () => window.manager.setConfig({ voiceModel: voiceModelSelect.value }));
+voiceSummarySelect.addEventListener('change', () => window.manager.setConfig({ voiceSummary: voiceSummarySelect.value }));
+voiceMicSelect.addEventListener('change', () => {
+  const id = voiceMicSelect.value;
+  const label = voiceMics.find((mic) => mic.id === id)?.label ?? (pinnedMic?.id === id ? pinnedMic.label : id);
+  window.manager.setConfig({ voiceMic: id ? { id, label } : null });
+});
+document.getElementById('voice-rescan').addEventListener('click', async () => {
+  await window.manager.voiceRescan();
+  renderVocabulary();
+});
+document.querySelector('[data-section="voz"].nav-item')?.addEventListener('click', renderVocabulary);
+
 const autoUpdateCheckbox = document.getElementById('auto-update');
 const autoUpdateState = document.getElementById('auto-update-state');
 
@@ -821,6 +1050,8 @@ window.manager.getConfig().then((config) => {
     );
   }
   voiceSelect.value = config.voice;
+  voiceLangs = Object.fromEntries((config.voices ?? []).map(({ value, lang }) => [value, lang ?? 'pt']));
+  voiceLang = voiceLangs[config.voice] ?? 'pt';
   if (Array.isArray(config.themes) && config.themes.length) {
     themeSelect.replaceChildren(
       ...config.themes.map(({ value, label }) => new Option(label, value)),
@@ -835,6 +1066,7 @@ window.manager.getConfig().then((config) => {
   paletteSelect.value = config.palette;
   applyTheme(config.theme, config.palette);
   applyCrt(config.crt);
+  densitySelect.value = config.density ?? 'comfortable';
   const range = config.panelScaleRange;
   if (range) {
     panelScaleInput.min = String(range.min);
@@ -854,6 +1086,7 @@ terminalSelect.addEventListener('change', () => {
 });
 
 voiceSelect.addEventListener('change', () => {
+  voiceLang = voiceLangs[voiceSelect.value] ?? 'pt';
   window.manager.setConfig({ voice: voiceSelect.value });
 });
 
@@ -914,7 +1147,13 @@ function playNote(frequency, startOffset, peakGain) {
 function chime(kind, force = false) {
   if (muted && !force) return;
   try {
-    audioContext ??= new AudioContext();
+    audioContext ??= new AudioContext(audioSinkId ? { sinkId: audioSinkId } : {});
+    // The voice mode's "I heard you" (#161): one short high note, unlike
+    // every alert, so it never reads as "task done".
+    if (kind === 'beep') {
+      playNote(1318.5, 0, 0.12 * (soundVolume / 70));
+      return;
+    }
     const preset = CHIME_PRESETS[soundTimbre] ?? CHIME_PRESETS.marimba;
     const notes = preset[kind] ?? preset.done;
     const typeFactor = (typeVolumes[kind] ?? 100) / 100;
@@ -939,12 +1178,22 @@ window.manager.onChime(({ kind }) => {
 // Spoken notifications stay short and instantly understandable — the full
 // message lives in the tooltip/panel.
 const TTS_PHRASES = {
-  done: (projectName) => `Tarefa concluída no ${projectName}.`,
-  question: (projectName, optionsCount) =>
-    optionsCount > 0
-      ? `Tem uma pergunta no ${projectName} com ${optionsCount} ${optionsCount === 1 ? 'opção' : 'opções'} pra escolher.`
-      : `Tem uma pergunta no ${projectName}.`,
-  waiting: (projectName) => `O chat ${projectName} espera você.`,
+  pt: {
+    done: (projectName) => `Tarefa concluída no ${projectName}.`,
+    question: (projectName, optionsCount) =>
+      optionsCount > 0
+        ? `Tem uma pergunta no ${projectName} com ${optionsCount} ${optionsCount === 1 ? 'opção' : 'opções'} pra escolher.`
+        : `Tem uma pergunta no ${projectName}.`,
+    waiting: (projectName) => `O chat ${projectName} espera você.`,
+  },
+  en: {
+    done: (projectName) => `Task done in ${projectName}.`,
+    question: (projectName, optionsCount) =>
+      optionsCount > 0
+        ? `There's a question in ${projectName} with ${optionsCount} ${optionsCount === 1 ? 'option' : 'options'} to pick from.`
+        : `There's a question in ${projectName}.`,
+    waiting: (projectName) => `The ${projectName} chat is waiting for you.`,
+  },
 };
 
 const toastMark = document.getElementById('toast-mark');
@@ -955,25 +1204,35 @@ const TOAST_TITLE = {
   waiting: 'esperando você',
   start: 'início de task',
   hint: 'aviso do gerente',
+  guard: 'posso seguir?',
 };
 
-document.getElementById('toast-open').addEventListener('click', openPanel);
+// [abrir] does what clicking the balloon does — once (it used to also bubble
+// into the balloon click: a panel flash, every badge cleared).
+document.getElementById('toast-open').addEventListener('click', (event) => {
+  event.stopPropagation();
+  window.manager.tooltipClick(tooltipSessionId);
+});
 document.getElementById('toast-close').addEventListener('click', (event) => {
   event.stopPropagation();
   hideTooltip();
 });
 
-window.manager.onTooltip(({ projectName, text, kind, optionsCount }) => {
+window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId, speech }) => {
+  tooltipSessionId = sessionId ?? null;
   // kind 'hint' is a manager warning: the MAIN process already spoke it
   // (speakAsManager), so the balloon adds no chime and no second voice.
   if (view === 'bubble' && kind !== 'hint') {
-    chime(kind);
+    chime(kind === 'guard' ? 'question' : kind);
     if (ttsEnabled && !muted) {
-      const phrase = TTS_PHRASES[kind] ?? TTS_PHRASES.waiting;
-      speakSample(phrase(projectName, optionsCount));
+      const phrases = TTS_PHRASES[voiceLang] ?? TTS_PHRASES.pt;
+      const phrase = phrases[kind] ?? phrases.waiting;
+      // A guard card in voice mode is spoken by main (speech is null then).
+      // A grouped notice (several chats at once) brings its own spoken line.
+      if (kind !== 'guard' || speech) speakSample(speech ?? phrase(projectName, optionsCount));
     }
   }
-  const alert = kind === 'question' || kind === 'waiting';
+  const alert = kind === 'question' || kind === 'waiting' || kind === 'guard';
   toastMark.textContent = kind === 'hint' ? '⚠' : alert ? '●' : '✓';
   toastMark.classList.toggle('warn', alert || kind === 'hint');
   tooltipProject.textContent = TOAST_TITLE[kind] ?? TOAST_TITLE.done;
@@ -1039,7 +1298,11 @@ function replyElement(session) {
 
   const FEEDBACK_TEXT = {
     typed: '✓ enviado pro chat',
+    // the session's own channel (or its Vizor terminal) took it (#147)
+    sent: '✓ enviado pro chat',
     clipboard: '# copiado! cola no chat',
+    // pasted into the Vizor terminal, but Enter was not safe to press (#143)
+    pasted: '# ficou no terminal, sem Enter — confere lá',
     failed: '# não consegui enviar — tenta de novo',
   };
 
@@ -1051,7 +1314,7 @@ function replyElement(session) {
     sendButton.disabled = false;
     replyFeedback.set(session.id, FEEDBACK_TEXT[mode] ?? '');
     feedback.textContent = replyFeedback.get(session.id);
-    if (mode === 'typed') {
+    if (mode === 'typed' || mode === 'sent') {
       replyDrafts.delete(session.id);
       input.value = '';
     }
@@ -1082,7 +1345,8 @@ function replyElement(session) {
 
 // Appends the quick-reply UI (when applicable) and returns the finished card.
 function finishCard(card, session) {
-  if (session.status !== 'working') {
+  // A dead chat has nobody to read a quick reply.
+  if (session.status !== 'working' && session.status !== 'failed') {
     const { wrapper, input } = replyElement(session);
     card.append(wrapper);
     if (focusedReplySessionId === session.id) {
@@ -1136,7 +1400,8 @@ function emptyStateElement() {
 }
 
 function sessionElement(session, index) {
-  const state = session.question ? 'question' : session.status;
+  // An idle notice after a Stop asks nothing: the chat is just done.
+  const state = session.question ? 'question' : session.status === 'waiting' && !needsYou(session) ? 'done' : session.status;
   const card = document.createElement('div');
   card.className = `session ${state}${session.unread ? ' unread' : ''}`;
   card.title = 'Abrir no terminal';
@@ -1276,12 +1541,17 @@ function sessionElement(session, index) {
   return finishCard(card, session);
 }
 
+// The shared predicate lives in a module (guard-card-global.js exposes it);
+// until that loads, the same rule inline.
+const needsYou = (session) =>
+  window.vizorNeedsYou ? window.vizorNeedsYou(session) : Boolean(session.question || session.needsPermission);
+
 let lastUnreadCount = 0;
 
 // The bubble mirrors the sessions as a whole: someone waiting wins over
 // someone working, and an idle bubble carries no badge at all.
 function renderBadge(sessions) {
-  const waiting = sessions.some((s) => s.question || s.status === 'waiting');
+  const waiting = sessions.some((s) => needsYou(s));
   const working = sessions.some((s) => s.status === 'working');
   badge.className = waiting ? 'waiting' : working ? 'working' : '';
   badge.style.display = waiting || working ? 'block' : 'none';
@@ -1378,7 +1648,31 @@ function applySound(sound) {
   refreshDropdowns();
 }
 
+// The rule guard's questions (#160) sit above the sessions until answered.
+// guard-card.js is a module, exposed on window by guard-card-global.js.
+function renderGuardAsks(asks) {
+  if (!asks.length || !window.vizorGuardCard) return;
+  const block = document.createElement('div');
+  block.className = 'guard-asks';
+  block.innerHTML = asks.map((ask) => window.vizorGuardCard.renderGuardCard(ask)).join('');
+  sessionsContainer.append(block);
+}
+
+sessionsContainer.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-guard-choice]');
+  if (!button) return;
+  event.stopPropagation();
+  button.closest('.guard-card')?.classList.add('answered');
+  window.manager.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
+});
+
 window.manager.onState((state) => {
+  if (typeof state.maestroEnabled === 'boolean') renderMaestroSwitch(state.maestroEnabled);
+  if (state.voiceLang) voiceLang = state.voiceLang;
+  if (typeof state.audioSinkId === 'string' && state.audioSinkId !== audioSinkId) {
+    audioSinkId = state.audioSinkId;
+    audioContext?.setSinkId?.(audioSinkId).catch(() => {});
+  }
   applyTheme(state.theme, state.palette);
   applyCrt(state.crt);
   applyShortcuts(state.shortcuts);
@@ -1392,10 +1686,13 @@ window.manager.onState((state) => {
   renderVoiceStatus(state.voiceDownloading);
   renderTrayStatus(state.trayNeedsRelogin);
   renderUsage(state.tokens);
+  renderGuardStatus(state.guard);
+  renderVoice(state.voice);
   renderBadge(state.sessions);
   lastUnreadCount = state.unread;
 
   sessionsContainer.replaceChildren();
+  renderGuardAsks(state.guardAsks ?? []);
   if (!state.sessions.length) {
     sessionsContainer.append(emptyStateElement());
     return;

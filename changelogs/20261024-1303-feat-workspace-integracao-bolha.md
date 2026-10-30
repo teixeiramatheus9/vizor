@@ -1,0 +1,1 @@
+- A bolha virou a porta do workspace no Linux: o clique abre o workspace já na sessão do último aviso, o botão direito abre o painel; nas sessões que rodam no Vizor, o card leva pra aba delas e a resposta rápida e a escolha de opção vão direto pro terminal; e o aviso não toca quando você já está olhando aquela sessão no workspace

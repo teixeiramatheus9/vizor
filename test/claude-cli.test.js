@@ -85,3 +85,35 @@ describe('runClaude command fallback', () => {
     expect(spawnFn).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('runClaude model', () => {
+  it('defaults to haiku and takes another model when asked', () => {
+    const seen = [];
+    const spawnFn = (_command, args) => {
+      seen.push(args[args.indexOf('--model') + 1]);
+      const child = hangingSpawn().child;
+      return child;
+    };
+    runClaude({ prompt: 'a', spawnFn });
+    runClaude({ prompt: 'b', spawnFn, model: 'sonnet' });
+    killPendingClaude();
+    expect(seen).toEqual(['haiku', 'sonnet']);
+  });
+});
+
+describe('runClaude is lean (live test: the voice answers took 7-8 s)', () => {
+  it('no MCP servers, no user settings or hooks, no tools, no skills: ~4 s and a tenth of the tokens', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child);
+    const promise = runClaude({ prompt: 'p', spawnFn, commands: ['claude'] });
+    child.stdout.emit('data', CLI_OK);
+    child.emit('close', 0);
+    await promise;
+    const args = spawnFn.mock.calls[0][1];
+    expect(args.slice(0, 6)).toEqual(['-p', 'p', '--model', 'haiku', '--output-format', 'json']);
+    expect(args).toEqual(expect.arrayContaining(['--strict-mcp-config', '--disable-slash-commands']));
+    expect(args[args.indexOf('--mcp-config') + 1]).toBe('{"mcpServers":{}}');
+    expect(args[args.indexOf('--setting-sources') + 1]).toBe('');
+    expect(args[args.indexOf('--tools') + 1]).toBe('');
+  });
+});

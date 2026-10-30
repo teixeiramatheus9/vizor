@@ -1,0 +1,1 @@
+- Mudanças ao vivo no workspace (Linux): ao lado do terminal, a linha do tempo de cada edição do Claude com o porquê dela, e o detalhe em dois jeitos — o arquivo inteiro com o diff da tarefa ou um card por edição; o painel pode ficar estreito, largo ou recolhido pra o terminal ocupar a tela

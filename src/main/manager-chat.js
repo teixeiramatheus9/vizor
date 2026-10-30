@@ -11,6 +11,7 @@ const STATUS_LABEL = {
   working: 'trabalhando',
   done: 'terminou',
   waiting: 'esperando o usuário',
+  failed: 'caiu no meio do turno',
 };
 
 // Local, zero-token context: one compact line per session.
@@ -43,14 +44,30 @@ export function findMentionedSession(sessions, userMessage) {
   );
 }
 
-export function buildChatPrompt({ digest, history = [], userMessage, transcriptExcerpt = null }) {
+// An English voice (#161) hears the gerente in English; the user still speaks
+// Portuguese. The offer to resume a task has a fixed shape the voice detects.
+const LANGUAGE_RULE = {
+  pt: 'Responda em pt-BR informal, DIRETO e CURTO (até 3 frases, a menos que ele peça detalhe).',
+  en: 'Reply in casual American English, SHORT and DIRECT (up to 3 sentences unless asked for detail), even though the user writes in Portuguese. Your reply is spoken by an English voice.',
+};
+
+// The gerente only reads the GitHub; the músicos (Claude chats) act. An
+// action is offered in one fixed question, which the voice turns into a
+// confirmable order (#159).
+const ACTIONS_RULE = {
+  pt: 'Você só lê o GitHub; quem age são os músicos (os chats do Claude). Pra propor uma ação, termine com UMA destas perguntas, exatamente: "Quer que eu puxe a issue N?" (um músico começa a issue), "Quer que eu peça revisão da PR N?" (um músico revisa a PR) ou "Quer que eu retome a N?" (volta pro chat da tarefa). Nunca ofereça atribuir (assign) uma issue: pra começar a trabalhar nela, a ação é puxar.',
+  en: 'You only read the GitHub; the músicos (the Claude chats) act. To offer an action, end with ONE of these questions, exactly: "Want me to pick up issue N?", "Want me to get PR N reviewed?" or "Want me to resume task N?". Never offer to assign an issue: to start working on one, the action is picking it up.',
+};
+
+export function buildChatPrompt({ digest, history = [], userMessage, transcriptExcerpt = null, lang = 'pt' }) {
   const historyText = history
     .slice(-HISTORY_LIMIT)
     .map((entry) => `${entry.role === 'user' ? 'Usuário' : 'Gerente'}: ${truncate(entry.text, HISTORY_ENTRY_CHARS)}`)
     .join('\n');
   return [
     'Você é o "Gerente", assistente descontraído que acompanha as sessões do Claude Code do usuário.',
-    'Responda em pt-BR informal, DIRETO e CURTO (até 3 frases, a menos que ele peça detalhe).',
+    LANGUAGE_RULE[lang] ?? LANGUAGE_RULE.pt,
+    ACTIONS_RULE[lang] ?? ACTIONS_RULE.pt,
     'Nada de markdown. Você não executa nada — só informa e orienta com base no estado abaixo.',
     '',
     'Estado atual das sessões:',
@@ -75,16 +92,18 @@ export async function askManager({
   timeoutMs = 30000,
   spawnFn,
   now = Date.now(),
+  lang = 'pt',
 }) {
   const prompt = buildChatPrompt({
     digest: buildSessionsDigest(sessions, now),
     history,
     userMessage,
     transcriptExcerpt,
+    lang,
   });
   const result = await runClaude({ prompt, timeoutMs, ...(spawnFn ? { spawnFn } : {}) });
   return {
-    reply: result?.text?.trim() || 'Xii, travei aqui tentando responder 😅 tenta de novo?',
+    reply: result?.text?.trim() || (lang === 'en' ? 'Oops, I got stuck trying to answer. Try again?' : 'Xii, travei aqui tentando responder 😅 tenta de novo?'),
     tokensUsed: result?.tokens ?? 0,
   };
 }

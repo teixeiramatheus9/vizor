@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,16 @@ describe('config store', () => {
   it('returns defaults when the file does not exist', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-config-'));
     expect(loadConfig(path.join(dir, 'config.json'))).toEqual(DEFAULT_CONFIG);
+  });
+
+  it('defaults the workspace density to comfortable and rejects unknown values', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-config-'));
+    const file = path.join(dir, 'config.json');
+    expect(loadConfig(file).density).toBe('comfortable');
+    saveConfig(file, { density: 'compact' });
+    expect(loadConfig(file).density).toBe('compact');
+    saveConfig(file, { density: 'huge' });
+    expect(loadConfig(file).density).toBe('comfortable');
   });
 
   it('leaves the crt overlay off until it is asked for', async () => {
@@ -31,5 +42,36 @@ describe('config store', () => {
     const config = loadConfig(file);
     expect(config.terminal).toBe('kitty');
     expect(config.tokenBudgetDaily).toBe(DEFAULT_CONFIG.tokenBudgetDaily);
+  });
+
+  it('normalizes workspace lists to arrays of strings (#105)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cfg-ws-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ workspaceProjects: 'oops', workspaceDismissed: ['/a', 3, null] }));
+    const config = loadConfig(file);
+    expect(config.workspaceProjects).toEqual([]);
+    expect(config.workspaceDismissed).toEqual(['/a']);
+  });
+
+  it('a voice that no longer exists falls back to the default (#161: Faber was dropped)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cfg-voice-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({ voice: 'faber' }));
+    expect(loadConfig(file).voice).toBe(DEFAULT_CONFIG.voice);
+    fs.writeFileSync(file, JSON.stringify({ voice: 'santa' }));
+    expect(loadConfig(file).voice).toBe('santa');
+  });
+
+  it('defaults the limits config and clamps warnAt to 50-95', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cfg-lim-'));
+    const file = path.join(dir, 'config.json');
+    expect(loadConfig(file).limits).toEqual({ fiveHour: true, sevenDay: true, warnAt: 80, resetNotice: false, showInStatusBar: true });
+    saveConfig(file, { limits: { warnAt: 10, fiveHour: false } });
+    expect(loadConfig(file).limits).toEqual({ fiveHour: false, sevenDay: true, warnAt: 50, resetNotice: false, showInStatusBar: true });
+    saveConfig(file, { limits: { warnAt: 400, resetNotice: 'x' } });
+    expect(loadConfig(file).limits.warnAt).toBe(95);
+    expect(loadConfig(file).limits.resetNotice).toBe(false);
+    saveConfig(file, { limits: 'oops' });
+    expect(loadConfig(file).limits).toEqual(DEFAULT_CONFIG.limits);
   });
 });

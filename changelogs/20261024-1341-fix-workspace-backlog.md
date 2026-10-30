@@ -1,0 +1,1 @@
+- Workspace mais redondo: avisos de atualização dizem quando não deu pra checar, a resposta rápida confirma a entrega pelo canal da sessão (e nunca duplica), o balão de uma sessão do Vizor abre a aba dela, terminais com saída enorme não travam a janela, e mudanças por comando passam a ver commit/checkout/pull

@@ -1,0 +1,5 @@
+- Nova aba Automações no workspace: você escreve um pedido, escolhe o projeto e o horário (a cada N min, todo dia, dias úteis ou dias escolhidos) e o Vizor roda sozinho, só com o app aberto. Se o horário passar com o app fechado, a execução pode rodar ao abrir (marcada como atrasada) ou ser pulada.
+- Três níveis de permissão: Ler e relatar, Editar numa worktree (branch própria, sem tocar no seu checkout) e Agir no projeto (comenta e abre issue ou PR no GitHub). Push e merge nunca, em nenhum nível, e os dois que editam só rodam com a trava ligada.
+- Teto de US$ 1,00 por execução e de US$ 5,00 por dia (dá pra subir na aba), tempo limite por execução e escolha de modelo (Sonnet por padrão). Passou do teto ou do tempo, a automação fica bloqueada até você olhar.
+- Cada execução vira um relatório em markdown, com histórico de status, custo e duração; "melhorar o pedido" reescreve o texto com a IA, e a skill pode ficar pessoal ou no projeto.
+- A trava passou a ter um modo próprio pras automações: só deixa passar o que o nível permite, nunca lê chaves e credenciais, e o ambiente da execução tem o push desligado.
