@@ -342,7 +342,18 @@ const noticeBatch = createNotifyBatch({
 
 // The usage limits (5 h and weekly): readings arrive from the status-line tap.
 // Out and back are urgent; the rest may wait in the batch like any other news.
+// A notice that fires at boot (a window that reset while the app was closed)
+// would reach a renderer that is not listening yet: it waits for both windows.
+let windowsLoadedCount = 0;
+let markWindowsLoaded;
+const windowsLoaded = new Promise((resolve) => {
+  markWindowsLoaded = resolve;
+});
+const windowLoaded = () => {
+  if (++windowsLoadedCount === 2) markWindowsLoaded();
+};
 const limits = createLimitsService({
+  whenReady: windowsLoaded,
   file: path.join(configDir, LIMITS_FILE_NAME),
   readFile: (file) => fs.promises.readFile(file, 'utf8'),
   writeFile: async (file, text) => {
@@ -2074,6 +2085,7 @@ function createWindows() {
     sendToRenderer('ui:env', { managed: canPositionWindows });
     sendState();
   });
+  mainWindow.webContents.once('did-finish-load', windowLoaded);
 
   spotlightWindow = new BrowserWindow({
     ...windowOptions,
@@ -2102,6 +2114,7 @@ function createWindows() {
     sendToRenderer('ui:env', { managed: canPositionWindows });
     sendState();
   });
+  overlayWindow.webContents.once('did-finish-load', windowLoaded);
   bornParked(overlayWindow);
 
   settingsWindow = new BrowserWindow({

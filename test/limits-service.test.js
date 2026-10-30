@@ -11,7 +11,7 @@ const msg = (pct, resetsAt, extra = {}) => ({
   rate_limits: { five_hour: { used_percentage: pct, resets_at: secs(resetsAt) }, ...extra },
 });
 
-function setup(files = {}, settings = { fiveHour: true, sevenDay: true, warnAt: 80, resetNotice: false }) {
+function setup(files = {}, settings = { fiveHour: true, sevenDay: true, warnAt: 80, resetNotice: false }, whenReady) {
   const fs = { ...files };
   let clock = T0;
   const h = {
@@ -42,6 +42,7 @@ function setup(files = {}, settings = { fiveHour: true, sevenDay: true, warnAt: 
     now: () => clock,
     settings: () => settings,
     notify: h.notify,
+    whenReady,
     onChange: h.onChange,
     log: h.log,
   });
@@ -118,6 +119,24 @@ describe('limits service', () => {
     const h2 = setup({ '/cfg/limites.json': h.fs['/cfg/limites.json'] });
     await h2.svc.boot();
     expect(h2.notify).not.toHaveBeenCalled();
+  });
+
+  it('a boot notice waits until the UI can hear it', async () => {
+    const stateAtExit = JSON.stringify({
+      windows: { fiveHour: { pct: 100, resetsAt: T0 - 1000, seenAt: T0 - 9000, startedAt: T0 - 9000, startPct: 10, history: [[T0 - 9000, 100]] }, sevenDay: null },
+      sessions: {},
+      fired: { [`fiveHour:${T0 - 1000}`]: { out: true } },
+    });
+    let ready;
+    const h = setup({ '/cfg/limites.json': stateAtExit }, undefined, new Promise((resolve) => (ready = resolve)));
+    await h.svc.boot();
+    await Promise.resolve();
+    expect(h.notify).not.toHaveBeenCalled();
+    expect(h.fs['/cfg/limites.json']).toContain('"back":true');
+    ready();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.notify).toHaveBeenCalledTimes(1);
   });
 
   it('a firing alarm is on disk before its notice goes out, so a crash never rings it twice', async () => {

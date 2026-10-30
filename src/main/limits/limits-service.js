@@ -55,6 +55,8 @@ export function createLimitsService({
   setTimeout: setTimer = (...args) => setTimeout(...args),
   clearTimeout: clearTimer = (...args) => clearTimeout(...args),
   notify = () => {},
+  // Resolves once the UI can hear a notice (a boot notice must not be lost).
+  whenReady = Promise.resolve(),
   settings = {},
   onChange = () => {},
   log = () => {},
@@ -68,13 +70,15 @@ export function createLimitsService({
   const cfg = () => (typeof settings === 'function' ? settings() : settings) ?? {};
 
   function emit(events) {
-    for (const event of events) {
-      try {
-        notify({ ...event, ...limitNotice(event, now()) });
-      } catch (error) {
-        log(`limits notify failed: ${error}`);
+    return whenReady.then(() => {
+      for (const event of events) {
+        try {
+          notify({ ...event, ...limitNotice(event, now()) });
+        } catch (error) {
+          log(`limits notify failed: ${error}`);
+        }
       }
-    }
+    });
   }
 
   function arm() {
