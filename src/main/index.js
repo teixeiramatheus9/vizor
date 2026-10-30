@@ -352,6 +352,10 @@ const windowsLoaded = new Promise((resolve) => {
 const windowLoaded = () => {
   if (++windowsLoadedCount === 2) markWindowsLoaded();
 };
+// A window that never loads must not swallow the limit notices: 10 s after the
+// windows are created they go out anyway.
+const WINDOWS_LOAD_CAP_MS = 10_000;
+const capWindowsLoad = () => setTimeout(() => markWindowsLoaded(), WINDOWS_LOAD_CAP_MS).unref?.();
 const limits = createLimitsService({
   whenReady: windowsLoaded,
   file: path.join(configDir, LIMITS_FILE_NAME),
@@ -2115,6 +2119,7 @@ function createWindows() {
     sendState();
   });
   overlayWindow.webContents.once('did-finish-load', windowLoaded);
+  capWindowsLoad();
   bornParked(overlayWindow);
 
   settingsWindow = new BrowserWindow({
