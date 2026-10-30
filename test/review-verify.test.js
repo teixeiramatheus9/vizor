@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { tscPlan, parseTscOutput, testCommand, createVerifier } from '../src/main/review/verify.js';
+import { tscPlan, parseTscOutput, testCommand, lintCommand, createVerifier } from '../src/main/review/verify.js';
 
 const root = '/w/proj';
 const base = { root, tsconfigText: '{"compilerOptions":{}}', hasLocalTsc: true, config: {}, cacheDir: '/c/tsc' };
@@ -63,6 +63,16 @@ describe('testCommand', () => {
     expect(testCommand({ packageText: '{}', config: {} })).toBeNull();
     expect(testCommand({ packageText: 'x', config: {} })).toBeNull();
     expect(testCommand({ packageText: null, config: {} })).toBeNull();
+  });
+});
+
+describe('lintCommand', () => {
+  it('prefers config.lint, else npm run lint when the script exists', () => {
+    expect(lintCommand({ packageText: '{"scripts":{"lint":"eslint ."}}', config: { lint: 'make lint' } })).toBe('make lint');
+    expect(lintCommand({ packageText: '{"scripts":{"lint":"eslint ."}}' })).toBe('npm run lint');
+    expect(lintCommand({ packageText: '{"scripts":{"lint":" "}}' })).toBeNull();
+    expect(lintCommand({ packageText: 'x' })).toBeNull();
+    expect(lintCommand({ packageText: null })).toBeNull();
   });
 });
 

@@ -32,6 +32,7 @@ export function createGuardAsks({
   onChange = () => {},
   onReleased = () => {},
   onPromote = () => {},
+  automationNameOf = () => null,
 } = {}) {
   const asks = new Map(); // id → { ask, request, reply, shown }
   const grants = new Set();
@@ -58,7 +59,8 @@ export function createGuardAsks({
     // duplicate: an equal ask (same session, rule and target) is already
     // waiting, so the caller should not announce this one again.
     add(request, reply) {
-      if (!request.irreversible && grants.has(keyOf(request))) {
+      // An automação's asks are never covered by a session grant.
+      if (!request.irreversible && !request.automationId && grants.has(keyOf(request))) {
         reply({ answer: 'liberar' });
         return { answered: 'liberar' };
       }
@@ -73,6 +75,7 @@ export function createGuardAsks({
         ruleSource: request.ruleSource ?? '',
         explain: request.explain ?? '',
         irreversible: Boolean(request.irreversible),
+        ...(request.automationId ? { automationId: String(request.automationId), automationName: automationNameOf(String(request.automationId)) ?? undefined } : {}),
         at: now(),
       };
       const entry = { ask, request, reply, shown: !duplicate };
@@ -92,6 +95,8 @@ export function createGuardAsks({
       const entry = asks.get(id);
       if (!entry) return null;
       const { request } = entry;
+      // An automação runs unattended: each step is freed once, never the rest.
+      if (choice === 'liberar-sessao' && request.automationId) return null;
       if (choice === 'liberar-sessao' && !request.irreversible) grants.add(keyOf(request));
       const answer = { answer: choice === 'barrar' ? 'barrar' : 'liberar' };
       const answered = settle(id, answer);

@@ -62,4 +62,17 @@ contextBridge.exposeInMainWorld('vizor', {
   githubOpen: (root, kind, number) => ipcRenderer.invoke('github:open', root, kind, number),
   commandCatalog: () => ipcRenderer.invoke('workspace:catalog'),
   runCommand: (action) => ipcRenderer.invoke('workspace:command', action),
+  // The Automações tab.
+  automationsState: () => ipcRenderer.invoke('automations:state'),
+  automationsSave: (automation) => ipcRenderer.invoke('automations:save', automation),
+  automationsRemove: (id, { removeSkill = false, removeWorktree = false } = {}) => ipcRenderer.invoke('automations:remove', { id, removeSkill, removeWorktree }),
+  automationsRun: (id) => ipcRenderer.invoke('automations:run', id),
+  automationsPause: (id, on) => ipcRenderer.invoke('automations:pause', { id, on }),
+  automationsSetDayCap: (usd) => ipcRenderer.invoke('automations:set-day-cap', usd),
+  automationsConfirm: (id) => ipcRenderer.invoke('automations:confirm', id),
+  automationsCancel: (id) => ipcRenderer.invoke('automations:cancel', id),
+  automationsHistory: (id) => ipcRenderer.invoke('automations:history', id),
+  automationsReport: (id, file) => ipcRenderer.invoke('automations:report', { id, file }),
+  automationsImprove: (text) => ipcRenderer.invoke('automations:improve', text),
+  onAutomationsChanged: (callback) => ipcRenderer.on('automations:changed', (_event, state) => callback(state)),
 });

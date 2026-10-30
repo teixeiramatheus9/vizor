@@ -439,6 +439,429 @@ export function evaluate({ rules, call, git }) {
   return ask;
 }
 
+// --- Automações (VIZOR_AUTOMATION) ------------------------------------------
+// An automação's `claude -p` carries VIZOR_AUTOMATION=<id>, and the Vizor
+// writes what each id may do to <configDir>/automacoes/regras.json:
+//   { "version": 1, "automations": { "<id>": { "id", "level",
+//     "allowBash": [{ "program", "sub"?: [..], "argsPrefix"?: [..],
+//       "extra"?: "any"|"none"|"after-dashdash", "requireArgs"?: [..],
+//       "forbidArgs"?: [..] }],
+//     "denyEdits": bool, "allowEditsUnder": "/abs/worktree" | null } } }
+// An allowlist held before the user's rules: the guard denies whatever it
+// cannot read exactly. It never normalizes a line to make it match.
+
+const LEVEL_LABEL = { read: 'ler', worktree: 'worktree', project: 'projeto' };
+const PLAIN_PROGRAM = /^[A-Za-z0-9._+-]+$/;
+const WORD_CHAR = /[A-Za-z0-9_\-./:@%+=,^~]/;
+const DEVICE = /^\/dev\/(?:null|stdout|stderr)$/;
+const AUTOMATION_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Skill', 'LS', 'TodoWrite', 'Bash', ...EDIT_TOOLS]);
+
+// The line as segments of words (quotes removed: { text, plain }), split on
+// && || ; and |, with /dev/null-style redirections dropped; null for
+// anything else: $, `, \, globs, braces, subshells, heredocs, other
+// redirections, &, newlines, a dangling quote.
+function plainLine(command) {
+  if (typeof command !== 'string' || /[\n\r\0]/.test(command)) return null;
+  const segments = [[]];
+  let word = null;
+  const endWord = () => {
+    if (word) segments.at(-1).push(word);
+    word = null;
+  };
+  const nextSegment = () => {
+    endWord();
+    segments.push([]);
+  };
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    const next = command[index + 1];
+    if (char === "'" || char === '"') {
+      const close = command.indexOf(char, index + 1);
+      if (close === -1) return null;
+      const inner = command.slice(index + 1, close);
+      if (char === '"' && /[$`\\]/.test(inner)) return null;
+      word ??= { text: '', plain: false };
+      word.text += inner;
+      word.plain = false;
+      index = close;
+    } else if (char === ' ' || char === '\t') endWord();
+    else if ((char === '&' && next === '&') || (char === '|' && next === '|')) {
+      nextSegment();
+      index++;
+    } else if (char === ';' || (char === '|' && next !== '&')) nextSegment();
+    else if (word === null && (char === '>' || (/\d/.test(char) && next === '>'))) {
+      // 2>&1, >&2, >/dev/null, 2>> /dev/null: nothing else
+      let at = char === '>' ? index + 1 : index + 2;
+      if (command[at] === '>') at++;
+      if (command[at] === '&') {
+        if (!/\d/.test(command[at + 1] ?? '') || WORD_CHAR.test(command[at + 2] ?? ' ')) return null;
+        index = at + 1;
+        continue;
+      }
+      while (command[at] === ' ') at++;
+      let end = at;
+      while (end < command.length && WORD_CHAR.test(command[end])) end++;
+      if (!DEVICE.test(command.slice(at, end))) return null;
+      // >/dev/null'x' writes to /dev/nullx: the sink must end the word.
+      if (end < command.length && !/[\s;|&]/.test(command[end])) return null;
+      index = end - 1;
+    } else if (WORD_CHAR.test(char)) {
+      // A leading ~ only as ~ or ~/…; inside a word only where bash keeps it
+      // literal (HEAD~1), never after = or : where it may expand.
+      if (char === '~' && word === null && next !== undefined && next !== '/' && WORD_CHAR.test(next)) return null;
+      if (char === '~' && word !== null && /[=:]$/.test(word.text)) return null;
+      word ??= { text: '', plain: true };
+      word.text += char;
+    } else return null;
+  }
+  endWord();
+  return segments.every((segment) => segment.length > 0) ? segments : null;
+}
+
+const isFlag = (arg, flag) =>
+  arg === flag || arg.startsWith(`${flag}=`) || (/^-[A-Za-z]$/.test(flag) && /^-[A-Za-z]+$/.test(arg) && arg.includes(flag[1]));
+
+const GH_API_ENDPOINT = /^\/?[A-Za-z0-9._/-]{1,200}$/;
+
+// gh api: only `gh api <endpoint>` plus --paginate, --jq/-q <expr> and
+// -H 'Accept: …', each as its own word. pflag reads short clusters
+// (-iXPUT, -ifbody=x), so any other option is denied, not parsed.
+function ghApiReads(args) {
+  let endpoint = null;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--paginate') continue;
+    if (arg === '--jq' || arg === '-q') {
+      if (args[++index] === undefined) return false;
+    } else if (arg === '-H') {
+      if (!/^accept:/i.test(args[++index] ?? '')) return false;
+    } else if (arg.startsWith('-') || endpoint !== null) return false;
+    else endpoint = arg;
+  }
+  // A path only: a query string, a host or an escape could carry data out.
+  return endpoint !== null && GH_API_ENDPOINT.test(endpoint) && !/graphql/i.test(endpoint);
+}
+
+// git takes any unambiguous prefix of a long option (--outp = --output).
+const GIT_BANNED_OPTIONS = ['--output', '--ext-diff', '--textconv'];
+const GIT_KEPT_OPTIONS = new Set(['--text']); // an exact option of its own
+function gitOptionBanned(arg) {
+  const name = arg.split('=')[0];
+  if (!name.startsWith('--') || name.length < 3 || GIT_KEPT_OPTIONS.has(name)) return false;
+  return GIT_BANNED_OPTIONS.some((full) => full.startsWith(name));
+}
+
+// A short-option cluster as getopt reads it (-nF/x, -drecurse, -d x): the
+// letters up to the first one that takes a value, that letter, and its value
+// (the rest of the word, else the next word; '' when there is none).
+function shortCluster(args, index, takesValue) {
+  const arg = args[index];
+  for (let at = 1; at < arg.length; at++) {
+    if (!takesValue.includes(arg[at])) continue;
+    const rest = arg.slice(at + 1);
+    return { letters: arg.slice(1, at), letter: arg[at], value: rest || (args[index + 1] ?? ''), usedNext: !rest };
+  }
+  return { letters: arg.slice(1), letter: null, value: null, usedNext: false };
+}
+
+// getopt_long takes any unambiguous prefix of a long option (--rec = --recursive).
+const longIs = (name, full, shortest) => name.length >= shortest && full.startsWith(name);
+
+// What a grep line recurses with: -r, -R, --rec…, --dereference-rec…, or a
+// -d/--directories value (getopt spelling: -drecurse, -d recurse, --dir=recurse).
+const GREP_VALUE_SHORTS = 'ABCDdefm';
+function grepOptions(args) {
+  let recursive = false;
+  const directories = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--') break;
+    if (arg.startsWith('--')) {
+      const name = arg.split('=')[0];
+      const inline = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : null;
+      if (longIs(name, '--recursive', 5) || longIs(name, '--dereference-recursive', 5)) recursive = true;
+      else if (longIs(name, '--directories', 4)) directories.push(inline ?? args[++index] ?? '');
+    } else if (arg.length > 1 && arg.startsWith('-')) {
+      const cluster = shortCluster(args, index, GREP_VALUE_SHORTS);
+      if (/[rR]/.test(cluster.letters)) recursive = true;
+      if (cluster.letter === 'd') directories.push(cluster.value);
+      if (cluster.usedNext) index++;
+    }
+  }
+  if (directories.includes('recurse')) recursive = true;
+  return { recursive, directories };
+}
+
+// rg options that reach hidden or ignored files (.env, keys a .gitignore
+// keeps out): --hidden, -., -u…, --unrestricted, --no-ignore….
+const RG_VALUE_SHORTS = 'ABCdEefgjMmrtT';
+function rgReachesHidden(args) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--') break;
+    if (arg === '--hidden' || arg === '--unrestricted' || arg.startsWith('--no-ignore')) return true;
+    if (arg.length > 1 && arg.startsWith('-') && !arg.startsWith('--')) {
+      const cluster = shortCluster(args, index, RG_VALUE_SHORTS);
+      if (/[u.]/.test(cluster.letters)) return true;
+      if (cluster.usedNext) index++;
+    }
+  }
+  return false;
+}
+
+// Options of an allowed program that would run or write something.
+function argsSafe(program, args) {
+  // grep -d takes read, skip or recurse, and any prefix of them: only the full words pass.
+  if (program === 'grep') return grepOptions(args).directories.every((value) => ['read', 'skip', 'recurse'].includes(value));
+  if (program === 'git') return !args.some(gitOptionBanned);
+  if (program === 'rg') return !args.some((arg) => arg.startsWith('--pre') || arg.startsWith('--hostname-bin'));
+  if (program === 'gh' && args[0] === 'api') return ghApiReads(args.slice(1));
+  return true;
+}
+
+function entryMatches(entry, segment) {
+  const texts = segment.map((word) => word.text);
+  if (entry.program !== texts[0]) return false;
+  let taken = 1;
+  if (entry.sub) {
+    if (!segment[1]?.plain || !entry.sub.includes(segment[1].text)) return false;
+    taken = 2;
+  }
+  const prefix = entry.argsPrefix ?? [];
+  if (!prefix.every((word, offset) => segment[taken + offset]?.plain && segment[taken + offset].text === word)) return false;
+  const rest = texts.slice(taken + prefix.length);
+  if (entry.extra === 'none' && rest.length) return false;
+  if (entry.extra === 'after-dashdash' && rest.length && rest[0] !== '--') return false;
+  if (entry.requireArgs && !rest.some((arg) => entry.requireArgs.some((flag) => isFlag(arg, flag)))) return false;
+  if (entry.forbidArgs && rest.some((arg) => entry.forbidArgs.some((flag) => isFlag(arg, flag)))) return false;
+  return argsSafe(entry.program, texts.slice(1));
+}
+
+function bashAllowed(rules, segments) {
+  if (!segments) return false;
+  return segments.every((segment) => {
+    const [program] = segment;
+    // FOO=1 cmd, /usr/bin/git, "git": not a plain program name
+    if (!program.plain || !PLAIN_PROGRAM.test(program.text)) return false;
+    return rules.allowBash.some((entry) => entryMatches(entry, segment));
+  });
+}
+
+// The path a write lands on, symlinks followed, for a file that may not
+// exist yet: the nearest existing ancestor is resolved and the rest joined.
+function realTarget(file, links = 0) {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    // not there (yet), or a dangling link
+  }
+  if (links > 40) return null;
+  try {
+    if (fs.lstatSync(file).isSymbolicLink()) return realTarget(path.resolve(path.dirname(file), fs.readlinkSync(file)), links + 1);
+  } catch {
+    // nothing at all there
+  }
+  const parent = path.dirname(file);
+  if (parent === file) return file;
+  const real = realTarget(parent, links);
+  return real === null ? null : path.join(real, path.basename(file));
+}
+
+// Inside by path segments: /a/b-evil is not inside /a/b.
+function within(root, file) {
+  const relative = path.relative(root, file);
+  return relative === '' || (relative.split(path.sep)[0] !== '..' && !path.isAbsolute(relative));
+}
+
+// Where a hook, a permission, a git hook or an alias could be rewritten.
+function isProtected(file, home) {
+  const parts = file.split(path.sep);
+  // Git hooks (.git/hooks, husky, .githooks) run on the allowed commit.
+  if (['.claude', '.git', '.husky', '.githooks'].some((name) => parts.includes(name))) return true;
+  const roots = [
+    path.join(home, '.config', 'vizor'),
+    path.join(home, '.gitconfig'),
+    path.join(home, '.config', 'git'),
+    path.join(home, '.config', 'gh'),
+    process.env.CLAUDE_CONFIG_DIR,
+  ].filter(Boolean);
+  return roots.some((root) => within(root, file) || within(realTarget(root) ?? root, file));
+}
+
+function editReason(rules, call, home) {
+  if (rules.denyEdits || !rules.allowEditsUnder) return 'editar arquivos não é permitido neste nível';
+  // One path per edit: a notebook's notebook_path, else file_path; two
+  // different ones are refused rather than guessed.
+  const named = [call.input?.notebook_path, call.input?.file_path].filter((value) => value !== undefined);
+  if (named.length === 2 && named[0] !== named[1]) return 'edição com dois caminhos diferentes';
+  const file = call.tool === 'NotebookEdit' ? (named[0] ?? '') : (call.input?.file_path ?? named[0] ?? '');
+  // A path ending in / names a directory, never a file to write. A `..`
+  // is refused: the kernel follows a link before it, path.resolve does not.
+  const plain = typeof file === 'string' && path.isAbsolute(file) && !/[\\/]$/.test(file) && !file.split(/[\\/]/).includes('..');
+  const real = plain ? realTarget(path.resolve(file)) : null;
+  if (real === null) return `edição fora do permitido para esta automação (${file})`;
+  const root = realTarget(rules.allowEditsUnder) ?? rules.allowEditsUnder;
+  if (!within(root, real)) return `editar fora da worktree da automação (${file})`;
+  if (isProtected(real, home)) return `editar ${file} (configuração do Claude Code, do Vizor ou do git) nunca é permitido`;
+  try {
+    const stat = fs.statSync(real);
+    // A hard link writes wherever its other names live.
+    if (!stat.isFile() || stat.nlink !== 1) return `edição fora do permitido para esta automação (${file})`;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return `edição fora do permitido para esta automação (${file})`;
+  }
+  return null;
+}
+
+// Where keys and tokens live: never read by an automação, whatever its level.
+const SECRET_PATHS = [
+  '.ssh', '.gnupg', '.config/gh', '.aws', '.config/gcloud', '.kube',
+  '.claude/.credentials.json', '.git-credentials', '.netrc', '.docker/config.json', '.npmrc', '.pypirc',
+];
+const SECRET_MESSAGE = 'Automação do Vizor: leitura de arquivo sensível barrada.';
+const isEnvFile = (file) => /^\.env(?:\..+)?$/.test(path.basename(file));
+
+function secretRoots(home) {
+  const roots = SECRET_PATHS.map((name) => path.join(home, name));
+  if (process.env.CLAUDE_CONFIG_DIR) roots.push(path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json'));
+  return [...new Set(roots.flatMap((root) => [root, realTarget(root)]).filter(Boolean))];
+}
+
+// The env, command line and memory of a process (the run's own env holds its
+// keys), and its cwd, root and fds, links that lead anywhere.
+const PROC_SECRET = /^\/proc\/[^/]+\/(?:task\/[^/]+\/)?(?:(?:environ|cmdline|mem)$|(?:cwd|root|fd|map_files)(?:\/|$))/;
+
+// Every value a word hands its program: the word itself, an --opt=value, and
+// for a short-option cluster whatever follows each of its letters (-F/x,
+// -nF~/x, -t=x), since the guard cannot know which letter takes a value.
+function valuesOf(arg) {
+  if (!arg.startsWith('-')) return [arg];
+  if (arg.startsWith('--')) return arg.includes('=') ? [arg.slice(arg.indexOf('=') + 1)] : [];
+  const values = [];
+  for (let at = 2; at < arg.length; at++) {
+    values.push(arg.slice(at));
+    if (arg[at] === '=') values.push(arg.slice(at + 1));
+  }
+  return values.filter(Boolean);
+}
+
+// A word of the line (or a value glued to an option) that names a secret, a
+// .env file anywhere, a process's env, or, for a recursive grep/rg, a
+// directory holding a secret.
+function readsSecret(segments, cwd, home) {
+  const roots = secretRoots(home);
+  return segments.some((segment) => {
+    const [program, ...args] = segment.map((word) => word.text);
+    if (program === 'grep' || program === 'rg') {
+      // Searches that follow links, or read patterns from a file, can reach a
+      // secret the words never name: deny them outright.
+      const shorts = program === 'grep' ? 'Rf' : 'Lf';
+      const banned = (arg) =>
+        arg === '--file' || arg.startsWith('--file=') || arg === '--follow' ||
+        (program === 'grep' && arg === '--dereference-recursive') ||
+        (/^-[A-Za-z]/.test(arg) && !arg.startsWith('--') && [...shorts].some((flag) => arg.includes(flag)));
+      if (args.some(banned)) return true;
+      if (program === 'rg' && rgReachesHidden(args)) return true;
+    }
+    const recursive = program === 'rg' || (program === 'grep' && grepOptions(args).recursive);
+    return args.flatMap(valuesOf).some((value) => {
+      let raw = null;
+      if (value === '~' || value.startsWith('~/')) raw = `${home}${value.slice(1)}`;
+      else if (path.isAbsolute(value)) raw = value;
+      else if (cwd) raw = `${cwd}/${value}`;
+      if (raw === null) return false;
+      const named = path.resolve(raw);
+      // path.resolve drops `x/..` before any link is followed; the kernel
+      // follows x first (/proc/self/cwd/../.netrc), so its answer counts too.
+      let kernel = null;
+      try {
+        kernel = fs.realpathSync.native(raw);
+      } catch {
+        // not there: nothing to read
+      }
+      const files = [named, realTarget(named) ?? named, kernel].filter(Boolean);
+      if (PROC_SECRET.test(raw) || files.some((file) => isEnvFile(file) || PROC_SECRET.test(file))) return true;
+      if (recursive && files.some((file) => within(file, '/proc') || within('/proc', file))) return true;
+      return roots.some((root) => files.some((file) => within(root, file) || (recursive && within(file, root))));
+    });
+  });
+}
+
+// An automação whose rules could not be read (no file, corrupt, no entry for
+// its id) may only read until the Vizor writes them: fail closed.
+export const MISSING_AUTOMATION_RULES = Object.freeze({
+  missing: true,
+  level: '?',
+  allowBash: [{ program: 'git', sub: ['status', 'log', 'diff', 'show'] }, ...['ls', 'cat', 'grep', 'rg', 'head', 'tail', 'wc', 'pwd', 'echo'].map((program) => ({ program }))],
+  denyEdits: true,
+  allowEditsUnder: null,
+});
+const MISSING_MESSAGE = 'Automação do Vizor: não achei as regras desta automação; só leitura até o Vizor gravar as regras.';
+
+// The deny reason for an automação's call, or null. Never throws: a call the
+// guard fails to read is denied.
+export function automationVerdict({ rules, call, cwd = null, home = os.homedir() }) {
+  if (!rules) return null;
+  let what = null;
+  try {
+    if (!AUTOMATION_TOOLS.has(call.tool)) what = `ferramenta ${call.tool} fora do permitido para esta automação`;
+    else if (call.tool === 'Bash') {
+      const segments = plainLine(call.input?.command);
+      if (segments && readsSecret(segments, cwd, home)) return SECRET_MESSAGE;
+      if (!bashAllowed(rules, segments)) what = 'comando fora do permitido para esta automação';
+    } else if (EDIT_TOOLS.has(call.tool)) what = editReason(rules, call, home);
+  } catch {
+    what = 'um passo que a trava não conseguiu conferir';
+  }
+  if (!what) return null;
+  if (rules.missing) return MISSING_MESSAGE;
+  return `Automação do Vizor (nível ${LEVEL_LABEL[rules.level] ?? rules.level}): ${what}.`;
+}
+
+const stringList = (value) => (Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null);
+
+// One allowBash entry, or null when any part of it is malformed.
+function bashEntry(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.program !== 'string' || !PLAIN_PROGRAM.test(raw.program)) return null;
+  const entry = { program: raw.program };
+  for (const key of ['sub', 'argsPrefix', 'requireArgs', 'forbidArgs']) {
+    if (raw[key] === undefined) continue;
+    if (!stringList(raw[key])) return null;
+    entry[key] = [...raw[key]];
+  }
+  if (raw.extra !== undefined) {
+    if (!['any', 'none', 'after-dashdash'].includes(raw.extra)) return null;
+    entry.extra = raw.extra;
+  }
+  return entry;
+}
+
+// This automação's entry, normalized; null without one (the caller then
+// holds the session to MISSING_AUTOMATION_RULES). A damaged entry fails
+// closed: a bad allowBash item is dropped, a bad root means no edits.
+export function loadAutomationRules(readFile, file, id) {
+  if (typeof id !== 'string' || !id) return null;
+  try {
+    const parsed = JSON.parse(readFile(file));
+    const all = parsed?.automations;
+    if (!all || typeof all !== 'object' || Array.isArray(all) || !Object.hasOwn(all, id)) return null;
+    const entry = all[id];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    let under = typeof entry.allowEditsUnder === 'string' && path.isAbsolute(entry.allowEditsUnder) ? path.resolve(entry.allowEditsUnder) : null;
+    // The filesystem root or the home itself is never a worktree.
+    if (under !== null && (path.parse(under).root === under || under === path.resolve(os.homedir()))) under = null;
+    return {
+      id,
+      level: typeof entry.level === 'string' ? entry.level : '?',
+      allowBash: Array.isArray(entry.allowBash) ? entry.allowBash.map(bashEntry).filter(Boolean) : [],
+      denyEdits: entry.denyEdits !== false || under === null,
+      allowEditsUnder: under,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // --- Decision ---------------------------------------------------------------
 
 export const ASK_WAIT_MS = 540000; // under the hook's 600 s timeout
@@ -498,9 +921,26 @@ function resolveDir(cwd, dir) {
 
 // gitContext(absoluteDir) runs only for a git action a rule looks at, once
 // per directory; the facts themselves are read lazily (gitContextOf).
-export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {} }) {
-  const list = applicable(rules, repoRoot);
+// automation: this automação's rules (loadAutomationRules), held before the
+// user's; automationId goes with every question so the Vizor can tell.
+export async function decide({ event, rules, repoRoot, gitContext, ask, headless, notify = () => {}, automation = null, automationId = null }) {
   const call = toolCall(event);
+  const summary = () => (call.tool === 'Bash' ? String(call.input.command ?? '') : `${call.tool} ${editPath(call.input)}`.trim()).slice(0, 200);
+  const barred = automationVerdict({ rules: automation, call, cwd: event.cwd ?? null });
+  if (barred) {
+    notify({
+      type: 'guard-event',
+      sessionId: event.session_id ?? null,
+      cwd: event.cwd ?? null,
+      ruleSource: barred,
+      outcome: 'barrado',
+      summary: summary(),
+      automationId,
+    });
+    return deny(barred);
+  }
+  if (!rules) return null;
+  const list = applicable(rules, repoRoot);
   const contexts = new Map();
   const git = (dir) => {
     const absolute = resolveDir(event.cwd, dir);
@@ -512,14 +952,13 @@ export async function decide({ event, rules, repoRoot, gitContext, ask, headless
   if (!hit) return null;
   const { rule } = hit;
   if (rule.kind === 'forbid') {
-    const command = call.tool === 'Bash' ? String(call.input.command ?? '') : `${call.tool} ${editPath(call.input)}`.trim();
     notify({
       type: 'guard-event',
       sessionId: event.session_id ?? null,
       cwd: event.cwd ?? null,
       ruleSource: rule.source,
       outcome: 'barrado',
-      summary: command.slice(0, 200),
+      summary: summary(),
     });
     const why = rule.explain ? `${rule.explain.replace(/[.!?]$/, '')}. ` : '';
     return deny(`Barrado pela regra do usuário: "${rule.source}". ${why}Não tente contornar.`);
@@ -535,6 +974,7 @@ export async function decide({ event, rules, repoRoot, gitContext, ask, headless
     explain: rule.explain ?? '',
     irreversible: hit.irreversible,
     target: targetOf(call),
+    ...(automationId ? { automationId } : {}),
   });
   if (answer === 'liberar') return null;
   if (answer === 'barrar')
@@ -580,6 +1020,7 @@ export function contextFor({ event, rules, repoRoot, seenVersion }) {
 // Mirrors configDir/managerSocketPath in src/main/paths.js (standalone file).
 const configDir = path.join(os.homedir(), '.config', 'vizor');
 const rulesDir = path.join(configDir, 'regras');
+const automationsFile = path.join(configDir, 'automacoes', 'regras.json');
 const socketPath =
   process.env.VIZOR_SOCKET ??
   (process.platform === 'win32'
@@ -726,9 +1167,17 @@ async function main(raw) {
     return null;
   }
   if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
-  const rules = loadRules((file) => fs.readFileSync(file, 'utf8'), rulesDir);
-  if (!rules) return null;
-  const hasRepos = Object.keys(rules.repos).length > 0;
+  const readFile = (file) => fs.readFileSync(file, 'utf8');
+  // Only an automação's session reads its rules; one that cannot find them
+  // may only read. Without the env, as before.
+  const automationId = process.env.VIZOR_AUTOMATION || null;
+  const automation =
+    automationId && event.hook_event_name === 'PreToolUse'
+      ? (loadAutomationRules(readFile, automationsFile, automationId) ?? MISSING_AUTOMATION_RULES)
+      : null;
+  const rules = loadRules(readFile, rulesDir);
+  if (!rules && !automation) return null;
+  const hasRepos = rules ? Object.keys(rules.repos).length > 0 : false;
   const repoRoot = hasRepos ? repoRootOf(event.cwd) : null;
   if (event.hook_event_name === 'PreToolUse') {
     const waitMs = Number(process.env.VIZOR_GUARD_ASK_MS) || ASK_WAIT_MS;
@@ -743,8 +1192,11 @@ async function main(raw) {
       // claude -p and the Agent SDK (sdk-*) have nobody to ask; IDE
       // extensions do.
       headless: Boolean(entrypoint?.startsWith('sdk')),
+      automation,
+      automationId,
     });
   }
+  if (!rules) return null;
   const context = contextFor({ event, rules, repoRoot, seenVersion: readSeen(event.session_id) });
   if (context) writeSeen(event.session_id, context.version);
   return context?.output ?? null;

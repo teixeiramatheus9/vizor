@@ -10,7 +10,7 @@ const fold = (text) =>
     .toLowerCase();
 
 // chats: [{ sessionId, name, status }]; plans: sessionId → { steps, approved }.
-export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, focusedId = null, maestroOn = false, issuesError = false, prsError = false, issuesLoading = false } = {}) {
+export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, focusedId = null, maestroOn = false, issuesError = false, prsError = false, issuesLoading = false, automations = [] } = {}) {
   const items = [];
   const focused = chats.find((chat) => chat.sessionId === focusedId);
   const plan = focused && plans[focused.sessionId];
@@ -27,8 +27,12 @@ export function buildCommands({ issues = [], prs = [], chats = [], plans = {}, f
     items.push({ id: `interrupt:${chat.sessionId}`, group: 'Chats', label: `Interromper ${chat.name}`, action: { type: 'interrupt', sessionId: chat.sessionId } });
   for (const pr of prs) items.push({ id: `review:${pr.number}`, group: 'PRs', label: `Revisar PR #${pr.number} ${pr.title}`, action: { type: 'review-pr', number: pr.number } });
   if (prsError) items.push({ id: 'prs-error', group: 'PRs', label: 'não consegui ler as PRs', disabled: true });
-  for (const [tab, name] of [['workspace', 'Workspace'], ['agents', 'Agentes'], ['github', 'GitHub']])
+  for (const [tab, name] of [['workspace', 'Workspace'], ['agents', 'Agentes'], ['github', 'GitHub'], ['automations', 'Automações']])
     items.push({ id: `tab:${tab}`, group: 'Telas', label: `Ir pra ${name}`, action: { type: 'goto-tab', tab } });
+  items.push({ id: 'automation:new', group: 'Automações', label: 'Nova automação', action: { type: 'new-automation' } });
+  // One that is already going, waiting or blocked cannot be started from here.
+  for (const a of automations.filter((item) => !item.running && !item.queued && !item.blockedUntilConfirm))
+    items.push({ id: `automation:run:${a.id}`, group: 'Automações', label: `Rodar ${a.name}`, action: { type: 'run-automation', id: a.id } });
   items.push({ id: 'maestro', group: 'Vizor', label: maestroOn ? 'Desligar o Maestro' : 'Ligar o Maestro', action: { type: 'maestro', on: !maestroOn } });
   return items;
 }

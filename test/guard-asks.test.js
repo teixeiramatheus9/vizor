@@ -47,11 +47,38 @@ describe('guard asks', () => {
     expect(asks.add(request({ sessionId: 's2' }), reply()).id).toBeDefined();
   });
 
+  it('an automação ask carries the automação name when the host knows it', () => {
+    const asks = createGuardAsks({ now: () => 1000, newId: () => 'n1', automationNameOf: (id) => (id === 'auto-1' ? 'PRs da manhã' : null) });
+    asks.add(request({ automationId: 'auto-1' }), () => {});
+    expect(asks.pending()[0]).toMatchObject({ automationId: 'auto-1', automationName: 'PRs da manhã' });
+    const none = createGuardAsks({ now: () => 1000, newId: () => 'n2' });
+    none.add(request({ automationId: 'gone' }), () => {});
+    expect(none.pending()[0].automationName).toBeUndefined();
+  });
+
   it('an irreversible ask is never granted for the session', () => {
     const { asks, reply } = setup();
     const { id } = asks.add(request({ irreversible: true, ruleId: 'main', target: 'main' }), reply());
     asks.answer(id, 'liberar-sessao');
     expect(asks.add(request({ irreversible: true, ruleId: 'main', target: 'main' }), reply()).id).toBeDefined();
+  });
+
+  it('an automação ask never takes "liberar nesta sessão": only liberar esta vez or barrar', () => {
+    const { asks, replies, reply } = setup();
+    const { id } = asks.add(request({ automationId: 'auto-1' }), reply());
+    expect(asks.pending()[0].automationId).toBe('auto-1');
+    expect(asks.answer(id, 'liberar-sessao')).toBeNull();
+    expect(replies).toEqual([]);
+    expect(asks.pending()).toHaveLength(1);
+    asks.answer(id, 'liberar');
+    expect(replies).toEqual([{ answer: 'liberar' }]);
+    expect(asks.add(request({ automationId: 'auto-1' }), reply()).id).toBeDefined();
+  });
+
+  it('a grant from a chat never answers an automação ask', () => {
+    const { asks, reply } = setup();
+    asks.answer(asks.add(request(), reply()).id, 'liberar-sessao');
+    expect(asks.add(request({ automationId: 'auto-1' }), reply()).id).toBeDefined();
   });
 
   it('dropSession forgets the grants and ends its pending asks', () => {

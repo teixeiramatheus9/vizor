@@ -7,7 +7,7 @@ const inTerminal = { focusInTerminal: true, focusInField: true };
 const inField = { focusInTerminal: false, focusInField: true };
 
 describe('keyAction', () => {
-  it('Ctrl+1..3 switch the top tab from anywhere, the terminal included', () => {
+  it('Ctrl+1..4 switch the top tab from anywhere, the terminal included', () => {
     for (const focus of [free, inTerminal, inField]) {
       expect(keyAction(key('1', { ctrlKey: true }), focus)).toEqual({ top: 1 });
       expect(keyAction(key('3', { ctrlKey: true }), focus)).toEqual({ top: 3 });
@@ -15,8 +15,9 @@ describe('keyAction', () => {
     expect(keyAction(key('2', { metaKey: true }), inTerminal)).toEqual({ top: 2 });
   });
 
-  it('Ctrl+4 is reserved for the automations and does nothing yet', () => {
-    expect(keyAction(key('4', { ctrlKey: true }), free)).toBeNull();
+  it('Ctrl+4 opens the Automações from anywhere', () => {
+    for (const focus of [free, inTerminal, inField]) expect(keyAction(key('4', { ctrlKey: true }), focus)).toEqual({ top: 4 });
+    expect(keyAction(key('5', { ctrlKey: true }), free)).toBeNull();
   });
 
   it('bare 1..4 go to the review tabs only outside the terminal and fields', () => {
@@ -45,6 +46,6 @@ describe('keyAction', () => {
   });
 
   it('documents the shortcuts it handles', () => {
-    expect(SHORTCUTS.map((item) => item.keys)).toEqual(expect.arrayContaining(['Ctrl+1 … 3', '1 … 4', '?', 'Ctrl+K', 'Ctrl+`']));
+    expect(SHORTCUTS.map((item) => item.keys)).toEqual(expect.arrayContaining(['Ctrl+1 … 4', '1 … 4', '?', 'Ctrl+K', 'Ctrl+`']));
   });
 });

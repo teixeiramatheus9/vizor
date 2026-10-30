@@ -68,6 +68,8 @@ function renderCard(card, projects, now, ui = {}) {
     `<article class="kb-card" data-card="${id}" data-column="${escapeHtml(card.column)}"${accent ? ` style="--project-accent:${escapeHtml(accent)}"` : ''}>`,
     `<header class="kb-head">${avatar(card, projects)}<span class="kb-title">${escapeHtml(card.title)}</span></header>`,
     '<div class="kb-meta">',
+    card.badge ? `<span class="kb-badge kb-automation">${escapeHtml(card.badge)}</span>` : '',
+    card.late ? '<span class="kb-badge kb-thin">atrasada</span>' : '',
     card.outside ? '<span class="kb-badge kb-outside">fora do Vizor</span>' : '',
     card.thin ? '<span class="kb-badge kb-thin">pouca informação</span>' : '',
     card.planProgress ? `<span class="kb-plan">${escapeHtml(card.planProgress)}</span>` : '',

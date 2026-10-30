@@ -1,4 +1,4 @@
-// The window's top tabs: Workspace (today's screen), Agentes and GitHub.
+// The window's top tabs: Workspace (today's screen), Agentes, GitHub and Automações.
 // Pure: workspace.js draws the strip and shows one view at a time.
 import { escapeHtml } from '../workspace-view.js';
 
@@ -6,6 +6,7 @@ export const TOP_TABS = [
   { id: 'workspace', label: 'Workspace' },
   { id: 'agents', label: 'Agentes' },
   { id: 'github', label: 'GitHub' },
+  { id: 'automations', label: 'Automações' },
 ];
 
 export const normalizeTopTab = (id) => (TOP_TABS.some((tab) => tab.id === id) ? id : 'workspace');

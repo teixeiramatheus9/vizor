@@ -184,6 +184,87 @@ O app baixa o runtime e o modelo sozinho na primeira fala (ou ao trocar de
 voz), em segundo plano. Enquanto isso não termina, fala pela voz do sistema
 (`spd-say` no Linux, `say` no macOS) e avisa quando a voz boa entra no ar.
 
+## Automações
+
+Uma automação é um pedido que o Vizor roda sozinho, num horário, num projeto:
+"todo dia às 9h, vê as PRs abertas e me resume o que está parado". Cada uma
+vira uma skill do Claude Code e roda como um `claude -p` próprio, preso às
+regras do nível que você escolheu. Fica na aba **Automações** do workspace.
+
+**Criar uma.** Dê um nome, escreva o pedido e escolha o projeto. O botão
+"melhorar o pedido" reescreve o texto com a IA (gasta um pouco do teto de
+tokens do gerente) pra ficar mais claro pra quem for executar. A skill pode
+morar em **pessoal** (`~/.claude/skills/vizor-<apelido>/`, o padrão) ou **do
+projeto** (`.claude/skills/` dentro do repositório: ela entra no seu git e vai
+pra quem clonar, então confira antes de commitar). O nível "Editar numa
+worktree" só aceita a skill pessoal: a do projeto não chega na worktree nova.
+
+**Quando.** "a cada N min/h" (mínimo 15 min), "todo dia às X", "dias úteis às X"
+ou "nos dias escolhidos às X" (seg, ter…). Se o horário passar com o Vizor
+fechado ou o computador dormindo, a opção "se perder o horário" decide:
+**rodar ao abrir** (a execução aparece marcada como **atrasada**) ou **pular**.
+A automação **só roda com o Vizor aberto**: sem o app, nada dispara. Rodam no
+máximo 2 ao mesmo tempo, e uma por projeto.
+
+### Os três níveis
+
+| Nível | Pode | Não pode |
+|---|---|---|
+| **Ler e relatar** (padrão) | Ler arquivos, `git log/diff/status/show`, `gh` só de leitura (listar/ver issues e PRs, checks, diff, `gh api` GET) e rodar o teste e o lint exatamente como configurados no projeto | Editar qualquer arquivo, `git add/commit`, escrever no GitHub |
+| **Editar numa worktree** | Tudo do anterior, mais editar e fazer `git add`/`git commit`, só numa worktree própria (`<projeto>-auto-<apelido>`, numa branch `auto/<apelido>/<data>`): o seu checkout não é tocado | Escrever no GitHub; o `gh` roda sem login nesse nível |
+| **Agir no projeto** | Tudo do anterior, mas editando no seu checkout, e escrever no GitHub: `gh issue create/comment`, `gh pr create/comment` e `gh pr review --comment` | Aprovar ou pedir mudanças numa PR |
+
+Em **nenhum** nível: `git push`, `git merge`, `gh pr merge`, `--force`,
+`git reset --hard`, `git clean -f`, apagar branch, ler chaves e credenciais
+(`~/.ssh`, `~/.gnupg`, `~/.config/gh`, `~/.aws`, `~/.kube`, `.env`, `.netrc`,
+`.npmrc`…) nem mexer em `~/.claude` e `~/.config/vizor`. O teste e o lint rodam
+exatamente como o projeto configurou, sem argumentos extras. Os dois níveis
+que editam exigem a **trava** ligada (nas configurações); sem ela só o "Ler e
+relatar" fica disponível.
+
+Um `.env` nunca é lido pelo nome, mas uma busca recursiva (`grep -r`) numa
+pasta que tenha um lê o que ele contém, e isso inclui o `.env` do próprio
+projeto. O `rg` pula arquivos ocultos e ignorados, e a trava barra
+`--hidden`, `-u` e `--no-ignore`.
+
+Com a trava desligada, o "Ler e relatar" fica só com as flags do `claude`: o
+que você liberou em `permissions.allow` (no `~/.claude/settings.json` ou nas
+configurações do projeto) também vale pra automação. As proibições acima
+continuam como negações, que ganham de qualquer liberação.
+
+### Custos e tempo
+
+- **Teto por execução**: US$ 1,00 por padrão (entre 0,05 e 20). Passou, a
+  execução é cortada e a automação fica bloqueada até você olhar.
+- **Teto do dia**: US$ 5,00 por padrão, somando todas as automações. Dá pra
+  subir na própria aba ("subir teto"). Estourou, elas pausam até o dia
+  seguinte ou até você subir o limite. O teto de uma execução não pode passar
+  do teto do dia: se você baixar o do dia abaixo do de uma automação, só ela
+  fica bloqueada (as outras seguem) até um dos dois mudar.
+- **Tempo limite**: 15 min por padrão (1 a 60). Estourou, o processo e tudo que
+  ele abriu são encerrados.
+- Quando o custo não é conhecido (falha, tempo estourado), conta o teto inteiro
+  da execução no gasto do dia.
+- **Modelo**: Sonnet por padrão; Haiku é mais barato, Opus mais caro.
+
+### Histórico e relatórios
+
+Cada execução vira um relatório em markdown em
+`~/.config/vizor/automacoes/<id>/AAAAMMDD-HHMM.md`, mais uma linha em
+`historico.jsonl` na mesma pasta (as últimas 100 execuções ficam). A aba lista
+as execuções de cada automação com status, custo e duração, e mostra o relatório
+ao clicar; no nível worktree, "abrir na revisão" mostra o que a branch mudou.
+
+### Limites (leia)
+
+A trava confere os comandos que o modelo digita, não o que acontece dentro do
+seu runner de testes. Nos níveis que editam, um script escrito pela automação
+(um teste, um `package.json`) roda na sua máquina quando o teste ou o lint
+rodam, com os seus privilégios. O Vizor desliga o push no ambiente da execução
+(sem tokens do GitHub, sem agente SSH, URLs de push inválidas), mas isso não é
+uma caixa-forte. Use **Ler e relatar** pra qualquer pedido em que você não
+confie totalmente, e revise a branch da worktree antes de aproveitar o que ela fez.
+
 ## Empacotamento
 
 ```bash
@@ -262,7 +343,7 @@ e tire o `--no-sandbox` do script `start`.
 
 ## Arquivos de runtime
 
-`~/.config/vizor/` → `vizor.sock`, `state.json` (posição da bolha), `log`, `avatars/` (avatares dos projetos).
+`~/.config/vizor/` → `vizor.sock`, `state.json` (posição da bolha), `log`, `avatars/` (avatares dos projetos), `automacoes.json` e `automacoes/` (relatórios e histórico das automações).
 
 ## Vindo do Claude Manager?
 

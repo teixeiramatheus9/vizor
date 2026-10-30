@@ -4,7 +4,7 @@
 import { escapeHtml } from '../workspace-view.js';
 
 export const SHORTCUTS = [
-  { keys: 'Ctrl+1 … 3', label: 'Workspace, Agentes, GitHub' },
+  { keys: 'Ctrl+1 … 4', label: 'Workspace, Agentes, GitHub, Automações' },
   { keys: '1 … 4', label: 'abas da revisão (Resumo, Mudanças, Impacto, Ao vivo)' },
   { keys: 'Ctrl+K', label: 'barra de comandos' },
   { keys: 'Ctrl+`', label: 'abrir e fechar o terminal' },
@@ -12,13 +12,13 @@ export const SHORTCUTS = [
   { keys: '?', label: 'esta lista' },
 ];
 
-// → { top: 1..3 } | { inner: 1..4 } | { help: true } | null
+// → { top: 1..4 } | { inner: 1..4 } | { help: true } | null
 export function keyAction(event, { focusInTerminal = false, focusInField = false, composing = false } = {}) {
   if (composing || event.altKey) return null;
   const mod = event.ctrlKey || event.metaKey;
   if (mod) {
     if (event.shiftKey) return null;
-    return /^[1-3]$/.test(event.key) ? { top: Number(event.key) } : null; // 4 is reserved for Automações
+    return /^[1-4]$/.test(event.key) ? { top: Number(event.key) } : null;
   }
   if (focusInTerminal || focusInField) return null;
   if (event.key === '?') return { help: true };

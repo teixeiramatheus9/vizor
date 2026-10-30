@@ -52,7 +52,7 @@ describe('the Ctrl+K command bar', () => {
     expect(filterCommands(items, 'menu icone').map((item) => item.label)).toEqual(['Puxar #169 Menu de ação ao clicar no ícone do Vizor']);
     expect(filterCommands(items, '#169')[0].action).toEqual({ type: 'pick-issue', number: 169 });
     expect(filterCommands(items, '169')[0].action).toEqual({ type: 'pick-issue', number: 169 });
-    expect(filterCommands(items, 'ACAO')).toHaveLength(1);
+    expect(filterCommands(items, 'ACAO').filter((item) => item.group === 'Issues')).toHaveLength(1);
     expect(filterCommands(items, '')).toEqual(items);
     expect(filterCommands(items, 'zzz')).toEqual([]);
   });
@@ -67,11 +67,30 @@ describe('the Ctrl+K command bar', () => {
 });
 
 describe('screens in the command bar', () => {
-  it('lists the three screens, and "agentes" finds the one', async () => {
+  it('lists the four screens, and "agentes" finds the one', async () => {
     const { buildCommands, filterCommands } = await import('../src/renderer/command-bar.js');
     const items = buildCommands({});
     const screens = items.filter((item) => item.action.type === 'goto-tab');
-    expect(screens.map((item) => item.action.tab)).toEqual(['workspace', 'agents', 'github']);
+    expect(screens.map((item) => item.action.tab)).toEqual(['workspace', 'agents', 'github', 'automations']);
     expect(filterCommands(items, 'ir pra agentes').map((item) => item.action.tab)).toEqual(['agents']);
+  });
+});
+
+describe('automações in the command bar', () => {
+  it('offers "nova automação" and "rodar <nome>" for the ones that can start', async () => {
+    const { buildCommands, filterCommands } = await import('../src/renderer/command-bar.js');
+    const automations = [
+      { id: 'a1', name: 'PRs da manhã' },
+      { id: 'a2', name: 'Lint', running: { startedAt: 1 } },
+      { id: 'a3', name: 'Fila', queued: true },
+      { id: 'a4', name: 'Travada', blockedUntilConfirm: true },
+    ];
+    const items = buildCommands({ automations });
+    expect(items.find((item) => item.id === 'automation:new').action).toEqual({ type: 'new-automation' });
+    const runs = items.filter((item) => item.action?.type === 'run-automation');
+    expect(runs.map((item) => item.label)).toEqual(['Rodar PRs da manhã']);
+    expect(runs[0].action).toEqual({ type: 'run-automation', id: 'a1' });
+    expect(filterCommands(items, 'rodar prs').map((item) => item.id)).toEqual(['automation:run:a1']);
+    expect(filterCommands(items, 'ir pra automacoes').map((item) => item.action.tab)).toEqual(['automations']);
   });
 });

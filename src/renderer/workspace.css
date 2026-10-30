@@ -2558,7 +2558,7 @@ body[data-palette='giz'] #view-github {
 #status-bar {
   flex-shrink: 0;
   display: flex;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
   align-items: center;
   padding: 2px 12px;
   border-top: 1px solid var(--ws-border);
@@ -2570,6 +2570,7 @@ body[data-palette='giz'] #view-github {
 }
 
 #status-bar .status-sep {
+  margin: 0 var(--sp-1);
   opacity: 0.6;
 }
 
@@ -2586,4 +2587,452 @@ body[data-palette='giz'] #view-github {
 
 #status-bar .status-tokens.over {
   color: var(--warn, var(--text));
+}
+
+/* --- Automações tab ----------------------------------------------------------
+   Palette tokens only; ok/bad are the two fixed hues (with a giz variant). The
+   running clock redraws text only: no animation beyond the shared fade-in. */
+#view-automations {
+  --au-ok: #3fb950;
+  --au-bad: #f85149;
+  padding: 10px 14px 14px;
+  gap: 10px;
+  overflow: hidden;
+  background: var(--ws-bg);
+}
+
+body[data-palette='giz'] #view-automations {
+  --au-ok: #1a7f37;
+  --au-bad: #cf222e;
+}
+
+#au-top {
+  flex: none;
+}
+
+.au-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.au-budget {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+.au-budget.over {
+  color: var(--warn);
+}
+
+.au-new {
+  margin-left: auto;
+}
+
+.au-banner {
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  color: var(--warn);
+  font-size: var(--fs-sm);
+}
+
+.au-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, 5fr) minmax(300px, 4fr);
+  gap: 12px;
+}
+
+.au-list,
+.au-side {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.au-side {
+  padding: 10px 12px;
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+}
+
+.au-side h3,
+.au-side-head h3 {
+  margin: 0 0 8px;
+  font-size: var(--fs-base);
+  color: var(--text);
+}
+
+.au-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.au-item {
+  padding: 8px 10px;
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-line);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.au-item.selected {
+  border-color: var(--accent);
+}
+
+.au-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.au-avatar {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
+.au-avatar.mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.au-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-base);
+  color: var(--text);
+}
+
+.au-badge,
+.au-state {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--ws-border);
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+
+.au-badge.level-worktree {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.au-badge.level-project {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.au-state.running {
+  border-color: var(--accent);
+  color: var(--accent);
+  margin-left: auto;
+}
+
+.au-state.blocked {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.au-state.paused,
+.au-state.queued {
+  color: var(--text-3);
+  margin-left: auto;
+}
+
+.au-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.au-last.ok {
+  color: var(--au-ok);
+}
+
+.au-last.bad {
+  color: var(--au-bad);
+}
+
+.au-actions,
+.au-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.au-btn,
+.au-chip,
+.au-link {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  background: var(--ws-panel);
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+
+.au-chip {
+  border-radius: 999px;
+}
+
+.au-link {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  padding: 0;
+  text-decoration: underline;
+}
+
+.au-btn:hover:not(:disabled),
+.au-chip:hover {
+  background: var(--ws-hover);
+}
+
+.au-btn.primary {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.au-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.au-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding-top: 6px;
+  border-top: 1px solid var(--ws-line);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+.au-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.au-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.au-label {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.au-input {
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--ws-bg);
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.au-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.au-field.invalid .au-input {
+  border-color: var(--au-bad);
+}
+
+.au-narrow {
+  width: 96px;
+}
+
+.au-prompt {
+  resize: vertical;
+  min-height: 90px;
+  font-family: ui-monospace, monospace;
+}
+
+.au-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+
+.au-error {
+  font-size: var(--fs-xs);
+  color: var(--au-bad);
+}
+
+.au-error:empty {
+  display: none;
+}
+
+.au-presets,
+.au-when,
+.au-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.au-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+.au-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.au-level {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.au-level.on {
+  border-color: var(--accent);
+}
+
+.au-level.disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.au-level input {
+  grid-row: 1 / span 3;
+  align-self: center;
+}
+
+.au-level-name {
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.au-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.au-footer {
+  margin-top: 4px;
+}
+
+.au-history {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(0, 2fr);
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+}
+
+.au-runs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.au-run {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  background: none;
+  border: 1px solid var(--ws-line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.au-run.on {
+  border-color: var(--accent);
+}
+
+.au-run-status {
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.au-run.ok .au-run-status {
+  color: var(--au-ok);
+}
+
+.au-run.bad .au-run-status {
+  color: var(--au-bad);
+}
+
+.au-report-pane {
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.au-report-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.au-report {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.au-report pre {
+  overflow-x: auto;
+}
+
+.au-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }

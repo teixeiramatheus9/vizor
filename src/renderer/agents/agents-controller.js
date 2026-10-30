@@ -15,12 +15,14 @@ const MOVE_MS = 150;
 //   api           { agentsSeen, agentsDismiss, agentsInterrupt, agentsAnswer,
 //                   planAction, answerGuard, focusOutside }
 //   projects()    root -> { name, uri, accent } for the workspace's projects
+//   openAutomation(id)       Automações tab with that automação's history
 //   openSession(sessionId)   Workspace tab + select + drawer + terminal focus
 export function createAgentsController({
   el,
   api,
   projects = () => ({}),
   openSession,
+  openAutomation = () => {},
   now = () => Date.now(),
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (handle) => clearTimeout(handle),
@@ -29,6 +31,7 @@ export function createAgentsController({
   let sessions = [];
   let plans = {};
   let guardAsks = [];
+  let automationRuns = []; // running automações, cards of their own
   let visible = false;
   let timer = null;
   let lastHtml = null;
@@ -42,7 +45,12 @@ export function createAgentsController({
 
   function cards() {
     const at = now();
-    return sessions.map((session) => {
+    // The question of an automação's step sits on its card.
+    const runCards = automationRuns.map((run) => {
+      const guardAsk = guardAsks.find((ask) => ask.automationId === run.automationId);
+      return { ...run, actions: [], ...(guardAsk ? { guardAsk } : {}) };
+    });
+    const chatCards = sessions.map((session) => {
       const plan = plans[session.id] ?? null;
       const guardAsk = guardOf(session.id);
       const card = sessionCard(session, { project: session.project, plan, guardAsk, now: at });
@@ -52,6 +60,14 @@ export function createAgentsController({
       if (plan && !plan.approved && card.column !== 'failed') card.actions.push('approve-plan');
       return card;
     });
+    return [...runCards, ...chatCards];
+  }
+
+  // A running automação is rodando, or esperando while its guard ask is open.
+  function automationCounts() {
+    const result = { working: 0, waiting: 0 };
+    for (const card of cards().filter((item) => item.automationId)) result[card.guardAsk || card.column === 'waiting' ? 'waiting' : 'working']++;
+    return result;
   }
 
   function counts() {
@@ -61,6 +77,9 @@ export function createAgentsController({
       const column = sessionCard(session, { guardAsk: guardOf(session.id), now: at }).column;
       if (column === 'working' || column === 'waiting') result[column]++;
     }
+    const runs = automationCounts();
+    result.working += runs.working;
+    result.waiting += runs.waiting;
     return result;
   }
 
@@ -134,6 +153,7 @@ export function createAgentsController({
   }
 
   function open(sessionId) {
+    if (String(sessionId).startsWith('automation:')) return openAutomation(sessionId.slice('automation:'.length));
     const session = sessions.find((item) => item.id === sessionId);
     if (!session || session.status === 'failed') return;
     api.agentsSeen(sessionId);
@@ -236,6 +256,7 @@ export function createAgentsController({
       sessions = next.sessions ?? [];
       plans = next.plans ?? {};
       guardAsks = next.guardAsks ?? [];
+      automationRuns = next.automationRuns ?? [];
       // A session that left must not keep a reply box or a confirmation open.
       for (const key of ['answering', 'confirming']) if (ui[key] && !sessions.some((session) => session.id === ui[key])) ui[key] = null;
       render();
@@ -264,6 +285,7 @@ export function createAgentsController({
     refresh: render,
     waitingCount,
     counts,
+    automationCounts,
     hasTimer: () => timer !== null,
     OTHER_PROJECTS,
   };

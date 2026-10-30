@@ -6,8 +6,29 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
+// An automação's run (the Vizor sets VIZOR_AUTOMATION). What it does comes from
+// $HOME/fake-auto.json, read on every run: { mode: 'ok' | 'sleep', delayMs, costUsd, result }.
+// 'sleep' outlives any timeout and keeps a `sleep` child in the same process
+// group; every pid goes to $HOME/fake-auto-runs.jsonl so a scenario can check
+// nobody is left behind.
+if (process.env.VIZOR_AUTOMATION) {
+  let knob = {};
+  try {
+    knob = JSON.parse(fs.readFileSync(path.join(os.homedir(), 'fake-auto.json'), 'utf8'));
+  } catch {
+    // defaults
+  }
+  const sleeper = knob.mode === 'sleep' ? spawn('sleep', ['600'], { stdio: 'ignore' }) : null;
+  fs.appendFileSync(path.join(os.homedir(), 'fake-auto-runs.jsonl'), `${JSON.stringify({ at: Date.now(), id: process.env.VIZOR_AUTOMATION, pid: process.pid, childPid: sleeper?.pid ?? null, args: process.argv.slice(2) })}\n`);
+  setTimeout(() => {
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: knob.result ?? 'Tudo certo.', total_cost_usd: knob.costUsd ?? 0, duration_ms: 1000, num_turns: 1, session_id: crypto.randomUUID() }));
+    process.exit(0);
+  }, knob.mode === 'sleep' ? 600000 : (knob.delayMs ?? 0));
+  // CommonJS allows a top-level return: nothing below is an automação's business.
+  return;
+}
 // The app's own `claude -p` calls (the gerente's alerts) get an empty answer
 // and never touch a folder.
 if (process.argv.includes('-p') || process.argv.includes('--print') || process.env.VIZOR_INTERNAL) {

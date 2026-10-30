@@ -95,6 +95,18 @@ export function testCommand({ packageText, config = {} }) {
   return 'npm test';
 }
 
+// The automações' lint command, found the same way as the test one.
+export function lintCommand({ packageText, config = {} }) {
+  if (config.lint) return config.lint;
+  let script;
+  try {
+    script = JSON.parse(packageText)?.scripts?.lint;
+  } catch {
+    return null;
+  }
+  return typeof script === 'string' && script.trim() ? 'npm run lint' : null;
+}
+
 export function createVerifier({ spawn, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
   const active = new Map(); // `${root}\0${kind}` -> { cancel }
 

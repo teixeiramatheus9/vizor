@@ -180,6 +180,10 @@ try {
   assert.ok(pulled, 'the pulled chat is the selected session');
 
   // ---- 4. A card of "Esperando" takes you to that chat in the Workspace -----
+  // The fake chat registers on its first hook and reports its Stop a few
+  // process spawns later; a Notification sent before that Stop would be
+  // cleared by it (a turn that ends needs nothing), so wait for the Stop.
+  await workspace.waitForSelector(`[data-session="${pulled}"].status-done`, { timeout: 30000 });
   emit(pulled, null, { hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' });
   // Leave the Workspace in a state the click has to change: another chat
   // selected and the drawer closed (the Puxar step left both the other way).
