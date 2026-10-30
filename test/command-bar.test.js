@@ -35,6 +35,13 @@ describe('the Ctrl+K command bar', () => {
     expect(items.some((item) => item.label === 'Ir para refactor')).toBe(true);
   });
 
+  it('PRs that could not be read show a disabled line in their group', () => {
+    const items = buildCommands({ issues: [], chats, prsError: true });
+    const row = items.find((item) => item.id === 'prs-error');
+    expect(row).toMatchObject({ group: 'PRs', label: 'não consegui ler as PRs', disabled: true });
+    expect(buildCommands({ issues: [], chats }).some((item) => item.id === 'prs-error')).toBe(false);
+  });
+
   it('while the issues load, a line says so', () => {
     const items = buildCommands({ chats, issuesLoading: true });
     expect(items.some((item) => item.disabled && /carregando as issues/.test(item.label))).toBe(true);
@@ -56,5 +63,15 @@ describe('the Ctrl+K command bar', () => {
     expect(html).toContain('aria-selected="true"');
     expect(html).not.toContain('<b>x</b>');
     expect(renderCommandList([], 0)).toContain('nada encontrado');
+  });
+});
+
+describe('screens in the command bar', () => {
+  it('lists the three screens, and "agentes" finds the one', async () => {
+    const { buildCommands, filterCommands } = await import('../src/renderer/command-bar.js');
+    const items = buildCommands({});
+    const screens = items.filter((item) => item.action.type === 'goto-tab');
+    expect(screens.map((item) => item.action.tab)).toEqual(['workspace', 'agents', 'github']);
+    expect(filterCommands(items, 'ir pra agentes').map((item) => item.action.tab)).toEqual(['agents']);
   });
 });

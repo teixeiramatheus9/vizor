@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 
 export const storeKey = (worktreePath) => createHash('sha1').update(worktreePath).digest('hex');
 
-const defaultPrefs = () => ({ tab: null, drawerHeight: null, drawerOpen: null, openFiles: [] });
+const defaultPrefs = () => ({ tab: null, drawerHeight: null, drawerOpen: null, openFiles: [], innerTab: null, scrollAnchor: null, filter: '' });
 
 export function createReviewStore({ readFile, writeFile, rename, mkdir, onError, dir, key, debounceMs = 500, setTimeout, clearTimeout }) {
   const file = `${dir}/${key}.json`;

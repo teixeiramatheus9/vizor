@@ -44,3 +44,16 @@ describe('TokenBudget', () => {
     expect(budget.usedToday()).toBe(0);
   });
 });
+
+describe('TokenBudget events', () => {
+  it("emits 'spent' with the new total after each record, and not for junk", async () => {
+    const { budget } = await makeBudget(new Date('2026-08-18T10:00:00'));
+    const seen = [];
+    budget.on('spent', (used) => seen.push(used));
+    budget.add(100);
+    budget.add(0);
+    budget.add('x');
+    budget.add(50);
+    expect(seen).toEqual([100, 150]);
+  });
+});

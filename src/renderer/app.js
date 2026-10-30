@@ -33,6 +33,7 @@ const STATUS_LABEL = {
   done: 'concluído',
   waiting: 'esperando você',
   question: 'pergunta',
+  failed: 'falhou',
 };
 
 // Fliperama wording for the arcade skin — same states, another language.
@@ -711,6 +712,9 @@ function applyTheme(theme, palette) {
     : '[testar voz]';
 }
 
+const densitySelect = document.getElementById('density');
+densitySelect.addEventListener('change', () => window.manager.setConfig({ density: densitySelect.value }));
+
 // The tube is orthogonal to the palette: it rides over whichever theme is on.
 const crtCheckbox = document.getElementById('crt');
 const crtState = document.getElementById('crt-state');
@@ -1000,6 +1004,7 @@ window.manager.getConfig().then((config) => {
   paletteSelect.value = config.palette;
   applyTheme(config.theme, config.palette);
   applyCrt(config.crt);
+  densitySelect.value = config.density ?? 'comfortable';
   const range = config.panelScaleRange;
   if (range) {
     panelScaleInput.min = String(range.min);
@@ -1161,7 +1166,8 @@ window.manager.onTooltip(({ projectName, text, kind, optionsCount, sessionId, sp
       const phrases = TTS_PHRASES[voiceLang] ?? TTS_PHRASES.pt;
       const phrase = phrases[kind] ?? phrases.waiting;
       // A guard card in voice mode is spoken by main (speech is null then).
-      if (kind !== 'guard' || speech) speakSample(kind === 'guard' ? speech : phrase(projectName, optionsCount));
+      // A grouped notice (several chats at once) brings its own spoken line.
+      if (kind !== 'guard' || speech) speakSample(speech ?? phrase(projectName, optionsCount));
     }
   }
   const alert = kind === 'question' || kind === 'waiting' || kind === 'guard';
@@ -1277,7 +1283,8 @@ function replyElement(session) {
 
 // Appends the quick-reply UI (when applicable) and returns the finished card.
 function finishCard(card, session) {
-  if (session.status !== 'working') {
+  // A dead chat has nobody to read a quick reply.
+  if (session.status !== 'working' && session.status !== 'failed') {
     const { wrapper, input } = replyElement(session);
     card.append(wrapper);
     if (focusedReplySessionId === session.id) {
@@ -1331,7 +1338,8 @@ function emptyStateElement() {
 }
 
 function sessionElement(session, index) {
-  const state = session.question ? 'question' : session.status;
+  // An idle notice after a Stop asks nothing: the chat is just done.
+  const state = session.question ? 'question' : session.status === 'waiting' && !needsYou(session) ? 'done' : session.status;
   const card = document.createElement('div');
   card.className = `session ${state}${session.unread ? ' unread' : ''}`;
   card.title = 'Abrir no terminal';
@@ -1471,12 +1479,17 @@ function sessionElement(session, index) {
   return finishCard(card, session);
 }
 
+// The shared predicate lives in a module (guard-card-global.js exposes it);
+// until that loads, the same rule inline.
+const needsYou = (session) =>
+  window.vizorNeedsYou ? window.vizorNeedsYou(session) : Boolean(session.question || session.needsPermission);
+
 let lastUnreadCount = 0;
 
 // The bubble mirrors the sessions as a whole: someone waiting wins over
 // someone working, and an idle bubble carries no badge at all.
 function renderBadge(sessions) {
-  const waiting = sessions.some((s) => s.question || s.status === 'waiting');
+  const waiting = sessions.some((s) => needsYou(s));
   const working = sessions.some((s) => s.status === 'working');
   badge.className = waiting ? 'waiting' : working ? 'working' : '';
   badge.style.display = waiting || working ? 'block' : 'none';

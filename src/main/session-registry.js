@@ -1,14 +1,14 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 
-export const STATUS = {
-  WORKING: 'working',
-  DONE: 'done',
-  WAITING: 'waiting',
-};
+import { STATUS, needsYou } from './session-status.js';
+
+export { STATUS };
 
 const HANDLED_EVENTS = ['UserPromptSubmit', 'Stop', 'Notification'];
 const DEFAULT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const TOMBSTONE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const DIED_MID_TURN = 'a sessão fechou no meio do turno';
 
 // Claude Code identifies its sessions by uuid, so anything else — the
 // simulate-event.sh fixtures, above all — can never appear in its registry and
@@ -56,6 +56,7 @@ export class SessionRegistry extends EventEmitter {
       seenAlive: false,
       alias: null,
       needsPermission: false,
+      stoppedAt: null,
     };
     if (event.wave?.blockId) session.wave = event.wave;
     if (event.term && typeof event.term === 'object' && Object.keys(event.term).length) {
@@ -72,6 +73,10 @@ export class SessionRegistry extends EventEmitter {
       if (isNew) session.alias = this.folderAliasFor(event.cwd) ?? null;
     }
     if (event.transcript_path) session.transcriptPath = event.transcript_path;
+    // An event proves the chat is alive: a tombstone for it is stale.
+    delete session.failedAt;
+    delete session.failReason;
+    delete session.adopted;
     session.updatedAt = this.now();
 
     if (eventName === 'UserPromptSubmit') {
@@ -81,6 +86,7 @@ export class SessionRegistry extends EventEmitter {
       session.lastMessage = null;
       session.question = null;
       session.needsPermission = false;
+      session.stoppedAt = null;
       if (!session.promptPreview && typeof event.prompt === 'string' && event.prompt.trim()) {
         const preview = event.prompt.trim();
         session.promptPreview = preview.length > 60 ? `${preview.slice(0, 60)}…` : preview;
@@ -89,6 +95,9 @@ export class SessionRegistry extends EventEmitter {
       session.status = STATUS.DONE;
       session.unread = true;
       session.needsPermission = false;
+      // The idle Notification ~60 s later bumps updatedAt; the board times
+      // "Terminou" from this instead.
+      session.stoppedAt = session.updatedAt;
     } else {
       session.status = STATUS.WAITING;
       session.unread = true;
@@ -128,7 +137,19 @@ export class SessionRegistry extends EventEmitter {
     session.managerMessage = null;
     session.status = STATUS.WORKING;
     session.unread = false;
+    session.stoppedAt = null;
     session.updatedAt = this.now();
+    this.emit('change');
+  }
+
+  // Esc ends the turn without a Stop hook: the chat is finished, not working.
+  markInterrupted(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session?.status !== STATUS.WORKING) return;
+    session.status = STATUS.DONE;
+    session.needsPermission = false;
+    session.updatedAt = this.now();
+    session.stoppedAt = session.updatedAt;
     this.emit('change');
   }
 
@@ -161,8 +182,10 @@ export class SessionRegistry extends EventEmitter {
   // to know a session is gone is to compare the list against the sessions
   // Claude Code itself registers. A session is only reaped once it has been
   // seen alive there: absence on its own is not proof of death, because builds
-  // without the registry never list anything.
-  reconcileLiveSessions(liveIds) {
+  // without the registry never list anything. closedTurns: ids whose transcript
+  // shows the turn already ended (an Esc, or a Stop lost while the app was
+  // down) — read by the caller, so a chat that closed idle is no "Falhou".
+  reconcileLiveSessions(liveIds, { closedTurns = new Set() } = {}) {
     if (!liveIds) return;
     // One live session is proof the registry works on this machine, which is
     // what makes another session's absence from it meaningful. When it lists
@@ -175,11 +198,36 @@ export class SessionRegistry extends EventEmitter {
         continue;
       }
       if (!isClaudeSessionId(sessionId)) continue;
+      if (session.status === STATUS.FAILED) continue;
       if (!session.seenAlive && !registryWorks) continue;
-      this.sessions.delete(sessionId);
+      // Dying with the turn open is a failure worth showing; after the Stop
+      // (or while waiting on the user) it is just a closed chat.
+      if (session.status === STATUS.WORKING && !closedTurns.has(sessionId)) {
+        session.status = STATUS.FAILED;
+        session.failedAt = this.now();
+        session.failReason = DIED_MID_TURN;
+        session.unread = false;
+      } else {
+        this.sessions.delete(sessionId);
+      }
       changed = true;
     }
     if (changed) this.emit('change');
+  }
+
+  // The user looked at the chat (card click, terminal in front, quick reply).
+  markSeen(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.seenAt = this.now();
+    this.emit('change');
+  }
+
+  // Clears a tombstone; a live session is never dismissed this way.
+  dismiss(sessionId) {
+    if (this.sessions.get(sessionId)?.status !== STATUS.FAILED) return;
+    this.sessions.delete(sessionId);
+    this.emit('change');
   }
 
   // Chats the hooks never reported — opened before the manager was up, or
@@ -209,6 +257,8 @@ export class SessionRegistry extends EventEmitter {
         wave: null,
         term: null,
         seenAlive: true,
+        // Built from Claude Code's record alone: no hook has spoken yet.
+        adopted: true,
       });
       added++;
     }
@@ -220,7 +270,10 @@ export class SessionRegistry extends EventEmitter {
     const cutoff = this.now() - this.maxAgeMs;
     let changed = false;
     for (const [sessionId, session] of this.sessions) {
-      if (session.updatedAt < cutoff) {
+      const expired = session.status === STATUS.FAILED
+        ? this.now() - session.failedAt > TOMBSTONE_MAX_AGE_MS
+        : session.updatedAt < cutoff;
+      if (expired) {
         this.sessions.delete(sessionId);
         changed = true;
       }
@@ -272,8 +325,8 @@ export function haloState(sessions) {
   for (const session of sessions) {
     if (!session.unread) continue;
     if (session.needsPermission) return 'permission';
-    if (session.question || session.status === STATUS.WAITING) state = 'question';
-    else if (session.status === STATUS.DONE && state === null) state = 'done';
+    if (needsYou(session)) state = 'question';
+    else if ((session.status === STATUS.DONE || session.status === STATUS.WAITING) && state === null) state = 'done';
   }
   return state;
 }

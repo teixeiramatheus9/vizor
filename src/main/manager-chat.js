@@ -11,6 +11,7 @@ const STATUS_LABEL = {
   working: 'trabalhando',
   done: 'terminou',
   waiting: 'esperando o usuário',
+  failed: 'caiu no meio do turno',
 };
 
 // Local, zero-token context: one compact line per session.

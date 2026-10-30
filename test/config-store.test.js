@@ -11,6 +11,16 @@ describe('config store', () => {
     expect(loadConfig(path.join(dir, 'config.json'))).toEqual(DEFAULT_CONFIG);
   });
 
+  it('defaults the workspace density to comfortable and rejects unknown values', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-config-'));
+    const file = path.join(dir, 'config.json');
+    expect(loadConfig(file).density).toBe('comfortable');
+    saveConfig(file, { density: 'compact' });
+    expect(loadConfig(file).density).toBe('compact');
+    saveConfig(file, { density: 'huge' });
+    expect(loadConfig(file).density).toBe('comfortable');
+  });
+
   it('leaves the crt overlay off until it is asked for', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'cm-config-'));
     expect(loadConfig(path.join(dir, 'config.json')).crt).toBe(false);

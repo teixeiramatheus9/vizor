@@ -16,4 +16,5 @@ for _ in $(seq 50); do
 done
 DISPLAY="$display" node test/e2e/flow.e2e.mjs
 DISPLAY="$display" node test/e2e/review.e2e.mjs
+DISPLAY="$display" node test/e2e/tabs.e2e.mjs
 DISPLAY="$display" node test/e2e/perf.e2e.mjs

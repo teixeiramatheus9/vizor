@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as contractModule from '../src/main/review/contract.js';
 import { linkGraph } from '../src/main/graph/link.js';
 import { createReviewService } from '../src/main/review/service.js';
 
@@ -39,7 +40,7 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
       const out = gitMap[key];
       if (out === undefined) throw new Error(`unexpected git ${key}`);
       if (out instanceof Error) throw out;
-      return out;
+      return typeof out === 'function' ? out() : out;
     },
     readFile: async (p) => { if (!(p in files)) throw new Error('ENOENT'); return files[p]; },
     stat: async (p) => { if (!(p in files)) throw new Error('ENOENT'); return { mtimeMs: 1, size: files[p].length }; },
@@ -57,7 +58,118 @@ function setup({ git = {}, files = {}, sessions = [], graph, extra = {} } = {}) 
   return { service, calls, fire, approvals, gitMap };
 }
 
+vi.mock('../src/main/review/contract.js', async (original) => {
+  const actual = await original();
+  return { ...actual, contractChanges: vi.fn(actual.contractChanges) };
+});
+const landed = (service) => new Promise((resolve) => service.once('changed', resolve));
+const API = 'export function f(a) { return a; }\n';
+const API_BEFORE = 'export function f(a, b) { return a + b; }\n';
+
 describe('review service', () => {
+  it('answers before the contract analysis: no merge-base read, the contract item pending, then it lands as a changed', async () => {
+    const { service, calls } = setup({
+      git: { 'cat-file --batch': `o blob ${API_BEFORE.length}\n${API_BEFORE}\n` },
+      files: { '/w/a.js': API },
+    });
+    const done = landed(service);
+    const first = await service.summary(WT);
+    expect(first.contract).toEqual([]);
+    expect(first.verdict.find((v) => v.key === 'contract')).toEqual({ key: 'contract', text: 'contrato: analisando…', tone: 'muted' });
+    await done;
+    expect(calls.filter((c) => c.key === 'cat-file --batch')).toHaveLength(1);
+    const second = await service.summary(WT);
+    expect(second.contract.map((c) => c.path)).toEqual(['a.js']);
+    expect(second.files[0].contract).toBe(true);
+    expect(second.verdict.find((v) => v.key === 'contract').text).toMatch(/mudança de contrato/);
+  });
+
+  it('does not start the analysis while paused, and starts it with the next summary after resume', async () => {
+    const { service, calls } = setup({ files: { '/w/a.js': API }, extra: { startPaused: true } });
+    await service.summary(WT);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(calls.some((c) => c.key === 'cat-file --batch')).toBe(false);
+    service.resume();
+    const done = landed(service);
+    await service.summary(WT);
+    await done;
+    expect(calls.some((c) => c.key === 'cat-file --batch')).toBe(true);
+  });
+
+  it('orders a file with a changed export line first on a cold open, before any analysis', async () => {
+    const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
+    const patch = (name, line) => `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n@@ -1,1 +1,1 @@\n-old\n+${line}\n`;
+    const { service } = setup({
+      git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': patch('a.js', 'const x = 1;') + patch('b.js', 'export function f() {}') },
+      files: { '/w/a.js': 'y', '/w/b.js': 'z' },
+    });
+    expect((await service.summary(WT)).order).toEqual(['b.js', 'a.js']);
+  });
+
+  it('keeps the contract data when the graph arrives after a cold analysis, with no second analysis', async () => {
+    let built = null;
+    const { service, calls } = setup({
+      git: { 'cat-file --batch': `o blob ${API_BEFORE.length}\n${API_BEFORE}\n` },
+      files: { '/w/a.js': API },
+      extra: { graphFor: () => ({ graph: () => built }), graphBuilt: () => built },
+    });
+    const done = landed(service);
+    await service.summary(WT);
+    await done;
+    built = { modules: [{ id: 'a.js', functions: [] }], functions: [], imports: [], calls: [], edges: [], moduleEdges: [], callEdges: [] };
+    const next = await service.summary(WT);
+    expect(next.contract.map((c) => c.path)).toEqual(['a.js']);
+    expect(next.verdict.find((v) => v.key === 'contract').text).toMatch(/mudança de contrato/);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(calls.filter((c) => c.key === 'cat-file --batch')).toHaveLength(1);
+  });
+
+  it('shows a failed analysis as not verified, announces it, and does not retry the same file version', async () => {
+    contractModule.contractChanges.mockImplementationOnce(() => { throw new Error('parser exploded'); });
+    const { service } = setup({ files: { '/w/a.js': API } });
+    const done = landed(service);
+    await service.summary(WT);
+    await done;
+    const next = await service.summary(WT);
+    const texts = next.verdict.map((v) => v.text);
+    expect(texts).toContain('contrato: não verificado (parser exploded)');
+    expect(texts.some((x) => /analisando/.test(x))).toBe(false);
+    contractModule.contractChanges.mockClear();
+    await service.summary(WT);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(contractModule.contractChanges).not.toHaveBeenCalled();
+  });
+
+  it('does not reorder on an unrelated summary while the analysis is still pending', async () => {
+    const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
+    let release;
+    const { service } = setup({
+      git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': '', 'cat-file --batch': () => new Promise((resolve) => { release = () => resolve(`o blob 1\nx\no blob ${API_BEFORE.length}\n${API_BEFORE}\n`); }) },
+      files: { '/w/a.js': 'y', '/w/b.js': API },
+    });
+    const first = (await service.summary(WT)).order;
+    expect((await service.summary(WT)).order).toEqual(first);
+    release();
+  });
+
+  it.each([[300, ['b.js', 'a.js']], [1500, ['a.js', 'b.js']]])('settles the provisional order only when the analysis lands within 1 s (at %i ms)', async (lateness, expected) => {
+    const two = ':100644 100644 a b M\0a.js\0:100644 100644 a b M\0b.js\x001\t1\ta.js\x001\t1\tb.js\0';
+    let clock = 0;
+    const { service } = setup({
+      git: { 'diff --raw --numstat -z -M BASE': two, 'diff -U3 BASE': '', 'cat-file --batch': `o blob 1\nx\no blob ${API_BEFORE.length}\n${API_BEFORE}\n` },
+      files: { '/w/a.js': 'y', '/w/b.js': API },
+      extra: { now: () => clock },
+    });
+    const done = landed(service);
+    expect((await service.summary(WT)).order).toEqual(['a.js', 'b.js']);
+    clock = lateness;
+    await done;
+    const second = await service.summary(WT);
+    expect(second.contract.map((c) => c.path)).toEqual(['b.js']); // badges and verdict update either way
+    expect(second.order).toEqual(expected);
+    expect((await service.summary(WT)).order).toEqual(expected); // and it stays
+  });
+
   it('reports a pt-BR baseError when no base candidate resolves', async () => {
     const err = new Error('bad ref');
     const { service } = setup({ git: { 'merge-base HEAD origin/main': err, 'merge-base HEAD main': err, 'merge-base HEAD origin/master': err, 'merge-base HEAD master': err } });
@@ -65,6 +177,23 @@ describe('review service', () => {
     expect(s.base).toBeNull();
     expect(s.baseError).toMatch(/base/i);
     expect(s.files).toEqual([]);
+  });
+
+  it('probes the fixed base candidates while it asks for the upstream, not one after the other', async () => {
+    let probedWhileUpstreamRuns = false;
+    const { service, calls } = setup({
+      files: { '/w/a.js': 'x' },
+      git: {
+        'rev-parse --abbrev-ref --symbolic-full-name @{upstream}': async () => {
+          for (let tick = 0; tick < 20 && !calls.some((c) => c.key === 'merge-base HEAD origin/main'); tick++) await new Promise((resolve) => setTimeout(resolve, 0));
+          probedWhileUpstreamRuns = calls.some((c) => c.key === 'merge-base HEAD origin/main');
+          throw new Error('no upstream');
+        },
+      },
+    });
+    const s = await service.summary(WT);
+    expect(probedWhileUpstreamRuns).toBe(true);
+    expect(s.base).toBe('BASE');
   });
 
   it('never takes the current branch pushed as the base', async () => {
@@ -86,7 +215,40 @@ describe('review service', () => {
     expect(s.order).toEqual(['a.js']);
     expect(s.request).toEqual({ wt: WT });
     expect(s.verdict.some((i) => i.key === 'tsc')).toBe(true);
-    expect(calls.filter((c) => c.key?.startsWith('diff -U3')).map((c) => c.key)).toEqual(['diff -U3 BASE', 'diff -U3 HEAD']);
+    expect(calls.filter((c) => c.key?.startsWith('diff -U3')).map((c) => c.key).sort()).toEqual(['diff -U3 BASE', 'diff -U3 HEAD']);
+  });
+
+  it('asks for the HEAD hunk ids while the base diff is still running, not after it', async () => {
+    let headSeenWhileBaseRuns = false;
+    const { service, calls } = setup({
+      files: { '/w/a.js': 'x' },
+      git: {
+        'diff -U3 BASE': async () => {
+          for (let tick = 0; tick < 20 && !calls.some((c) => c.key === 'diff -U3 HEAD'); tick++) await new Promise((resolve) => setTimeout(resolve, 0));
+          headSeenWhileBaseRuns = calls.some((c) => c.key === 'diff -U3 HEAD');
+          return PATCH;
+        },
+      },
+    });
+    await service.summary(WT);
+    expect(headSeenWhileBaseRuns).toBe(true);
+  });
+
+  it('asks for the HEAD hunk ids while the file list is still being read', async () => {
+    let headSeenWhileListing = false;
+    const { service, calls } = setup({
+      files: { '/w/a.js': 'x' },
+      git: {
+        'diff --raw --numstat -z -M BASE': async () => {
+          for (let tick = 0; tick < 20 && !calls.some((c) => c.key === 'diff -U3 HEAD'); tick++) await new Promise((resolve) => setTimeout(resolve, 0));
+          headSeenWhileListing = calls.some((c) => c.key === 'diff -U3 HEAD');
+          return ':100644 100644 a b M\0a.js\x001\t1\ta.js\0';
+        },
+      },
+    });
+    await service.summary(WT);
+    expect(headSeenWhileListing).toBe(true);
+    expect(calls.filter((c) => c.key === 'diff -U3 HEAD')).toHaveLength(1); // shared, not run twice
   });
 
   it('counts hunks from one full diff, prunes the store and serves file() warm', async () => {
@@ -395,6 +557,9 @@ describe('review service', () => {
       files: { '/w/src/a.js': 'y', '/w/src/b.js': 'y', '/w/src/c.js': 'y' },
       extra: { graphFor: () => ({ graph: () => built }), graphBuilt: () => built },
     });
+    const settled = landed(service);
+    expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
+    await settled;
     expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
     built = graph;
     expect((await service.summary(WT)).order).toEqual(['src/a.js', 'src/b.js']);
@@ -436,6 +601,8 @@ describe('review service', () => {
     const modules = Object.assign([{ id: 'a.js', functions: [] }], { find(...args) { lookups++; return Array.prototype.find.apply(this, args); } });
     const graph = { modules, functions: [], imports: [], calls: [], edges: [] };
     const { service } = setup({ files: { '/w/a.js': 'new' }, graph: { graph: () => graph } });
+    await service.summary(WT);
+    await landed(service);
     await service.summary(WT);
     const first = lookups;
     expect(first).toBeGreaterThan(0);

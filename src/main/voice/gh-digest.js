@@ -24,6 +24,21 @@ export function ghQueries(repo, defaultBranch) {
 const FAILED = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
 const ciBroken = (pr) =>
   (pr.statusCheckRollup ?? []).some((check) => FAILED.has(String(check.conclusion ?? check.state ?? '').toUpperCase()));
+// One failing query comes back as `{ error }` instead of a list: skip that key
+// and say it, so the others still count.
+const list = (value) => (Array.isArray(value) ? value : []);
+const KEY_LABEL = {
+  pt: { prs: 'as PRs', reviewRequested: 'os pedidos de revisão', issues: 'as issues', openIssues: 'as issues', runs: 'o CI' },
+  en: { prs: 'the PRs', reviewRequested: 'the review requests', issues: 'the issues', openIssues: 'the issues', runs: 'the CI' },
+};
+const unreadLabels = (results, lang) => [
+  ...new Set(Object.keys(KEY_LABEL.pt).filter((key) => results?.[key] && !Array.isArray(results[key])).map((key) => KEY_LABEL[lang][key])),
+];
+const cantRead = (results, lang) => {
+  const labels = unreadLabels(results, lang);
+  if (!labels.length) return '';
+  return lang === 'en' ? `I couldn't read ${labels.join(' or ')}.` : `Não consegui ler ${labels.join(' nem ')}.`;
+};
 const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 
 // The speech follows the voice's language; the lines are for the screen.
@@ -51,11 +66,12 @@ const SPEECH = {
 export function buildDigest(results, lang = 'pt') {
   const say = SPEECH[lang] ?? SPEECH.pt;
   if (!results || results.error) return { speech: say.unreachable, lines: [] };
-  const prs = results.prs ?? [];
-  const waiting = new Set((results.reviewRequested ?? []).map((pr) => pr.number));
-  const issues = results.issues ?? [];
+  const prs = list(results.prs);
+  const waiting = new Set(list(results.reviewRequested).map((pr) => pr.number));
+  const issues = list(results.issues);
   const brokenPr = prs.find(ciBroken);
-  const mainRun = (results.runs ?? [])[0];
+  const mainRun = list(results.runs)[0];
+  const unread = cantRead(results, SPEECH[lang] ? lang : 'pt');
   const mainBroken = mainRun && String(mainRun.conclusion ?? '').toLowerCase() === 'failure';
 
   const lines = [
@@ -65,9 +81,10 @@ export function buildDigest(results, lang = 'pt') {
     }),
     ...issues.map((issue) => `issue #${issue.number} ${issue.title}`),
     ...(mainBroken ? [`CI da ${mainRun.headBranch} quebrado`] : []),
+    ...unreadLabels(results, 'pt').map((label) => `não consegui ler ${label}`),
   ];
 
-  if (!prs.length && !issues.length && !mainBroken) return { speech: say.clear, lines };
+  if (!prs.length && !issues.length && !mainBroken) return { speech: unread || say.clear, lines };
   const counts = prs.length ? `${say.prs(prs.length)}${waiting.size ? `, ${say.waiting(waiting.size)}` : ''}.` : say.noPrs;
   const urgent = brokenPr
     ? say.ciBroke(brokenPr.number)
@@ -76,7 +93,7 @@ export function buildDigest(results, lang = 'pt') {
       : !prs.length && issues.length
         ? say.issues(issues.length)
         : '';
-  return { speech: [counts, urgent].filter(Boolean).join(' '), lines };
+  return { speech: [counts, urgent, unread].filter(Boolean).join(' '), lines };
 }
 
 // The focused tab's project, else the bound chat's, else the only one.
@@ -96,8 +113,8 @@ const names = (people) => (people ?? []).map((person) => person.login ?? person.
 
 export function managerContext(results) {
   if (!results || results.error) return 'GitHub indisponível agora.';
-  const waiting = new Set((results.reviewRequested ?? []).map((pr) => pr.number));
-  const prs = (results.prs ?? []).map((pr) => {
+  const waiting = new Set(list(results.reviewRequested).map((pr) => pr.number));
+  const prs = list(results.prs).map((pr) => {
     const checks = pr.statusCheckRollup ?? [];
     const notes = [
       pr.isDraft && 'rascunho',
@@ -109,12 +126,13 @@ export function managerContext(results) {
     ].filter(Boolean);
     return `PR #${pr.number} ${pr.title}${notes.length ? ` — ${notes.join('; ')}` : ''}`;
   });
-  const issues = (results.openIssues ?? []).slice(0, MAX_CONTEXT_ISSUES).map((issue) => {
+  const issues = list(results.openIssues).slice(0, MAX_CONTEXT_ISSUES).map((issue) => {
     const labels = names((issue.labels ?? []).map((label) => ({ name: label.name })));
     const owners = names(issue.assignees);
     return `issue #${issue.number} ${issue.title}${labels.length ? ` [${labels.join(', ')}]` : ''} — ${owners.length ? `com ${owners.join(', ')}` : 'sem responsável'}`;
   });
-  const run = (results.runs ?? [])[0];
+  const run = list(results.runs)[0];
   const ci = run ? [`CI da ${run.headBranch}: ${String(run.conclusion ?? '').toLowerCase() === 'failure' ? 'quebrado' : run.conclusion === 'success' ? 'ok' : run.conclusion || 'rodando'}`] : [];
-  return [...prs, ...issues, ...ci].join('\n') || 'Nada aberto no GitHub.';
+  const unread = unreadLabels(results, 'pt').map((label) => `(não consegui ler ${label})`);
+  return [...prs, ...issues, ...ci, ...unread].join('\n') || 'Nada aberto no GitHub.';
 }

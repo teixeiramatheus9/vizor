@@ -4,7 +4,8 @@
 // in the page (performance.now() from the click to the DOM settled, layout
 // forced), memory from main (workingSetSize of the workspace's renderer), and
 // "parado" counts the `git` calls a wrapper first on PATH logs while the window
-// is minimized. No warm-up: every number is the first time the user would see it.
+// is minimized. No warm-up: every number is the first time the user would see it
+// (the list: the median of three cold openings).
 // Claude Code and gh are stand-ins (fake-bin). Run by scripts/e2e.sh.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -143,8 +144,26 @@ try {
   const baseline = await medianMemory();
   const over = async () => ((await medianMemory()) - baseline) / 1024;
 
-  // Mudanças: click until the list holds every file.
-  const list = await timed('[data-review-tab="changes"]', `() => document.querySelectorAll('#changes-files .review-file').length === ${FILES + 1}`);
+  // Mudanças: click until the list holds every file. One opening is one sample
+  // and the first can be unlucky, so the budget is on the median of three COLD
+  // openings: between them the files get a new mtime (the service keys its
+  // per-file work by path+mtime+size, so every opening redoes it) and the tab
+  // is left for Ao vivo, which asks main for nothing. Rows from the previous
+  // drawing are marked stale so only a fresh list ends the clock.
+  const fileRows = `() => document.querySelectorAll('#changes-files .review-file:not([data-stale])').length === ${FILES + 1}`;
+  const coldOpenings = [];
+  for (let opening = 0; opening < 3; opening++) {
+    if (opening > 0) {
+      await ws.click('[data-review-tab="live"]');
+      const stamp = new Date(Date.now() + opening * 60_000);
+      for (let i = 0; i < FILES; i++) fs.utimesSync(path.join(repo, `src/m${i}.js`), stamp, stamp);
+      fs.utimesSync(path.join(repo, 'src/big.js'), stamp, stamp);
+      await sleep(1500);
+      await ws.evaluate(() => { for (const row of document.querySelectorAll('#changes-files .review-file')) row.dataset.stale = '1'; });
+    }
+    coldOpenings.push(await timed('[data-review-tab="changes"]', fileRows));
+  }
+  const list = median(coldOpenings);
 
   // The big file: click until its last hunk is in the DOM.
   await ws.evaluate(() => { document.querySelector('#changes-files .review-file[data-path="src/big.js"]').scrollIntoView(); });
@@ -170,7 +189,7 @@ try {
   const afterImpactMb = await over();
 
   const signed = (mb) => `${mb >= 0 ? '+' : ''}${Math.round(mb)}MB`;
-  console.log(`perf: lista ${Math.round(list)}ms, arquivo ${Math.round(bigFile)}ms, impacto ${Math.round(impact)}ms, mem ${signed(memoryMb)} (${signed(afterImpactMb)} depois de passar pelo Impacto)`);
+  console.log(`perf: lista ${Math.round(list)}ms (mediana de ${coldOpenings.map((ms) => Math.round(ms)).join(', ')}), arquivo ${Math.round(bigFile)}ms, impacto ${Math.round(impact)}ms, mem ${signed(memoryMb)} (${signed(afterImpactMb)} depois de passar pelo Impacto)`);
 
   // Parado: minimized, five quiet seconds, no `git` call.
   await app.evaluate(({ BrowserWindow }) => {
@@ -182,7 +201,8 @@ try {
   const idle = gitCalls().slice(before);
   console.log(`perf: parado ${idle.length} chamadas de git em 5s`);
 
-  assert.ok(list < BUDGET.listMs, `lista de Mudanças ${Math.round(list)}ms (limite ${BUDGET.listMs}ms)`);
+  assert.ok(coldOpenings[0] < BUDGET.listMs, `primeira abertura a frio da lista de Mudanças ${Math.round(coldOpenings[0])}ms (limite ${BUDGET.listMs}ms)`);
+  assert.ok(list < BUDGET.listMs, `lista de Mudanças, mediana de 3 aberturas a frio ${Math.round(list)}ms (limite ${BUDGET.listMs}ms)`);
   assert.ok(bigFile < BUDGET.fileMs, `arquivo grande ${Math.round(bigFile)}ms (limite ${BUDGET.fileMs}ms)`);
   assert.ok(impact < BUDGET.impactMs, `Impacto ${Math.round(impact)}ms (limite ${BUDGET.impactMs}ms)`);
   assert.ok(memoryMb <= BUDGET.memoryMb, `memória do renderer +${Math.round(memoryMb)}MB (limite +${BUDGET.memoryMb}MB)`);

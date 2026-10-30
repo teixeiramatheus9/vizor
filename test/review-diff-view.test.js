@@ -89,6 +89,15 @@ describe('the review file list', () => {
     expect([...html.matchAll(/data-path="([^"]+)"/g)].map((m) => m[1])).toEqual(['src/a.js', 'README.md', 'src/b.js']);
     expect((html.match(/review-dir/g) ?? []).length).toBe(3);
   });
+  it('says the next step when there is nothing changed, and the filter when it hides everything', () => {
+    expect(renderFileList([], [])).toContain('nenhuma mudança ainda: puxe uma issue no Ctrl+K');
+    expect(renderFileList(files, files.map((f) => f.path), { filter: 'zzz' })).toContain('nenhum arquivo bate com o filtro');
+  });
+  it('shows a skeleton while the first summary loads', () => {
+    const html = renderFileList([], [], { loading: true });
+    expect(html).toContain('skeleton');
+    expect(html).not.toContain('nenhuma mudança');
+  });
   it('filters by path', () => {
     const html = renderFileList(files, files.map((f) => f.path), { filter: 'readme' });
     expect(html).toContain('README.md');

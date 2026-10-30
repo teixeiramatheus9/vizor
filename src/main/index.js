@@ -41,12 +41,17 @@ import { createBackstage, descendantsOf, parseListeners, portsFor } from './maes
 import { excludeWithPlan, isPlanEdit } from './work/plan.js';
 import { createPlanActions, createPlanTracker } from './work/plans.js';
 import { catalogFrom, catalogStale } from './work/catalog.js';
+import { columnOf } from './agents/columns.js';
+import { createGithubFetcher, reduceChecks } from './github/fetch.js';
 import { reviewPrPrompt, startIssuePrompt, taskTabTitle } from './work/prompts.js';
 import { readTail } from './maestro/log-tail.js';
 import { shouldSuggest } from './maestro/reviewer.js';
 import { criticalOf } from '../renderer/graph-view.js';
 import { testOutcomeOf } from './voice/narration.js';
 import { createVocabularyStore, scanVocabulary } from './voice/vocabulary.js';
+import { avatarCheckDue, avatarOwnerOf, createAvatarService, nextAvatarCheck, openGraphArgs, OG_MAX_BYTES, parseOpenGraph, resolveLogo } from './project-avatar.js';
+import { findLocalLogo } from './local-logo.js';
+import { fetchImage as fetchAvatarImage } from './avatar-fetch.js';
 import { buildDigest, ghQueries, githubRepoOf, managerContext, resolveProject } from './voice/gh-digest.js';
 import { createTaskLinks, resolveTask } from './voice/task-links.js';
 import { safeToTypeIdle } from './bubble-routing.js';
@@ -56,6 +61,7 @@ import { otherRecorders, parsePwDump } from './voice/meeting.js';
 import { evaluate, gitContextOf, loadRules } from '../hook/rule-guard.js';
 import { compileRules, editProblem, validateEditedRule } from './rules-compiler.js';
 import { SessionRegistry, displayName, haloState } from './session-registry.js';
+import { buildAgentSessions } from './agents/sessions-list.js';
 import { startSocketServer, stopSocketServer } from './socket-server.js';
 import {
   readAiTitle,
@@ -65,6 +71,7 @@ import {
   readFirstPrompt,
   readInterrupted,
   readTranscriptSnapshot,
+  readTurnClosed,
 } from './transcript.js';
 import { createHash } from 'node:crypto';
 import { createReviewService } from './review/service.js';
@@ -117,6 +124,7 @@ import { TokenBudget } from './token-budget.js';
 import { terminal, tts } from './platform.js';
 import { VOICES, speechLang } from './sherpa-installer.js';
 import { THEMES, PALETTES, backgroundFor } from './themes.js';
+import { bootQuery } from './workspace-boot.js';
 import { PANEL_SCALE, clampScale, panelSizeForScale } from './panel-size.js';
 import {
   anchorVisible,
@@ -172,6 +180,7 @@ import {
 import { linuxFocusHint, win32FocusHint, hintAnnouncement } from './focus-hints.js';
 import { resolveWindowDriver } from './window-driver.js';
 import { shouldAnnounce as notifyPolicy } from './notify-policy.js';
+import { createNotifyBatch, summarizeBatch } from './notify-batch.js';
 import { installBridge, uninstallBridge, bridgeStatus, autoSetupBridge } from './bridge-manager.js';
 import { sendUserMessage } from './cc-peer.js';
 
@@ -294,6 +303,31 @@ async function allowAnnouncement(session, kind, text) {
     log(`announcement suppressed (${decision.reason}) for ${session.id?.slice(0, 8)}`);
   }
   return decision.announce;
+}
+
+// Bursts of non-urgent notices leave as ONE balloon (one chime, one spoken
+// line); a lone one goes out exactly as it came. What needs the user passes at once.
+const noticeBatch = createNotifyBatch({
+  flush(events) {
+    const last = events[events.length - 1];
+    if (events.length === 1) {
+      sendToRenderer('tooltip', last.tooltip);
+    } else {
+      const { kind, text, speech } = summarizeBatch(events);
+      sendToRenderer('tooltip', { projectName: `${events.length} chats`, text, kind, sessionId: last.sessionId, speech });
+    }
+    lastNoticeSessionId = last.sessionId ?? lastNoticeSessionId;
+    showTooltip();
+  },
+});
+
+// Runs the per-event policy, then hands the balloon to the batch.
+async function bark(session, kind, text, tooltip) {
+  const reminder = kind === 'waiting' && lastAnnouncements.get(session.id)?.text === text;
+  if (!(await allowAnnouncement(session, kind, text))) return;
+  // A permission ask rides the 'waiting' notice but cannot wait in the batch.
+  const batchKind = kind === 'waiting' && session.needsPermission ? 'permission' : kind;
+  noticeBatch.push({ kind: batchKind, sessionId: session.id, tooltip, reminder });
 }
 
 // 'none' | 'asleep' | 'active' — the hint pipeline says different things for
@@ -521,6 +555,8 @@ ipcMain.handle('guard:answer', (_event, { id, choice } = {}) => {
   return Boolean(request);
 });
 const tokenBudget = new TokenBudget({ file: usageFile });
+// The workspace status line follows the meter: a push per spend, no timer.
+tokenBudget.on('spent', () => pushWorkspaceState());
 const isEconomyMode = () => tokenBudget.isExceeded(managerConfig.tokenBudgetDaily);
 let mainWindow = null;
 let overlayWindow = null;
@@ -863,6 +899,10 @@ function maestroFocus(sessionId) {
 function maestroInterrupt(ptyId) {
   if (!ptyHost?.list().some((terminal) => terminal.id === ptyId && terminal.alive)) return false;
   ptyHost.write(ptyId, '\x1b'); // Esc: Claude Code stops the turn, the session lives on
+  // Esc fires no Stop hook: without this the card stays "Trabalhando", and
+  // closing the terminal later would leave a false "Falhou".
+  for (const session of registry.list())
+    if (session.term?.VIZOR_PTY_ID === ptyId || resumedChats.get(ptyId) === session.id) registry.markInterrupted(session.id);
   return true;
 }
 
@@ -880,10 +920,11 @@ async function deliverWhenFree(sessionId, text, { tries = 30, everyMs = 2000 } =
 
 // Picking an issue by keyboard: its chat if it has one (the newest of several),
 // otherwise a new one asked for the plan first.
-async function startIssue(number) {
-  const root = voiceRoot();
+// root: the GitHub tab names its own project; voice and Ctrl+K leave it out.
+async function startIssue(number, { root: given = null, title = null } = {}) {
+  const root = given ?? voiceRoot();
   if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
-  const found = await voiceResolveTask(number, { byTitle: false });
+  const found = await voiceResolveTask(number, { byTitle: false, root });
   log(`issue ${number}: ${found.sessionId ? `its chat ${found.sessionId}` : `new chat in ${found.cwd ?? root}`}`);
   const existing = found.sessionId ? found : null;
   if (existing?.sessionId) {
@@ -891,10 +932,20 @@ async function startIssue(number) {
     taskLinks.link(root, number, existing.sessionId);
     return { sessionId: existing.sessionId };
   }
-  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number });
+  const opened = await voiceOpenNew({ cwd: found.cwd ?? root, prompt: startIssuePrompt(number), task: number, root, title });
   if (!opened.sessionId) return { error: 'Não consegui abrir o chat da issue.' };
   taskLinks.link(root, number, opened.sessionId);
   workspaceWindow?.focusSession(opened.sessionId); // its plan card comes up in front
+  return { sessionId: opened.sessionId };
+}
+
+// A fresh chat for the PR's review. root: see startIssue.
+async function reviewPr(number, { root: given = null } = {}) {
+  const root = given ?? voiceRoot();
+  if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
+  const opened = await voiceOpenNew({ cwd: root, prompt: reviewPrPrompt(number), root });
+  if (!opened.sessionId) return { error: 'Não consegui abrir o chat do avaliador.' };
+  taskLinks.link(root, number, opened.sessionId);
   return { sessionId: opened.sessionId };
 }
 
@@ -916,14 +967,7 @@ ipcMain.handle('workspace:command', async (event, action = {}) => {
       log(`command: issue ${action.number} → ${started.error ?? `chat ${started.sessionId}`}`);
       return started;
     }
-    if (action.type === 'review-pr' && Number.isInteger(action.number)) {
-      const root = voiceRoot();
-      if (!root) return { error: 'Abra um projeto no workspace primeiro.' };
-      const opened = await voiceOpenNew({ cwd: root, prompt: reviewPrPrompt(action.number) });
-      if (!opened.sessionId) return { error: 'Não consegui abrir o chat do avaliador.' };
-      taskLinks.link(root, action.number, opened.sessionId);
-      return { sessionId: opened.sessionId };
-    }
+    if (action.type === 'review-pr' && Number.isInteger(action.number)) return await reviewPr(action.number);
     if (action.type === 'interrupt' && typeof action.sessionId === 'string') {
       const ptyId = ptyOfSession(action.sessionId);
       return ptyId && maestroInterrupt(ptyId) ? {} : { error: 'Esse chat não está numa aba do Vizor.' };
@@ -1821,15 +1865,12 @@ async function generateVoiceForStop(session) {
     tokenBudget.add(voice.tokensUsed);
   }
   registry.setManagerMessage(session.id, voice);
-  if (await allowAnnouncement(session, 'done', voice.message)) {
-    sendToRenderer('tooltip', {
-      projectName: displayNameOf(session),
-      text: voice.message,
-      kind: 'done',
-      sessionId: session.id,
-    });
-    showTooltip();
-  }
+  await bark(session, 'done', voice.message, {
+    projectName: displayNameOf(session),
+    text: voice.message,
+    kind: 'done',
+    sessionId: session.id,
+  });
 }
 
 // The Notification hook often fires BEFORE Claude Code flushes the ask entry
@@ -1858,16 +1899,13 @@ async function enrichNotification(session) {
   if (!text) return;
   if (firstQuestion) registry.setManagerMessage(session.id, { message: text });
   const kind = firstQuestion ? 'question' : 'waiting';
-  if (await allowAnnouncement(session, kind, text)) {
-    sendToRenderer('tooltip', {
-      projectName: displayNameOf(session),
-      text,
-      kind,
-      optionsCount: firstQuestion?.options?.length ?? 0,
-      sessionId: session.id,
-    });
-    showTooltip();
-  }
+  await bark(session, kind, text, {
+    projectName: displayNameOf(session),
+    text,
+    kind,
+    optionsCount: firstQuestion?.options?.length ?? 0,
+    sessionId: session.id,
+  });
 }
 
 // --- workspace window (Linux only in v1) -----------------------------------
@@ -1878,6 +1916,7 @@ workspaceWindow = workspaceAvailable(process.platform)
       BrowserWindow,
       preloadPath: path.join(rendererDir, 'workspace-preload.cjs'),
       htmlPath: path.join(rendererDir, 'workspace.html'),
+      bootQuery: () => bootQuery(managerConfig),
       loadBounds: () => {
         const saved = loadPersistedState().workspace ?? null;
         return boundsVisible(saved, screen.getAllDisplays()) ? saved : null;
@@ -1896,7 +1935,10 @@ workspaceWindow = workspaceAvailable(process.platform)
       },
       // A (re)loaded page starts from the replay, and a dead one acks
       // nothing: either way, what was in flight will never be acked (#113).
-      onLoad: () => ptyHost?.resetFlow(),
+      onLoad: () => {
+        avatarsSent = null;
+        ptyHost?.resetFlow();
+      },
       onGone: () => {
         log('workspace renderer gone — terminals resumed, reloading on next open');
         ptyHost?.resetFlow();
@@ -1955,15 +1997,65 @@ async function refreshWorkspace() {
   pushWorkspaceStateNow();
 }
 
+// Project logos (root -> data: URI | null): the project's own file, else the repo's custom social preview. Resolved off the push path: the
+// state goes out at once (monogram), the avatar joins when it is read/downloaded.
+const avatarService = createAvatarService({
+  dir: path.join(configDir, 'avatars'),
+  fetchImage: (url) => fetchAvatarImage(url, { maxBytes: OG_MAX_BYTES }),
+  queryOpenGraph: async (ref) => parseOpenGraph(await runText('gh', openGraphArgs(ref), { timeout: 10000 })),
+  fsp: fs.promises,
+});
+const projectAvatars = new Map(); // root -> { uri, busy, nextCheck }
+let avatarsSent = null; // JSON of what the page last got; null = send again
+// Looked at again every AVATAR_CHECK_EVERY_MS (never per push): the remote may
+// have changed, a failed download is retried, a week-old file is refreshed.
+function resolveProjectAvatar(root) {
+  const entry = projectAvatars.get(root) ?? { uri: null, busy: false, nextCheck: 0 };
+  projectAvatars.set(root, entry);
+  if (!avatarCheckDue(entry, { now: Date.now(), hidden: reviewWindowHidden })) return;
+  entry.busy = true;
+  const show = (uri) => {
+    if (uri === entry.uri) return;
+    entry.uri = uri;
+    pushWorkspaceState();
+  };
+  resolveLogo({
+    findLocal: () =>
+      findLocalLogo({
+        root,
+        listTracked: async (paths) => new Set((await runText('git', ['--literal-pathspecs', 'ls-files', '-z', '--', ...paths], { cwd: root })).split('\0').filter(Boolean)),
+      }),
+    getRemote: () => runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => ''),
+    service: avatarService,
+    show,
+  })
+    .catch((error) => log(`avatar: ${root}: ${error}`))
+    .finally(() => {
+      entry.busy = false;
+      entry.nextCheck = nextAvatarCheck(Date.now());
+    });
+}
+
+// The data: URIs go to the page only when they change (or after a reload).
+function avatarsPayload(projects) {
+  const avatars = Object.fromEntries(projects.map(({ root }) => [root, projectAvatars.get(root)?.uri ?? null]));
+  const signature = JSON.stringify(avatars);
+  if (signature === avatarsSent) return {};
+  avatarsSent = signature;
+  return { avatars };
+}
+
 function pushWorkspaceStateNow() {
   if (!workspaceWindow?.isReady()) return;
   const projects = workspaceProjects().map((root) => ({
     root,
     worktrees: worktreeCache.get(root) ?? [],
   }));
+  for (const { root } of projects) resolveProjectAvatar(root);
+  const linked = linkedSessions(listWithDisplayNames());
   const tree = buildWorkspaceTree({
     projects,
-    sessions: linkedSessions(listWithDisplayNames()),
+    sessions: linked,
     taskOf: (sessionId) => editTracker.currentTask(sessionId),
   });
   maestroOrchestra = buildOrchestra(tree, (sessionId, root) => (root ? taskLinks.numberOf(root, sessionId) : null));
@@ -1992,6 +2084,8 @@ function pushWorkspaceStateNow() {
     terminals: (ptyHost?.list() ?? []).map((terminal) => ({ ...terminal, taskTitle: taskTitles.get(terminal.id) ?? null })),
     activeTerminal: activeTerminalId,
     guardAsks: guardAsks.pending(),
+    // The Agentes tab's flat list: every chat the registry knows, tombstones included.
+    sessions: buildAgentSessions({ sessions: linked, tree, issueOf: (sessionId, root) => taskLinks.numberOf(root, sessionId) }),
     voice: voiceListener ? { state: voiceState, target: voiceStatus().target } : null,
     maestro: {
       on: maestroOn(),
@@ -2002,8 +2096,11 @@ function pushWorkspaceStateNow() {
       backstage: maestroOn() ? Object.fromEntries(maestroOrchestra.map((musician) => [musician.sessionId, backstageOf(musician.sessionId)])) : {},
     },
     plans: Object.fromEntries(workPlans.sessions().map((sessionId) => [sessionId, workPlans.planOf(sessionId)])),
+    tokens: { used: tokenBudget.usedToday(), cap: managerConfig.tokenBudgetDaily },
     theme: managerConfig.theme,
     palette: managerConfig.palette,
+    density: managerConfig.density,
+    ...avatarsPayload(projects),
   });
   // A session in a known repo that matches no worktree: one was probably
   // just created. Re-list that repo once per cwd (staleRoots), and re-resolve
@@ -2376,17 +2473,20 @@ ipcMain.handle('edits:file', (event, { sessionId, taskId = null, filePath } = {}
 
 const INSPECTOR_MODES = ['arquivo', 'cards'];
 const INSPECTOR_WIDTHS = ['compact', 'wide', 'collapsed'];
+const TOP_TABS = ['workspace', 'agents', 'github'];
 
 ipcMain.handle('workspace:prefs', (event, { set } = {}) => {
   const saved = loadPersistedState().workspaceInspector ?? {};
   const current = {
     mode: INSPECTOR_MODES.includes(saved.mode) ? saved.mode : 'arquivo',
     width: INSPECTOR_WIDTHS.includes(saved.width) ? saved.width : 'compact',
+    topTab: TOP_TABS.includes(saved.topTab) ? saved.topTab : 'workspace',
   };
   if (!fromWorkspace(event) || !set) return current;
   const next = {
     mode: INSPECTOR_MODES.includes(set.mode) ? set.mode : current.mode,
     width: INSPECTOR_WIDTHS.includes(set.width) ? set.width : current.width,
+    topTab: TOP_TABS.includes(set.topTab) ? set.topTab : current.topTab,
   };
   try {
     fs.mkdirSync(configDir, { recursive: true });
@@ -2807,7 +2907,9 @@ function reviewRequestOf(worktree) {
   const project = [...worktreeCache].find(([, trees]) => (trees ?? []).some((tree) => tree.path === worktree))?.[0] ?? worktree;
   for (const session of sessions) {
     const number = taskLinks.numberOf(project, session.id);
-    const issue = number && lastGhResultsRoot === project ? lastGhResults?.openIssues?.find((item) => item.number === number) : null;
+    const voiceIssue = number && lastGhResultsRoot === project && Array.isArray(lastGhResults?.openIssues) ? lastGhResults.openIssues.find((item) => item.number === number) : null;
+    // A project that is not the voice's: what its GitHub tab read.
+    const issue = voiceIssue ?? (number && githubRepos.has(project) ? githubFetcher.cachedIssue(githubRepos.get(project), number) : null);
     if (issue) return { kind: 'issue', number, title: issue.title ?? '', body: issueBodyFor(project, number, worktree) };
   }
   const session = sessions.find((item) => item.id === workspaceSelectedSession && item.transcriptPath) ?? sessions.find((item) => item.transcriptPath);
@@ -3206,6 +3308,7 @@ function applyConfig(partial) {
   }
   if (Number.isFinite(partial?.panelScale)) allowed.panelScale = clampScale(partial.panelScale);
   if (typeof partial?.crt === 'boolean') allowed.crt = partial.crt;
+  if (partial?.density === 'comfortable' || partial?.density === 'compact') allowed.density = partial.density;
   if (typeof partial?.autoUpdate === 'boolean') allowed.autoUpdate = partial.autoUpdate;
   if (typeof partial?.announceWhenFocusUnknown === 'boolean')
     allowed.announceWhenFocusUnknown = partial.announceWhenFocusUnknown;
@@ -3582,7 +3685,8 @@ async function typeIntoTerminal(session, text) {
   });
 }
 
-ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
+// The quick reply of the bubble's panel and of the Agentes cards: one delivery.
+async function quickReply(sessionId, text) {
   const session = linkedSession(sessionId);
   const reply = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (!reply) return 'failed';
@@ -3598,6 +3702,124 @@ ipcMain.handle('warp:reply', async (_event, { sessionId, text }) => {
     return 'pasted';
   }
   return replyToSession(session, reply);
+}
+ipcMain.handle('warp:reply', (_event, { sessionId, text }) => quickReply(sessionId, text));
+
+// The Agentes tab's card actions. Approving a plan and answering the rule
+// guard reuse workspace:plan and guard:answer.
+ipcMain.on('agents:seen', (event, sessionId) => {
+  if (fromWorkspace(event) && typeof sessionId === 'string') registry.markSeen(sessionId);
+});
+ipcMain.on('agents:dismiss', (event, sessionId) => {
+  if (fromWorkspace(event) && typeof sessionId === 'string') registry.dismiss(sessionId);
+});
+// Esc into the chat's own pty; a chat outside the Vizor has none to write to.
+ipcMain.handle('agents:interrupt', (event, sessionId) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
+  const session = linkedSession(sessionId);
+  const ptyId = session?.term?.VIZOR_PTY_ID;
+  // Esc only means "stop the turn" while a turn is running.
+  if (session?.status !== 'working' || !ptyId) return 'failed';
+  return maestroInterrupt(ptyId) ? 'interrupted' : 'failed';
+});
+ipcMain.handle('agents:answer', async (event, sessionId, text) => {
+  if (!fromWorkspace(event) || typeof sessionId !== 'string') return 'failed';
+  // A tombstone has no chat left to hear the reply.
+  if (registry.sessions.get(sessionId)?.status === 'failed') return 'failed';
+  const outcome = await quickReply(sessionId, text);
+  if (outcome === 'sent' || outcome === 'pasted') registry.markSeen(sessionId);
+  return outcome;
+});
+
+// --- the GitHub tab --------------------------------------------------------
+// Every handler names a project root; only the workspace's own projects count,
+// and gh always gets -R owner/repo from that project's origin.
+const githubFetcher = createGithubFetcher({ gh: (args) => runText('gh', args) });
+const githubRepos = new Map(); // root -> owner/repo (only known GitHub projects)
+const CHAT_STATE_LABELS = { waiting: 'esperando você', working: 'trabalhando', done: 'terminou', idle: 'ociosa', failed: 'falhou' };
+
+async function githubRepoFor(root) {
+  if (typeof root !== 'string' || !workspaceProjects().includes(root)) return null;
+  if (githubRepos.has(root)) return githubRepos.get(root);
+  const remote = await runText('git', ['remote', 'get-url', 'origin'], { cwd: root }).catch(() => '');
+  const found = avatarOwnerOf(remote) ? githubRepoOf(remote) : null;
+  // The repo name reaches gh -R too: same alphabet as the owner.
+  const repo = found && /^[A-Za-z0-9._-]+$/.test(found.split('/')[1]) ? found : null;
+  if (repo) githubRepos.set(root, repo);
+  return repo;
+}
+
+// issue/PR number -> { state } of the newest chat linked to it.
+function githubChats(root, numbers) {
+  const chats = {};
+  for (const number of numbers) {
+    for (const id of taskLinks.linksFor(root, number)) {
+      const session = registry.sessions.get(id);
+      if (!session) continue;
+      chats[number] = { state: CHAT_STATE_LABELS[columnOf(session, { now: Date.now() })] ?? '' };
+      break;
+    }
+  }
+  return chats;
+}
+
+ipcMain.handle('github:repos', async (event) => {
+  if (!fromWorkspace(event)) return {};
+  const roots = workspaceProjects();
+  const repos = await Promise.all(roots.map((root) => githubRepoFor(root)));
+  return Object.fromEntries(roots.flatMap((root, index) => (repos[index] ? [[root, repos[index]]] : [])));
+});
+
+ipcMain.handle('github:list', async (event, root, force) => {
+  if (!fromWorkspace(event)) return { error: 'Ação desconhecida.' };
+  const repo = await githubRepoFor(root);
+  if (!repo) return { error: 'Esse projeto não está no GitHub.' };
+  try {
+    const raw = await githubFetcher.list(repo, { force: force === true });
+    for (const key of ['issues', 'mine', 'prs']) if (raw[key]?.error) log(`github: ${repo}: ${key} failed: ${raw[key].error}`);
+    // Checks arrive reduced: the rollup can be huge and the page needs one word.
+    const prs = Array.isArray(raw.prs) ? raw.prs.map(({ statusCheckRollup, ...pr }) => ({ ...pr, checks: reduceChecks(statusCheckRollup) })) : raw.prs;
+    const numbers = [...(Array.isArray(raw.issues) ? raw.issues : []), ...(Array.isArray(prs) ? prs : [])].map((item) => item.number);
+    return { data: { ...raw, prs }, chats: githubChats(root, numbers) };
+  } catch (error) {
+    log(`github: list failed: ${error}`);
+    return { error: String(error?.message ?? error) };
+  }
+});
+
+ipcMain.handle('github:body', async (event, root, kind, number) => {
+  const repo = fromWorkspace(event) && Number.isInteger(number) && (kind === 'issue' || kind === 'pr') ? await githubRepoFor(root) : null;
+  if (!repo) return null;
+  return githubFetcher.body(repo, kind, number).catch((error) => {
+    log(`github: body ${repo}#${number} failed: ${error}`);
+    return null;
+  });
+});
+
+// A chat for the issue in the tab's own project (not the voice's).
+const isIssueNumber = (number) => Number.isInteger(number) && number > 0;
+
+ipcMain.handle('github:pull', async (event, root, number) => {
+  const repo = fromWorkspace(event) && isIssueNumber(number) ? await githubRepoFor(root) : null;
+  if (!repo) return { error: 'Ação desconhecida.' };
+  // The title the tab already read names the chat's tab (no new gh call).
+  const title = githubFetcher.cachedIssue(repo, number)?.title ?? null;
+  return startIssue(number, { root, title }).catch((error) => ({ error: String(error?.message ?? error) }));
+});
+
+ipcMain.handle('github:review', async (event, root, number) => {
+  if (!fromWorkspace(event) || !isIssueNumber(number) || !(await githubRepoFor(root))) return { error: 'Ação desconhecida.' };
+  return reviewPr(number, { root }).catch((error) => ({ error: String(error?.message ?? error) }));
+});
+
+// The URL is built here from the project's own origin, never taken from the page.
+ipcMain.handle('github:open', async (event, root, kind, number) => {
+  const repo = fromWorkspace(event) && Number.isInteger(number) && number > 0 && (kind === 'issue' || kind === 'pr') ? await githubRepoFor(root) : null;
+  if (!repo) return false;
+  const url = `https://github.com/${repo}/${kind === 'pr' ? 'pull' : 'issues'}/${number}`;
+  if (!url.startsWith('https://github.com/')) return false;
+  await shell.openExternal(url);
+  return true;
 });
 
 // Manual drag (managed/X11 mode only): the renderer reports press/release on
@@ -4224,12 +4446,17 @@ async function voiceGhDigest() {
     } catch {
       // no origin/HEAD: main
     }
+    // allSettled: one failing query becomes `{ error }` for its key, the rest still arrive.
     const results = {};
-    await Promise.all(
-      Object.entries(ghQueries(repo, defaultBranch)).map(async ([key, args]) => {
-        results[key] = JSON.parse(await runText('gh', args, { cwd: root }));
-      }),
-    );
+    const entries = Object.entries(ghQueries(repo, defaultBranch));
+    const settled = await Promise.allSettled(entries.map(async ([, args]) => JSON.parse(await runText('gh', args, { cwd: root }))));
+    settled.forEach((outcome, index) => {
+      results[entries[index][0]] = outcome.status === 'fulfilled' ? outcome.value : { error: String(outcome.reason) };
+    });
+    settled.forEach((outcome, index) => {
+      if (outcome.status === 'rejected') log(`gh digest: ${entries[index][0]} failed: ${outcome.reason}`);
+    });
+    if (settled.every((outcome) => outcome.status === 'rejected')) throw settled[0].reason;
     lastGhDigest = buildDigest(results, spokenLang());
     lastGhContext = managerContext(results);
     lastGhResults = results;
@@ -4243,8 +4470,8 @@ async function voiceGhDigest() {
   return lastGhDigest;
 }
 
-async function voiceResolveTask(number, { byTitle = true } = {}) {
-  const root = voiceRoot();
+async function voiceResolveTask(number, { byTitle = true, root: given = null } = {}) {
+  const root = given ?? voiceRoot();
   if (!root) return { none: true };
   const worktrees = worktreeCache.get(root) ?? (await listWorktrees(root).catch(() => [])) ?? [];
   const folders = [...new Set([root, ...worktrees.map((tree) => tree.path)])];
@@ -4304,14 +4531,14 @@ async function excludePlanFile(cwd) {
 
 // task: the issue the chat is for, which names its tab (taskTitles, over the
 // title the terminal sets itself).
-async function voiceOpenNew({ cwd, prompt, task = null }) {
+async function voiceOpenNew({ cwd, prompt, task = null, root = null, title = null }) {
   workspaceWindow?.show();
   if (cwd) await excludePlanFile(cwd);
   const opened = openTerminal({ cwd, kind: 'claude', prompt });
   if (opened.error) return Promise.resolve({ sessionId: null });
   if (Number.isInteger(task)) {
-    const issue = catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root: voiceRoot() }).issues.find((item) => item.number === task);
-    taskTitles.set(opened.id, taskTabTitle(task, issue?.title));
+    const issue = title ? null : catalogFrom({ results: lastGhResults, resultsRoot: lastGhResultsRoot, root: root ?? voiceRoot() }).issues.find((item) => item.number === task);
+    taskTitles.set(opened.id, taskTabTitle(task, title ?? issue?.title));
   }
   return new Promise((resolve) => {
     pendingNewChats.set(opened.id, resolve);
@@ -4805,7 +5032,28 @@ function hydrateRegistry() {
 
 // Drops the sessions whose terminal was closed: they never send a hook on the
 // way out, so without this they linger frozen on their last status.
+// A working chat missing from Claude Code's registry is only a failure if
+// its turn was really open: an Esc, or a Stop lost while the Vizor was down,
+// already ended it. Those transcripts are read first (async); the reaping
+// itself stays one synchronous pass.
+let reaping = false;
 function reapDeadSessions() {
+  if (reaping) return;
+  const liveIds = readLiveSessionIds();
+  const unsure = liveIds
+    ? registry.list().filter((session) => session.status === 'working' && session.transcriptPath && !liveIds.has(session.id) && (liveIds.size > 0 || session.seenAlive))
+    : [];
+  if (!unsure.length) return reapNow(new Set());
+  reaping = true;
+  Promise.all(unsure.map(async (session) => ((await readTurnClosed(session.transcriptPath)) ? session.id : null)))
+    .then((ids) => reapNow(new Set(ids.filter(Boolean))))
+    .catch((error) => log(`reap failed: ${error}`))
+    .finally(() => {
+      reaping = false;
+    });
+}
+
+function reapNow(closedTurns) {
   adoptResumedChats();
   const liveIds = readLiveSessionIds();
   if (!appQuitting) {
@@ -4815,7 +5063,7 @@ function reapDeadSessions() {
     scheduleTabsSave();
   }
   const before = [...registry.sessions.keys()];
-  registry.reconcileLiveSessions(liveIds);
+  registry.reconcileLiveSessions(liveIds, { closedTurns });
   for (const sessionId of before)
     if (!registry.sessions.has(sessionId)) {
       editTracker.forgetSession(sessionId);
@@ -4890,6 +5138,7 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
+  noticeBatch.cancel();
   quitFreeze.willQuit();
   globalShortcut.unregisterAll();
   ptyHost?.killAll();

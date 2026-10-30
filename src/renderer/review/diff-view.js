@@ -1,6 +1,7 @@
 // The review screen's HTML builders: the file list and one file's diff. Pure
 // strings, like plan-view; every path, line and message goes through escapeHtml.
 import { escapeHtml } from '../workspace-view.js';
+import { skeleton } from '../shared/skeleton.js';
 import { highlightLine, initialState } from './highlight.js';
 
 const MAX_VIEW_LINES = 3000;
@@ -77,12 +78,17 @@ export function renderFileDiff(file, { highlight, selectedHunk, forceOpen } = {}
 
 // files: summary files; order: paths in reading order; approvedByFile:
 // { [path]: { approved, total } }; filter: case-insensitive path substring.
-export function renderFileList(files, order, { selectedPath, approvedByFile = {}, filter = '' } = {}) {
+export function renderFileList(files, order, { selectedPath, approvedByFile = {}, filter = '', loading = false } = {}) {
+  if (loading) return skeleton('list', 6);
   const byPath = new Map((files ?? []).map((f) => [f.path, f]));
   const needle = filter.trim().toLowerCase();
   const sorted = (order?.length ? order : [...byPath.keys()]).map((p) => byPath.get(p)).filter(Boolean)
     .filter((f) => !needle || f.path.toLowerCase().includes(needle));
-  if (!sorted.length) return '<div class="review-empty">nada pra revisar</div>';
+  if (!sorted.length) {
+    // An empty worktree says what to do next; a filter that hides everything says so.
+    return needle ? '<div class="review-empty empty-state">nenhum arquivo bate com o filtro</div>'
+      : '<div class="review-empty empty-state">nenhuma mudança ainda: puxe uma issue no Ctrl+K</div>';
+  }
   // Neighbours in the same folder share a heading; the reading order itself
   // (contract files first) must not be reshuffled by folder.
   const groups = [];

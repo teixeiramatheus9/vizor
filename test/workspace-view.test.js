@@ -41,7 +41,8 @@ describe('escapeHtml', () => {
 describe('statusIcon', () => {
   it('permission beats waiting, waiting beats the rest', () => {
     expect(statusIcon(session('s', { status: 'waiting', needsPermission: true }))).toBe(ICONS.permission);
-    expect(statusIcon(session('s', { status: 'waiting' }))).toBe(ICONS.waiting);
+    expect(statusIcon(session('s', { status: 'waiting', question: true }))).toBe(ICONS.waiting);
+    expect(statusIcon(session('s', { status: 'waiting' }))).toBe(ICONS.done);
     expect(statusIcon(session('s', { status: 'done' }))).toBe(ICONS.done);
     expect(statusIcon(session('s'))).toBe(ICONS.working);
   });
@@ -412,7 +413,7 @@ describe('backlog fixes (#125, #139)', () => {
 describe('collapsible sidebar (#152)', () => {
   const files = (n) => Array.from({ length: n }, (_, i) => ({ filePath: `/r/f${i}.js`, added: 1, removed: 0, writing: false }));
   const twoSessions = () =>
-    tree([session('a', { files: files(5) }), session('b', { status: 'waiting', files: files(2) })]);
+    tree([session('a', { files: files(5) }), session('b', { status: 'waiting', question: true, files: files(2) })]);
 
   it('projects and worktrees are open by default, each with a fold toggle', () => {
     const html = renderSidebar(twoSessions(), null, null, {});
@@ -536,3 +537,25 @@ describe('a tab opened for a task', () => {
   });
 });
 
+
+describe('renderSidebar project avatars', () => {
+  const base = () => tree([session('s1')], {});
+  it('shows the avatar image and its accent when main sent one', () => {
+    const html = renderSidebar(base(), null, null, {}, {}, { '/r': { uri: 'data:image/png;base64,AAAA', accent: '#3366cc' } });
+    expect(html).toContain('<img class="avatar" src="data:image/png;base64,AAAA"');
+    expect(html).toContain('--project-accent:#3366cc');
+  });
+  it('falls back to a monogram on a name-derived colour', () => {
+    const html = renderSidebar(base(), null);
+    expect(html).toMatch(/<span class="avatar mono" style="background:#[0-9a-f]{6}"/);
+    expect(html).toMatch(/--project-accent:#[0-9a-f]{6}/);
+  });
+});
+
+describe('a failed tombstone in the sidebar', () => {
+  it('is never drawn as running', async () => {
+    const { statusIcon, ICONS, STATUS_LABEL } = await import('../src/renderer/workspace-view.js');
+    expect(statusIcon({ status: 'failed' })).toBe(ICONS.failed);
+    expect(STATUS_LABEL.failed).toBe('falhou');
+  });
+});

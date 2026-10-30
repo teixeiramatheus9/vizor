@@ -480,6 +480,40 @@ export async function readInterrupted(transcriptPath) {
   }
 }
 
+// Whether the last turn really ended: an Esc marker or an end-turn reply is
+// the last word (bookkeeping entries after it don't count). A chat that dies
+// with the turn closed is just a closed chat, not a failure.
+export function parseTurnClosed(jsonlText) {
+  const lines = jsonlText.split('\n');
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry?.isSidechain || entry?.isMeta) continue;
+    if (isAssistantEntry(entry)) return entry.message?.stop_reason === 'end_turn';
+    if (isUserEntry(entry)) {
+      const content = entry.message?.content;
+      const text = typeof content === 'string' ? content : textBlocks(content).join(' ');
+      return text.includes('[Request interrupted by user');
+    }
+  }
+  return false;
+}
+
+// Unreadable counts as open: the caller keeps the tombstone it would have shown.
+export async function readTurnClosed(transcriptPath) {
+  try {
+    return parseTurnClosed(await readTail(transcriptPath));
+  } catch {
+    return false;
+  }
+}
+
 const FIRST_PROMPT_READ_BYTES = 64 * 1024;
 const FIRST_PROMPT_MAX_CHARS = 2000;
 

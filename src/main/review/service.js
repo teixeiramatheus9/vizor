@@ -19,6 +19,8 @@ const DEBOUNCE_MS = 300;
 const MAX_VIEW_LINES = 3000;
 const BASE_TEXT_CACHE = 500;
 const CHUNK = 8;
+const SETTLE_MS = 1000;
+const EXPORT_LINE = /^\s*(export\b|module\.exports\b)/;
 const SOURCE = /\.(m|c)?[jt]sx?$/;
 const STATUS = { A: 'added', C: 'added', D: 'deleted', R: 'renamed' };
 
@@ -47,7 +49,7 @@ export function createReviewService({
   git, readFile, stat, graphFor, graphBuilt = (wt) => graphFor(wt)?.graph(), verifier, storeFor, sessionsOf,
   setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout,
   cacheDir = path.join(os.homedir(), '.cache', 'vizor', 'tsc'),
-  startPaused = false, log = () => {},
+  startPaused = false, now = Date.now, log = () => {},
 }) {
   const service = new EventEmitter();
   const states = new Map();
@@ -59,7 +61,7 @@ export function createReviewService({
 
   const stateOf = (wt) => {
     if (!states.has(wt)) {
-      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, refreshing: null, order: null });
+      states.set(wt, { base: null, config: null, files: new Map(), epoch: 0, dirty: false, timer: null, tsc: null, tests: null, store: null, approved: null, untracked: null, untrackedSeen: null, baseTexts: new Map(), baseSha: null, open: null, openRun: null, refreshing: null, order: null, analysing: null, landedAt: null });
     }
     return states.get(wt);
   };
@@ -80,14 +82,16 @@ export function createReviewService({
     const s = stateOf(wt);
     s.base ??= (async () => {
       const config = await configOf(wt);
+      const probe = (candidate) => run(wt, ['merge-base', 'HEAD', candidate]).then((out) => out.trim(), () => '');
+      // The fixed candidates do not depend on the upstream: they are probed while
+      // it is asked for, so a repo without one resolves in a single round of git.
+      const probes = new Map(baseCandidates({ config }).map((candidate) => [candidate, probe(candidate)]));
       const upstream = (await run(wt, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).catch(() => '')).trim();
       // The branch name only matters to tell an upstream that is this branch pushed.
       const branch = upstream ? (await run(wt, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '')).trim() : '';
       for (const candidate of baseCandidates({ upstream, config, branch })) {
-        try {
-          const sha = (await run(wt, ['merge-base', 'HEAD', candidate])).trim();
-          if (sha) return { sha };
-        } catch { /* next candidate */ }
+        const sha = await (probes.get(candidate) ?? probe(candidate));
+        if (sha) return { sha };
       }
       return { error: BASE_ERROR };
     })();
@@ -191,13 +195,23 @@ export function createReviewService({
       }
       s.files.set(`a\0${key}`, entry);
     }
-    // The diff of the two texts against the graph is the dear part and repeats
-    // on every summary and slice: keep it for as long as this graph object lives.
+    return { changes: entry.changes, functions: functionsOf(entry, file, graph) };
+  }
+
+  // The diff of the two texts against the graph is the dear part and repeats
+  // on every summary and slice: keep it for as long as this graph object lives.
+  // Only this part depends on the graph; the contract changes never do.
+  function functionsOf(entry, file, graph) {
     if (entry.graph !== graph) {
       entry.graph = graph;
-      entry.functions = graph && entry.after !== undefined && SOURCE.test(file.path) ? touchedFunctions(graph, file.path, entry.before ?? null, entry.after ?? '') : [];
+      try {
+        entry.functions = graph && entry.after !== undefined && SOURCE.test(file.path) ? touchedFunctions(graph, file.path, entry.before ?? null, entry.after ?? '') : [];
+      } catch (error) {
+        log(`review changed functions of ${file.path} failed: ${error?.message ?? error}`); // the contract part stays valid
+        entry.functions = [];
+      }
     }
-    return { changes: entry.changes, functions: entry.functions };
+    return entry.functions;
   }
 
   // graphFor starts the build when there is none; graphBuilt only looks.
@@ -226,13 +240,22 @@ export function createReviewService({
   const approxBytes = (file) => (file?.hunks ?? []).reduce((n, h) => n + h.header.length + h.lines.reduce((m, l) => m + l.text.length + 2, 0), 0);
 
   // HEAD→worktree hunk ids, one process for the whole worktree, per epoch.
-  async function openIds(wt) {
+  // Callers asking while the run is in flight share it.
+  function openIds(wt) {
     const s = stateOf(wt);
-    if (s.open?.epoch !== s.epoch) {
-      const head = parseUnifiedDiff(await run(wt, ['diff', '-U3', 'HEAD']));
-      s.open = { epoch: s.epoch, ids: new Set(head.flatMap((f) => f.hunks.map((h) => h.id))) };
+    if (s.open?.epoch === s.epoch) return Promise.resolve(s.open.ids);
+    if (s.openRun?.epoch !== s.epoch) {
+      const epoch = s.epoch;
+      const promise = run(wt, ['diff', '-U3', 'HEAD'])
+        .then((text) => {
+          const ids = new Set(parseUnifiedDiff(text).flatMap((f) => f.hunks.map((h) => h.id)));
+          if (s.epoch === epoch) s.open = { epoch, ids };
+          return ids;
+        })
+        .finally(() => { if (s.openRun?.promise === promise) s.openRun = null; });
+      s.openRun = { epoch, promise };
     }
-    return s.open.ids;
+    return s.openRun.promise;
   }
 
   // Every changed file's parsed patch from ONE `git diff -U3 <base>` (plus
@@ -240,15 +263,20 @@ export function createReviewService({
   async function ensurePatches(wt, sha, files, stamps) {
     const s = stateOf(wt);
     const cold = files.filter((f) => s.files.get(`p\0${suffix(sha, f.path, stamps.get(f.path))}`)?.lone !== false);
+    // The HEAD hunk ids are a separate git run: started together with the base
+    // diff, not after it (a cold list would otherwise wait for two in a row).
+    const full = cold.some((f) => !f.untracked) ? run(wt, ['diff', '-U3', sha]) : null;
+    const heads = openIds(wt);
+    heads.catch(() => {}); // awaited below; a base-diff failure must not leave it unhandled
     if (cold.length) {
-      const parsed = new Map(!cold.some((f) => !f.untracked) ? [] : parseUnifiedDiff(await run(wt, ['diff', '-U3', sha])).map((f) => [f.path, f]));
+      const parsed = new Map(full ? parseUnifiedDiff(await full).map((f) => [f.path, f]) : []);
       for (const f of cold) {
         const info = f.untracked ? await untrackedInfo(wt, f.path, s.untrackedSeen) : null;
         const file = info ? info.file : parsed.get(f.path) ?? null;
         s.files.set(`p\0${suffix(sha, f.path, stamps.get(f.path))}`, { file, untracked: f.untracked, bytes: info ? info.bytes : approxBytes(file), epoch: -1, committedIds: null, lone: false });
       }
     }
-    await openIds(wt);
+    await heads;
   }
 
   // Drop what no longer belongs: other bases, files that left the list, and
@@ -275,9 +303,60 @@ export function createReviewService({
     }
   }
 
+  // A cheap guess at "this file changes a contract", from the patch already in
+  // hand (no parsing): package.json, a schema path, or an added/removed export line.
+  function likelyContract(wt, sha, file, stamp) {
+    if (path.posix.basename(file.path) === 'package.json' || isSchemaPath(file.path)) return true;
+    const patch = stateOf(wt).files.get(`p\0${suffix(sha, file.path, stamp)}`)?.file;
+    return Boolean(patch?.hunks.some((h) => h.lines.some((l) => (l.kind === '+' || l.kind === '-') && EXPORT_LINE.test(l.text))));
+  }
+
+  // The analysis of a file only when it is already worked out: the summary never
+  // waits for it. A file whose analysis failed is answered as "failed" (once per
+  // file version) instead of pending, so the verdict never says "analisando…" forever.
+  function cachedAnalysis(wt, sha, file, graph, stamp) {
+    const s = stateOf(wt);
+    const key = suffix(sha, file.path, stamp);
+    const entry = s.files.get(`a\0${key}`);
+    if (entry) return { changes: entry.changes, functions: functionsOf(entry, file, graph) };
+    const failure = s.files.get(`f\0${key}`);
+    return failure ? { changes: [], functions: [], failed: failure.reason } : null;
+  }
+
+  // The contract analysis, started after the answer went out and announced when
+  // it lands. One run per worktree at a time; nothing starts while paused (the
+  // next summary, on show, starts it).
+  function analyseLater(wt, sha, files, graph, stamps) {
+    const s = stateOf(wt);
+    if (paused || s.analysing) return;
+    s.analysing = (async () => {
+      try {
+        await prefetchBase(wt, sha, files);
+        await chunked(files, async (f) => {
+          const stamp = stamps.get(f.path);
+          try {
+            await analyse(wt, sha, f, graph, stamp);
+          } catch (error) {
+            log(`review contract analysis of ${wt}/${f.path} failed: ${error?.stack ?? error}`);
+            s.files.set(`f\0${suffix(sha, f.path, stamp)}`, { reason: String(error?.message ?? error).split('\n')[0].slice(0, 80) });
+          }
+        });
+      } catch (error) {
+        log(`review contract analysis of ${wt} failed: ${error?.stack ?? error}`);
+        const reason = String(error?.message ?? error).split('\n')[0].slice(0, 80);
+        for (const f of files) if (!s.files.has(`a\0${suffix(sha, f.path, stamps.get(f.path))}`)) s.files.set(`f\0${suffix(sha, f.path, stamps.get(f.path))}`, { reason });
+      }
+      s.analysing = null; // before the announce: the summary it triggers may start the next run
+      s.landedAt = now();
+      if (states.get(wt) === s) announce(wt);
+    })();
+  }
+
   async function summarise(wt) {
     const base = await baseOf(wt);
     if (base.error) return emptySummary(wt, base.error);
+    // The HEAD hunk ids need no file list: that git run goes out alongside it.
+    openIds(wt).catch(() => {}); // ensurePatches shares it and reports a failure
     const files = await listChanged(wt, base.sha);
     // A cold graph starts building only after the answer is worked out: its parsing
     // and file reads would compete with the first list for the main thread.
@@ -291,22 +370,26 @@ export function createReviewService({
 
   async function finishSummary(wt, base, files, graph) {
     const stamps = await stampsOf(wt, files);
-    // Two independent git runs: the merge-base texts feed the analysis, the full patch feeds the hunk counts.
-    const [analysed] = await Promise.all([
-      prefetchBase(wt, base.sha, files).then(() => chunked(files, (f) => analyse(wt, base.sha, f, graph, stamps.get(f.path)))),
-      ensurePatches(wt, base.sha, files, stamps),
-    ]);
+    // The contract analysis (merge-base texts + babel on both sides) is the dear
+    // part of a cold list and nothing on screen needs it to be readable: the
+    // answer carries whatever is already cached and the rest is worked out
+    // right after, announced as a 'changed' when it lands.
+    await ensurePatches(wt, base.sha, files, stamps);
     evict(wt, base.sha, files, stamps);
+    const analysed = files.map((f) => cachedAnalysis(wt, base.sha, f, graph, stamps.get(f.path)));
+    const pending = analysed.some((a) => !a);
+    const failures = analysed.filter((a) => a?.failed);
+    if (pending) analyseLater(wt, base.sha, files, graph, stamps);
     const contract = [];
     analysed.forEach((a, i) => {
-      if (!a.changes.length) return;
+      if (!a?.changes.length) return;
       files[i].contract = true;
       contract.push({ path: files[i].path, changes: a.changes });
     });
     let untestedChanged = 0;
     if (graph) {
       const untested = untestedModules(graph);
-      analysed.forEach((a, i) => { if (untested.has(files[i].path)) untestedChanged += a.functions.length; });
+      analysed.forEach((a, i) => { if (a && untested.has(files[i].path)) untestedChanged += a.functions.length; });
     }
     const approved = await loadApproved(wt);
     const s = stateOf(wt);
@@ -321,13 +404,29 @@ export function createReviewService({
     }
     s.store.prune?.(live);
     // The order is worked out once per set of files: a graph or a contract
-    // change landing later must not reshuffle what the dev is reading.
+    // change landing later must not reshuffle what the dev is reading. The one
+    // exception is the first analysis of a cold set: while it is pending the order
+    // is provisional (no contract data, so no contract-first yet) and is redone
+    // once when the analysis lands, but only within SETTLE_MS of the first answer;
+    // later than that the dev may already be reading, so the provisional order is
+    // frozen (badges and verdict still update). Freezing the cold order outright
+    // would lose contract-first on every first open.
+    // Files not analysed yet count as contract when they look like it.
+    const contractPaths = [...new Set([...contract.map((c) => c.path), ...files.filter((f, i) => !analysed[i] && likelyContract(wt, base.sha, f, stamps.get(f.path))).map((f) => f.path)])];
     const set = files.map((f) => f.path).sort().join('\0');
-    if (s.order?.set !== set) s.order = { set, paths: readingOrder(files, { graph, contractPaths: contract.map((c) => c.path) }).map((f) => f.path) };
+    const order_ = () => readingOrder(files, { graph, contractPaths }).map((f) => f.path);
+    if (s.order?.set !== set) {
+      s.landedAt = null;
+      s.order = { set, provisional: pending, at: now(), paths: order_() };
+    } else if (s.order.provisional && !pending) {
+      // Judged by when the analysis landed, not by when this summary was asked.
+      if ((s.landedAt ?? now()) - s.order.at <= SETTLE_MS) s.order = { ...s.order, provisional: false, paths: order_() };
+      else s.order.provisional = false;
+    }
     const order = s.order.paths;
     const verdict = buildVerdict({
       files, tsc: s.tsc, tests: s.tests, untestedChanged,
-      contract: contract.reduce((n, c) => n + c.changes.length, 0), approved: approvedCount, totalHunks,
+      contract: contract.reduce((n, c) => n + c.changes.length, 0), contractPending: pending, contractFailed: failures.length ? failures[0].failed : null, approved: approvedCount, totalHunks,
     });
     return { base: base.sha, baseError: null, files, order, verdict, contract, request: requestSource(wt) ?? null };
   }
@@ -414,7 +513,7 @@ export function createReviewService({
     if (!hunk) return { ok: false, error: ERR_CHANGED };
     if (view.untracked) return { ok: false, error: ERR_NEW_FILE };
     if (hunk.committed) return { ok: false, error: ERR_COMMITTED };
-    if (sessionsOf(wt).some((s) => s.status !== 'done' && s.status !== 'waiting')) return { ok: false, error: ERR_BUSY };
+    if (sessionsOf(wt).some((s) => s.status === 'working')) return { ok: false, error: ERR_BUSY };
     // The marker after a line is what keeps `git apply` from demanding a final newline there.
     const body = hunk.lines.map((l) => `${l.kind}${l.text}\n${l.noNewline ? '\\ No newline at end of file\n' : ''}`).join('');
     const patch = `diff --git a/${rel} b/${rel}\n--- a/${rel}\n+++ b/${rel}\n${hunk.header}\n${body}`;

@@ -117,7 +117,7 @@ try {
   // 1. Resumo opens with the verdict.
   await ws.waitForSelector('#summary-head .verdict-strip');
   const verdict = () => ws.textContent('#summary-head .verdict-strip');
-  await until('the verdict', async () => /tsc: 1 erro/.test(await verdict()), 30000);
+  await until('the verdict', async () => /tsc: 1 erro/.test(await verdict()) && /2 mudanças de contrato/.test(await verdict()), 30000);
   const text = await verdict();
   assert.match(text, /3 arquivos/);
   assert.match(text, /2 mudanças de contrato/);
@@ -130,6 +130,8 @@ try {
   const order = await ws.$$eval('#changes-files .review-file', (rows) => rows.map((row) => row.dataset.path));
   assert.deepEqual(new Set(order.slice(0, 2)), new Set(['package.json', 'src/lib.ts']));
   assert.equal(order[2], 'src/app.ts');
+  const badged = await ws.$$eval('#changes-files .review-file', (rows) => rows.filter((row) => row.querySelector('.contract-badge')).map((row) => row.dataset.path));
+  assert.deepEqual(new Set(badged), new Set(['package.json', 'src/lib.ts']));
   await ws.click('#changes-files .review-file[data-path="src/lib.ts"]');
   await ws.waitForSelector('#changes-diff .tsc-error');
   assert.match(await ws.textContent('#changes-diff .tsc-error'), /tsc 2:10 · Type 'string' is not assignable/);

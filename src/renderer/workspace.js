@@ -27,9 +27,15 @@ import {
   stillWanted,
 } from './inspector-state.js';
 import { renderPlan } from './plan-view.js';
+import { averageColor, nudgeColor } from './project-accent.js';
 import { buildCommands, filterCommands, renderCommandList } from './command-bar.js';
 import { renderBackstage, renderBalloon, renderConsequences, renderOrder } from './maestro-view.js';
 import { createReviewController } from './review/review-controller.js';
+import { TOP_TABS, normalizeTopTab, renderTopTabs } from './shell/top-tabs.js';
+import { renderStatusBar } from './shell/status-bar.js';
+import { keyAction, renderShortcuts } from './shell/shortcuts.js';
+import { createAgentsController } from './agents/agents-controller.js';
+import { createGithubController } from './github/github-controller.js';
 
 const sidebar = document.getElementById('sidebar');
 const topbar = document.getElementById('topbar');
@@ -224,10 +230,10 @@ async function ensureView(id) {
   termHost.appendChild(el);
   const term = new Terminal({
     fontFamily: "'IBM Plex Mono', ui-monospace, monospace",
-    fontSize: 12,
+    fontSize: 14,
     cursorBlink: true,
     scrollback: 5000,
-    theme: { background: cssVar('--bg-surface'), foreground: cssVar('--text'), cursor: cssVar('--accent') },
+    theme: { background: cssVar('--ws-panel'), foreground: cssVar('--text'), cursor: cssVar('--accent') },
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -258,7 +264,10 @@ async function ensureView(id) {
 // The terminal lives in a drawer under the review: closed, nothing is
 // fitted (a zero-size fit would shrink the pty) and nothing takes the keys.
 const drawerEl = document.getElementById('terminal-drawer');
-const drawerShown = () => drawerEl.classList.contains('open');
+// The drawer belongs to the Workspace view: elsewhere it is display:none, so
+// nothing is fitted (a zero-size fit would shrink the pty) and no key goes there.
+let topTab = 'workspace';
+const drawerShown = () => topTab === 'workspace' && drawerEl.classList.contains('open');
 // A state push must not pull the keys out of the composer or the file filter.
 const typingElsewhere = () => document.activeElement?.matches?.('input, textarea, select') && !drawerEl.contains(document.activeElement);
 
@@ -314,13 +323,128 @@ function musicianMarks() {
   return Object.fromEntries(maestro.orchestra.map((musician) => [musician.sessionId, { color: musician.color, name: musician.name }]));
 }
 
-function renderSidebarOnly() {
-  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds, musicianMarks());
+// Project avatars: main sends the data: URI per project root; the accent is
+// the avatar's average colour, read once through a tiny offscreen canvas.
+let avatarUris = {};
+const accents = new Map(); // data URI -> hex | null
+
+function accentOf(uri) {
+  if (accents.has(uri)) return accents.get(uri);
+  accents.set(uri, null);
+  const image = new Image();
+  image.onload = () => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 16;
+      canvas.height = 16;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      context.drawImage(image, 0, 0, 16, 16);
+      const average = averageColor(context.getImageData(0, 0, 16, 16).data);
+      if (average) {
+        accents.set(uri, nudgeColor(...average));
+        renderSidebarOnly();
+        agents.refresh();
+        github.refresh();
+      }
+    } catch {
+      // no canvas readback: the monogram colour stays
+    }
+  };
+  image.src = uri;
+  return null;
 }
+
+// The Agentes tab: what each project looks like on its cards and filter chips.
+function agentProjects() {
+  return Object.fromEntries(
+    (lastTree?.projects ?? []).map((project) => {
+      const uri = avatarUris[project.root] ?? null;
+      return [project.root, { name: project.name, uri, accent: uri ? accentOf(uri) : null }];
+    }),
+  );
+}
+
+function avatarMarks() {
+  return Object.fromEntries(
+    Object.entries(avatarUris).map(([root, uri]) => [root, { uri, accent: uri ? accentOf(uri) : null }]),
+  );
+}
+
+function renderSidebarOnly() {
+  sidebar.innerHTML = renderSidebar(lastTree, selectedId, selectedWorktree, folds, musicianMarks(), avatarMarks());
+}
+
+const topTabsEl = document.getElementById('top-tabs');
+function drawTopTabs() {
+  const html = renderTopTabs(topTab, { waiting: agents.waitingCount() });
+  if (topTabsEl.innerHTML !== html) topTabsEl.innerHTML = html;
+}
+
+// The bottom line follows the state push (which also carries each token spend):
+// no timer. A click on the agents part opens the Agentes tab.
+const statusBarEl = document.getElementById('status-bar');
+let statusTokens = { used: 0, cap: 0 };
+function drawStatusBar() {
+  const html = renderStatusBar({ tokens: statusTokens, agents: agents.counts(), nextAutomation: null });
+  if (statusBarEl.innerHTML !== html) statusBarEl.innerHTML = html;
+}
+statusBarEl.addEventListener('click', (event) => {
+  if (event.target.closest('[data-top-tab]')) setTopTab('agents');
+});
+
+// Switching only shows and hides views: no pty is touched. Coming back to the
+// Workspace refits the terminal, which could not be measured while hidden.
+function setTopTab(next, { save = true } = {}) {
+  next = normalizeTopTab(next);
+  if (save) userSwitchedTab = true;
+  if (next === topTab) return;
+  topTab = next;
+  for (const tab of TOP_TABS) document.getElementById(`view-${tab.id}`).hidden = tab.id !== next;
+  drawTopTabs();
+  syncAgentsVisibility();
+  if (save) window.vizor.setPrefs({ topTab: next }).catch(() => {});
+  if (next === 'workspace') {
+    fitActive();
+    markLooking();
+    if (!commandBarOpen() && drawerShown() && !typingElsewhere()) views.get(activeTab)?.term.focus();
+  }
+}
+// The kanban draws and schedules its 30-min cut only while it is on screen.
+const agents = createAgentsController({
+  el: document.getElementById('view-agents'),
+  api: window.vizor,
+  projects: agentProjects,
+  // A card click: the Workspace tab, the chat selected, the drawer open, the terminal focused.
+  openSession: (sessionId) => {
+    setTopTab('workspace');
+    selectSession(sessionId);
+  },
+});
+// The GitHub tab reads and keeps its 5-min refresh only while it is on screen.
+const github = createGithubController({
+  el: document.getElementById('view-github'),
+  api: window.vizor,
+  projects: agentProjects,
+  // "Puxar"/"Revisar" open a new chat: it lives in the Workspace.
+  openWorkspace: () => setTopTab('workspace'),
+  notify: (text) => toast(text),
+});
+const syncGithubVisibility = () => github.setVisible(topTab === 'github' && !document.hidden);
+const syncAgentsVisibility = () => {
+  agents.setVisible(topTab === 'agents' && !document.hidden);
+  syncGithubVisibility();
+};
+document.addEventListener('visibilitychange', syncAgentsVisibility);
+
+topTabsEl.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-top-tab]');
+  if (button) setTopTab(button.dataset.topTab);
+});
 
 function render() {
   if (!lastTree) return;
   topbar.innerHTML = renderTopBar(lastTree, { voice: voiceInfo, maestro: maestro.on });
+  drawTopTabs();
   renderSidebarOnly();
   renderTerminalArea();
 }
@@ -586,6 +710,7 @@ window.vizor.onEditsChanged(({ sessionId }) => {
 
 window.vizor.getPrefs().then((saved) => {
   Object.assign(prefs, saved);
+  if (!userSwitchedTab) setTopTab(saved.topTab, { save: false });
   if (prefs.width !== 'collapsed') lastOpenWidth = prefs.width;
   renderInspector();
 });
@@ -628,13 +753,18 @@ guardHost.addEventListener('click', (event) => {
   window.vizor.answerGuard(button.dataset.guardId, button.dataset.guardChoice);
 });
 
-window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, guardAsks, voice, maestro: stage, plans: planState }) => {
+window.vizor.onState(({ tree, sessions: agentSessions, terminals: list, activeTerminal, theme, palette, density, guardAsks, voice, maestro: stage, plans: planState, avatars, tokens }) => {
+  if (avatars) avatarUris = avatars;
   plans = planState ?? {};
   renderGuardAsks(guardAsks);
   voiceInfo = voice ?? null;
   if (theme) document.body.dataset.theme = theme;
   if (palette) document.body.dataset.palette = palette;
+  document.body.dataset.density = density === 'compact' ? 'compact' : 'comfortable';
   lastTree = tree;
+  agents.setState({ sessions: agentSessions, plans, guardAsks });
+  if (tokens) statusTokens = tokens;
+  drawStatusBar();
   terminals = list ?? [];
   // First state of this page: open on the tab that was in front (#155).
   if (!adoptedActive) {
@@ -666,6 +796,7 @@ window.vizor.onState(({ tree, terminals: list, activeTerminal, theme, palette, g
     views.delete(id);
   }
   render();
+  markLooking();
   applyMaestro(stage);
   renderPlanCard();
 });
@@ -1023,17 +1154,28 @@ function selectSession(sessionId, { openDrawer = true } = {}) {
 // Main mutes notices for the session this focused window is showing — which
 // is the one whose terminal tab is active when a tab was picked by hand
 // (#96 review: a stale selection muted a session nobody was looking at).
-function reportSelection() {
+function shownSessionId() {
   const selected = selectedId ? findSession(selectedId)?.session : null;
   if (activeTab && selected?.ptyId !== activeTab) {
     let owner = null;
     for (const project of lastTree?.projects ?? [])
       for (const worktree of project.worktrees)
         for (const session of worktree.sessions) if (session.ptyId === activeTab) owner = session.id;
-    window.vizor.reportSelection(owner);
-    return;
+    return owner;
   }
-  window.vizor.reportSelection(selectedId);
+  return selectedId;
+}
+
+// A finished turn counts as seen once its terminal is in front in a focused window.
+function markLooking() {
+  if (topTab !== 'workspace' || !document.hasFocus() || !drawerShown()) return;
+  const sessionId = shownSessionId();
+  if (sessionId) agents.lookingAt(sessionId);
+}
+
+function reportSelection() {
+  window.vizor.reportSelection(shownSessionId());
+  markLooking();
 }
 
 window.addEventListener('focus', reportSelection);
@@ -1041,6 +1183,9 @@ window.addEventListener('focus', reportSelection);
 // A request that lands before the tree knows the session waits for it.
 let pendingFocus = null;
 window.vizor.onFocusSession(({ sessionId }) => {
+  // The chat lives in the Workspace tab (bubble, balloon, panel card, Maestro,
+  // voice, a pulled issue): show it, and let this beat the saved tab still loading.
+  if (sessionId) setTopTab('workspace');
   if (sessionId && !findSession(sessionId)) {
     pendingFocus = sessionId;
     return;
@@ -1077,7 +1222,8 @@ function refreshCommandList() {
   const items = buildCommands({
     issues: commandCatalog?.issues ?? [],
     prs: commandCatalog?.prs ?? [],
-    issuesError: Boolean(commandCatalog?.error),
+    issuesError: Boolean(commandCatalog?.issuesError ?? commandCatalog?.error),
+    prsError: Boolean(commandCatalog?.prsError),
     issuesLoading: !commandCatalog,
     chats: commandChats(),
     plans,
@@ -1111,7 +1257,7 @@ function openCommandBar() {
 
 function closeCommandBar() {
   commandBar.hidden = true;
-  if (!maestro.on) views.get(activeTab)?.term.focus();
+  if (!maestro.on && topTab === 'workspace') views.get(activeTab)?.term.focus();
 }
 
 function toast(text) {
@@ -1123,8 +1269,12 @@ function toast(text) {
 
 async function runCommandItem(item) {
   if (!item || item.disabled) return;
-  closeCommandBar();
   const { action } = item;
+  // Everything but "ir pra <tela>" acts on the Workspace (drawer, chat, plan):
+  // show it first so the user sees the result.
+  setTopTab(action.type === 'goto-tab' ? action.tab : 'workspace');
+  closeCommandBar();
+  if (action.type === 'goto-tab') return;
   if (action.type === 'focus') {
     showDrawer();
     if (maestro.on && musicianOf(action.sessionId)) window.vizor.focusMusician(action.sessionId);
@@ -1154,6 +1304,50 @@ window.addEventListener(
   true,
 );
 
+// Ctrl+1..3 switch the top tab, caught before xterm like Ctrl+K. Bare 1..4
+// (review tabs) and "?" (help) only count outside the terminal and text fields.
+const helpEl = document.getElementById('shortcuts-help');
+let userSwitchedTab = false; // a Ctrl+digit or click beats the saved tab still loading
+const REVIEW_TAB_IDS = ['summary', 'changes', 'impact', 'live'];
+function toggleHelp(show = helpEl.hidden) {
+  if (show) helpEl.innerHTML = renderShortcuts();
+  helpEl.hidden = !show;
+  if (show) {
+    helpEl.tabIndex = -1;
+    helpEl.focus();
+  } else if (topTab === 'workspace' && !commandBarOpen() && !typingElsewhere()) views.get(activeTab)?.term.focus();
+}
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (commandBarOpen()) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const focusInTerminal = Boolean(target?.closest('#terminal-drawer'));
+    const focusInField = focusInTerminal || Boolean(target?.closest('input, textarea, select, [contenteditable]'));
+    if (!helpEl.hidden) {
+      // Esc closes the help, except in the terminal where Esc is the shell's:
+      // there the help closes on the next key that is not a modifier.
+      if (event.key === 'Escape' && !focusInTerminal) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleHelp(false);
+        return;
+      }
+      if (focusInTerminal && !['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) toggleHelp(false);
+    }
+    const action = keyAction(event, { focusInTerminal, focusInField, composing: event.isComposing });
+    if (!action) return;
+    // Bare digits belong to the Workspace's review tabs; elsewhere they stay free.
+    if (action.inner && topTab !== 'workspace') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (action.top) setTopTab(TOP_TABS[action.top - 1].id);
+    else if (action.inner) review.setTab(REVIEW_TAB_IDS[action.inner - 1]);
+    else if (action.help) toggleHelp();
+  },
+  true,
+);
+
 // Ctrl+` opens and closes the terminal drawer, before xterm sees it.
 window.addEventListener(
   'keydown',
@@ -1161,7 +1355,7 @@ window.addEventListener(
     if (!event.ctrlKey || event.shiftKey || event.altKey || (event.key !== '`' && event.code !== 'Backquote')) return;
     event.preventDefault();
     event.stopPropagation();
-    review.toggleDrawer();
+    if (topTab === 'workspace') review.toggleDrawer();
   },
   true,
 );

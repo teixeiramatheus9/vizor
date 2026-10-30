@@ -610,6 +610,9 @@
         background: var(--accent);
         animation: pulse 1.6s ease-in-out infinite;
       }
+      .dot.failed {
+        background: var(--danger, #e5534b);
+      }
       .dot.waiting,
       .dot.question {
         background: var(--warn);
@@ -1628,6 +1631,14 @@
               <span>tamanho</span>
               <input id="panel-scale" type="range" />
               <span class="slider-value" data-for="panel-scale"></span>
+            </label>
+            <div class="setting-subtitle"># workspace</div>
+            <label class="setting-row">
+              <span>densidade</span>
+              <span class="sel"><select id="density">
+                <option value="comfortable">confortável</option>
+                <option value="compact">compacta</option>
+              </select></span>
             </label>
             <label class="setting-row wide-label">
               <span>tubo crt (scanline, brilho, curvatura)</span>
