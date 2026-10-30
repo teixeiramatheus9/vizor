@@ -108,9 +108,10 @@ try {
   let { ws, bubble } = await openWindows(app);
 
   // ---- 1. the tap is installed around the original, and removed cleanly ------------
-  const tap = await until('the tap in settings.json', () => /statusline-tap\.js/.test(statusLine()?.command ?? '') && statusLine().command);
+  const tap = await until('the tap in settings.json', () => /statusline-tap\.sh/.test(statusLine()?.command ?? '') && statusLine().command);
   assert.equal(statusLine().padding, 2, 'the original keys stay on the line');
   assert.deepEqual(readJson(path.join(config, 'statusline-original.json')), ORIGINAL);
+  assert.equal(fs.readFileSync(path.join(config, 'statusline-original.sh'), 'utf8'), 'echo ORIGINAL', 'the shim keeps its own copy of the original');
   assert.ok(fs.existsSync(path.join(config, 'statusline', 'statusline-tap.js')), 'the tap is copied out of the app');
   const ran = runTap({ session_id: 'none' });
   assert.equal(ran.stdout.trim(), 'ORIGINAL', 'the tap runs the original and prints what it printed');
@@ -119,6 +120,7 @@ try {
   await until('the original back in settings.json', () => statusLine()?.command === 'echo ORIGINAL');
   assert.deepEqual(statusLine(), ORIGINAL, 'remove restores the whole original line');
   assert.equal(fs.existsSync(path.join(config, 'statusline-original.json')), false, 'the sidecar goes with it');
+  assert.equal(fs.existsSync(path.join(config, 'statusline-original.sh')), false, "and the shim's copy too");
   await bubble.evaluate((partial) => window.manager.setConfig(partial), { limits: { fiveHour: true, sevenDay: true } });
   await until('the tap back', () => statusLine()?.command === tap);
   assert.deepEqual(readJson(path.join(config, 'statusline-original.json')), ORIGINAL);

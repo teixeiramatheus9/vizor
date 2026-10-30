@@ -242,6 +242,27 @@ export function installTapScript({ source, dir }) {
   return target;
 }
 
+// The original command as plain text, for the POSIX shim to run when the
+// app's runtime is gone (it cannot parse the JSON sidecar). Mirrors the
+// sidecar: no original, or one that would call the tap back, means no file.
+export function writeOriginalScript(file, original) {
+  const command = original?.command;
+  if (typeof command !== 'string' || !command.trim() || isStatusLineTap(command)) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  let current = null;
+  try {
+    current = fs.readFileSync(file, 'utf8');
+  } catch {
+    // not written yet
+  }
+  if (current === command) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.tmp`, command);
+  fs.renameSync(`${file}.tmp`, file);
+}
+
 const sameLine = (current, original) => {
   const hasCommand = typeof current?.command === 'string' && current.command.trim() !== '';
   if (!original) return !hasCommand;

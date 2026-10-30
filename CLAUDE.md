@@ -128,7 +128,12 @@ Pontos críticos:
   e é standalone como o hook-emit: repassa o original byte a byte (stdin e
   stdout idênticos), nunca faz loop (`VIZOR_TAP_ACTIVE` + recusa sidecar que
   aponta pro próprio tap), morre junto com o pai e o envio ao socket tem
-  orçamento curto, então Vizor fechado não atrasa a linha. Regras das janelas:
+  orçamento curto, então Vizor fechado não atrasa a linha. No Linux/macOS a
+  `statusLine.command` aponta pra um shim sh (`~/.config/vizor/statusline/statusline-tap.sh`),
+  nunca pro runtime do app: se o runtime ou o tap sumiu (mount do AppImage
+  depois de um crash, pacote desinstalado), o shim roda sozinho o original
+  guardado em texto puro em `statusline-original.sh` (mesmo stdin, saída e
+  exit code). No Windows o `.cmd` ainda chama o runtime direto. Regras das janelas:
   é a mesma janela se o `resets_at` fica a ±120 s do anterior (jitter da API);
   o pct nunca volta dentro da janela (leitura fora de ordem é ignorada);
   cada aviso (perto/estourou/voltou/reset) sai uma vez por janela e é gravado

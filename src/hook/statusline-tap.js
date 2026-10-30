@@ -21,7 +21,7 @@ const originalFile = path.join(os.homedir(), '.config', 'vizor', 'statusline-ori
 
 // Mirrors isStatusLineTap in scripts/install-hooks.js (standalone file): a
 // sidecar pointing back at the tap would loop.
-const TAP_COMMAND = /(^|[\\/"'\s])statusline-tap\.(js|cmd)(["'\s]|$)/;
+const TAP_COMMAND = /(^|[\\/"'\s])statusline-tap\.(js|cmd|sh)(["'\s]|$)/;
 
 function readOriginal() {
   try {

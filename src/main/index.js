@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { buildHookCommand, buildStatusLineCommand, ensureGuard, ensureHooks, isGuardCommand, removeAppHooks, removeGuard } from '../../scripts/install-hooks.js';
 import { guardCommand, installGuardScript } from './guard-runtime.js';
 import { projectStatusLineOverrides, tapStatusText } from './limits/limits-settings.js';
-import { createLimitsService, installTapScript, syncStatusLineTap, LIMITS_FILE_NAME } from './limits/limits-service.js';
+import { createLimitsService, installTapScript, syncStatusLineTap, writeOriginalScript, LIMITS_FILE_NAME } from './limits/limits-service.js';
 import { createGuardAsks, isGuardChoice } from './guard-asks.js';
 import { createRulesStore, pruneSeenSessions } from './rules-store.js';
 import { guardSpeech } from '../renderer/guard-card.js';
@@ -4429,7 +4429,11 @@ function syncGuardHook() {
 // The status-line tap: on while any limits window is watched. Mirrors the
 // guard: the script is copied out of the app, and where only the AppImage's
 // own mount could run it (no node on PATH), it is removed on quit instead.
+// On POSIX settings.json points at a sh shim that falls back to the original
+// (kept as plain text in statusline-original.sh) when the runtime is gone, so
+// a crash or an uninstall never breaks the dev's line.
 const statusLineSidecar = path.join(configDir, 'statusline-original.json');
+const statusLineOriginalScript = path.join(configDir, 'statusline-original.sh');
 const tapDir = path.join(configDir, 'statusline');
 let limitsTapOffline = true;
 let limitsTapStatus = { installed: false, replaced: false };
@@ -4441,6 +4445,11 @@ function readTapOriginal() {
     if (error?.code !== 'ENOENT') log(`statusline sidecar unreadable: ${error}`);
     return undefined;
   }
+}
+
+function removeTapOriginal() {
+  fs.rmSync(statusLineSidecar, { force: true });
+  fs.rmSync(statusLineOriginalScript, { force: true });
 }
 
 function syncLimitsTap({ force = false } = {}) {
@@ -4455,11 +4464,15 @@ function syncLimitsTap({ force = false } = {}) {
           platform: process.platform,
           execPath: node ?? process.execPath,
           tapScript: installTapScript({ source: tapSource, dir: tapDir }),
-          shimDir: configDir,
+          shimDir: process.platform === 'win32' ? configDir : tapDir,
+          originalScript: statusLineOriginalScript,
         });
         if (built.shim) {
           fs.mkdirSync(path.dirname(built.shim.path), { recursive: true });
-          fs.writeFileSync(built.shim.path, built.shim.content);
+          // Atomic: Claude Code may run the shim while it is rewritten.
+          fs.writeFileSync(`${built.shim.path}.tmp`, built.shim.content, { mode: built.shim.mode ?? 0o644 });
+          if (built.shim.mode) fs.chmodSync(`${built.shim.path}.tmp`, built.shim.mode);
+          fs.renameSync(`${built.shim.path}.tmp`, built.shim.path);
         }
         limitsTapOffline = process.platform === 'win32' ? false : !process.env.APPIMAGE || Boolean(node);
         tapCommand = built.command;
@@ -4475,11 +4488,16 @@ function syncLimitsTap({ force = false } = {}) {
       readOriginal: readTapOriginal,
       writeOriginal: (value) => {
         fs.mkdirSync(configDir, { recursive: true });
+        // The shim's copy first: the tap goes in only after both exist.
+        writeOriginalScript(statusLineOriginalScript, value);
         fs.writeFileSync(statusLineSidecar, `${JSON.stringify(value)}\n`);
       },
-      removeOriginal: () => fs.rmSync(statusLineSidecar, { force: true }),
+      removeOriginal: removeTapOriginal,
       force,
     });
+    // Keeps the shim's plain-text copy in step with the sidecar (an install
+    // from before the shim has only the JSON).
+    if (limitsTapStatus.installed) writeOriginalScript(statusLineOriginalScript, readTapOriginal() ?? null);
     if (limitsTapStatus.replaced) log('statusLine was changed by the user: the limits tap stays out');
   } catch (error) {
     log(`syncLimitsTap failed: ${error}`);
@@ -4498,7 +4516,7 @@ function removeLimitsTapIfOnlineOnly() {
       writeSettings: writeClaudeSettings,
       readOriginal: readTapOriginal,
       writeOriginal: () => {},
-      removeOriginal: () => fs.rmSync(statusLineSidecar, { force: true }),
+      removeOriginal: removeTapOriginal,
     });
     log(limitsTapStatus.replaced ? 'statusLine was changed by the user: left as is on quit' : 'limits tap removed on quit (no offline runtime)');
   } catch (error) {

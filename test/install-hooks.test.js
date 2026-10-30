@@ -277,8 +277,14 @@ describe('status-line tap installer', () => {
   const TAP = 'ELECTRON_RUN_AS_NODE=1 "/app/electron" "/app/src/hook/statusline-tap.js"';
 
   it('builds the command like the hook one, with a shim on Windows', () => {
-    const linux = buildStatusLineCommand({ platform: 'linux', execPath: '/e', tapScript: '/t/statusline-tap.js' });
-    expect(linux).toEqual({ command: 'ELECTRON_RUN_AS_NODE=1 "/e" "/t/statusline-tap.js"', shim: null });
+    const linux = buildStatusLineCommand({ platform: 'linux', execPath: '/e', tapScript: '/t/statusline-tap.js', shimDir: '/t', originalScript: '/c/statusline-original.sh' });
+    // A POSIX shim the app does not have to be around for (see statusline-shim.test.js).
+    expect(linux.command).toBe("'/t/statusline-tap.sh'");
+    expect(linux.shim).toMatchObject({ path: '/t/statusline-tap.sh', mode: 0o755 });
+    expect(linux.shim.content).toContain("runtime='/e'");
+    expect(linux.shim.content).toContain("tap='/t/statusline-tap.js'");
+    expect(linux.shim.content).toContain("original='/c/statusline-original.sh'");
+    expect(isStatusLineTap(linux.command)).toBe(true);
     const win = buildStatusLineCommand({ platform: 'win32', execPath: 'C:\\e.exe', tapScript: 'C:\\t\\statusline-tap.js', shimDir: 'C:\\cfg' });
     expect(win.command).toBe('"C:\\cfg\\statusline-tap.cmd"');
     expect(win.shim.content).toContain('ELECTRON_RUN_AS_NODE=1');
@@ -288,6 +294,7 @@ describe('status-line tap installer', () => {
   it('recognises its own command only', () => {
     expect(STATUSLINE_MARKER).toBe('statusline-tap');
     expect(isStatusLineTap(TAP)).toBe(true);
+    expect(isStatusLineTap("'/home/u/.config/vizor/statusline/statusline-tap.sh'")).toBe(true);
     expect(isStatusLineTap('~/bin/my-line.sh')).toBe(false);
     expect(isStatusLineTap(undefined)).toBe(false);
   });
