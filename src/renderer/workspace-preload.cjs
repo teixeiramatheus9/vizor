@@ -67,6 +67,8 @@ contextBridge.exposeInMainWorld('vizor', {
   githubOpen: (root, kind, number) => ipcRenderer.invoke('github:open', root, kind, number),
   commandCatalog: () => ipcRenderer.invoke('workspace:catalog'),
   runCommand: (action) => ipcRenderer.invoke('workspace:command', action),
+  limitsState: () => ipcRenderer.invoke('limits:state'),
+  onLimitsChanged: (callback) => ipcRenderer.on('limits:changed', (_event, state) => callback(state)),
   // The Automações tab.
   automationsState: () => ipcRenderer.invoke('automations:state'),
   automationsSave: (automation) => ipcRenderer.invoke('automations:save', automation),

@@ -61,4 +61,17 @@ describe('config store', () => {
     fs.writeFileSync(file, JSON.stringify({ voice: 'santa' }));
     expect(loadConfig(file).voice).toBe('santa');
   });
+
+  it('defaults the limits config and clamps warnAt to 50-95', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-cfg-lim-'));
+    const file = path.join(dir, 'config.json');
+    expect(loadConfig(file).limits).toEqual({ fiveHour: true, sevenDay: true, warnAt: 80, resetNotice: false, showInStatusBar: true });
+    saveConfig(file, { limits: { warnAt: 10, fiveHour: false } });
+    expect(loadConfig(file).limits).toEqual({ fiveHour: false, sevenDay: true, warnAt: 50, resetNotice: false, showInStatusBar: true });
+    saveConfig(file, { limits: { warnAt: 400, resetNotice: 'x' } });
+    expect(loadConfig(file).limits.warnAt).toBe(95);
+    expect(loadConfig(file).limits.resetNotice).toBe(false);
+    saveConfig(file, { limits: 'oops' });
+    expect(loadConfig(file).limits).toEqual(DEFAULT_CONFIG.limits);
+  });
 });
